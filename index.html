@@ -9,7 +9,535 @@
   --bg:#F7F5F0; --surface:#FFFFFF; --border:#DDD7CC;
   --fg:#1F2420; --muted:#6B7268; --accent:#1F6F5C; --accent-fg:#F7F5F0;
   --good:#2E7D52; --bad:#B3432B; --warn-bg:#FBF0DD; --warn-fg:#6B4A12;
-  font-family:'IBM Plex Sans',system-ui,sans-serif;
+  font-family:'IBM Plex Sans',system-ui,sans-serif;<title>Ficha Viva — Insumos</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<style>
+:root{
+  --bg:#f6f4ee; --surface:#ffffff; --surface-alt:#edeade; --border:#ddd7c8;
+  --text:#23241f; --text-muted:#6c6b60; --text-faint:#969383;
+  --accent:#1f5f6b; --accent-strong:#153f47; --accent-soft:#e4eeef;
+  --ok:#2f8f5b; --ok-soft:#e4f2ea;
+  --warn:#b9791b; --warn-soft:#faf0dd;
+  --critical:#c23b3b; --critical-soft:#fbe8e6;
+  --shadow: 0 1px 2px rgba(30,30,20,.06), 0 8px 24px -12px rgba(30,30,20,.18);
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#14171a; --surface:#1b1f22; --surface-alt:#22262a; --border:#333a3f;
+    --text:#e8e6df; --text-muted:#9b9d9c; --text-faint:#6c7274;
+    --accent:#5bc0cc; --accent-strong:#8adae2; --accent-soft:#1d3438;
+    --ok:#49b07a; --ok-soft:#173226;
+    --warn:#dba43f; --warn-soft:#332a15;
+    --critical:#e2685f; --critical-soft:#3a1e1c;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+    color-scheme:dark;
+  }
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',system-ui,sans-serif;}
+h1,h2,h3{font-family:'Fraunces',Georgia,serif; text-wrap:balance;}
+.mono,.num{font-family:'IBM Plex Mono',ui-monospace,monospace; font-variant-numeric:tabular-nums;}
+button{font-family:inherit;}
+::-webkit-scrollbar{width:10px;height:10px;}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:6px;}
+
+/* ---------- login ---------- */
+.loginWrap{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:16px;}
+.loginCard{background:var(--surface);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);padding:32px 28px;width:100%;max-width:360px;display:flex;flex-direction:column;gap:14px;}
+.loginCard h1{font-size:1.3rem;margin:0;}
+.loginCard .lede{color:var(--text-muted);font-size:.88rem;line-height:1.5;margin:4px 0 0;}
+.field{display:flex;flex-direction:column;gap:4px;margin-bottom:14px;}
+.field label{font-size:12px;color:var(--text-muted);}
+.field input,.field select{font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 11px;width:100%;}
+.field-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;}
+.loginErr{color:var(--critical);font-size:.82rem;min-height:1.2em;margin:0;}
+[hidden]{display:none!important;}
+
+/* ---------- app shell ---------- */
+#app{display:flex;min-height:100vh;}
+.sidebar{width:230px;flex:none;background:var(--surface);border-right:1px solid var(--border);padding:18px 14px;display:flex;flex-direction:column;gap:4px;}
+.brand{display:flex;align-items:center;gap:10px;padding:4px 10px 20px;}
+.brand .brand-text{display:flex;flex-direction:column;gap:2px;min-width:0;}
+.brand .mark{font-family:'Fraunces',serif;font-size:20px;font-weight:600;letter-spacing:.2px;}
+.brand .mark em{color:var(--accent);font-style:normal;}
+.brand .sub{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-faint);}
+.nav-btn{display:flex;align-items:center;gap:10px;text-align:left;background:none;border:none;border-radius:8px;padding:10px 10px;font-size:14px;color:var(--text-muted);cursor:pointer;}
+.nav-btn:hover{background:var(--surface-alt);color:var(--text);}
+.nav-btn.active{background:var(--accent-soft);color:var(--accent-strong);font-weight:600;}
+.nav-btn:disabled{opacity:.45;cursor:not-allowed;}
+.nav-btn .ico{width:18px;text-align:center;font-size:15px;}
+.sidebar-foot{margin-top:auto;padding:10px;font-size:11.5px;color:var(--text-faint);line-height:1.5;display:flex;flex-direction:column;gap:10px;}
+.sidebar-foot .who{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;}
+.sidebar-foot .who .me{display:flex;align-items:center;gap:6px;color:var(--text-muted);min-width:0;}
+.sidebar-foot .who .me strong{color:var(--text);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:130px;}
+.sidebar-foot .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);flex:none;}
+
+.main{flex:1;min-width:0;display:flex;flex-direction:column;}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:22px 32px;border-bottom:1px solid var(--border);background:var(--surface);}
+.topbar h1{font-size:23px;margin:0;font-weight:600;}
+.topbar .desc{color:var(--text-muted);font-size:13px;margin-top:3px;}
+.content{padding:26px 32px 60px;flex:1;}
+
+.btn{font:600 13px/1 'IBM Plex Sans',sans-serif;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:9px 14px;cursor:pointer;color:var(--text);}
+.btn:hover{border-color:var(--accent);}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;}
+.btn.primary:hover{background:var(--accent-strong);border-color:var(--accent-strong);}
+.btn.danger{color:var(--critical);border-color:var(--critical);}
+.btn.danger:hover{background:var(--critical-soft);}
+.btn.ghost{border-color:transparent;background:transparent;}
+.btn.ghost:hover{background:var(--surface-alt);border-color:transparent;}
+.btn:disabled{opacity:.5;cursor:not-allowed;}
+.btn.small{padding:5px 10px;font-size:12.5px;}
+
+.panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);margin-bottom:20px;}
+.table-wrap{overflow-x:auto;}
+table{width:100%;border-collapse:collapse;font-size:13px;}
+th,td{padding:10px 14px;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap;}
+th{font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-faint);font-weight:600;background:var(--surface-alt);position:sticky;top:0;}
+tbody tr:hover{background:var(--surface-alt);}
+.num-cell{font-family:'IBM Plex Mono',monospace;text-align:right;font-variant-numeric:tabular-nums;}
+.name-cell{max-width:340px;white-space:normal;}
+.tag-sheet{font-size:11px;color:var(--text-faint);font-family:'IBM Plex Mono',monospace;}
+.search-bar{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
+.search-bar input,.search-bar select{font:inherit;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:9px 11px;width:auto;min-width:170px;}
+.search-bar input[type=text]{flex:1;min-width:220px;}
+.empty-state{color:var(--text-faint);font-size:13px;padding:24px;text-align:center;}
+.footnote{font-size:12px;color:var(--text-faint);margin-top:6px;line-height:1.5;}
+
+.modal-overlay{position:fixed;inset:0;background:rgba(20,20,15,.45);display:flex;align-items:flex-start;justify-content:center;padding:36px 16px;overflow-y:auto;z-index:50;}
+#confirm-root .modal-overlay{z-index:200;align-items:center;}
+#confirm-root .modal{max-width:420px;}
+.modal{background:var(--surface);border-radius:14px;max-width:460px;width:100%;box-shadow:0 24px 60px -20px rgba(0,0,0,.4);border:1px solid var(--border);}
+.modal-head{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border);}
+.modal-head h2{margin:0;font-size:18px;}
+.modal-body{padding:20px 22px;max-height:70vh;overflow-y:auto;}
+.modal-foot{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:16px 22px;border-top:1px solid var(--border);}
+.close-x{background:none;border:none;font-size:18px;color:var(--text-faint);cursor:pointer;line-height:1;}
+.loading-screen{padding:60px;text-align:center;color:var(--text-faint);}
+.toast-err{color:var(--critical);font-size:13px;padding:16px;}
+</style>
+
+<div class="loginWrap" id="loginScreen">
+  <form class="loginCard" id="loginForm" novalidate>
+    <div>
+      <h1>Ficha <em style="color:var(--accent);font-style:normal;">Viva</em></h1>
+      <p class="lede">Entre com o email e senha cadastrados para acessar o sistema.</p>
+    </div>
+    <div class="field">
+      <label for="loginEmail">Email</label>
+      <input id="loginEmail" type="email" autocomplete="username" placeholder="voce@exemplo.com">
+    </div>
+    <div class="field" style="margin-bottom:0;">
+      <label for="loginPass">Senha</label>
+      <input id="loginPass" type="password" autocomplete="current-password" placeholder="••••••••">
+    </div>
+    <p class="loginErr" id="loginErr"></p>
+    <button type="submit" class="btn primary" id="loginBtn">Entrar</button>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <nav class="sidebar">
+    <div class="brand">
+      <div class="brand-text">
+        <div class="mark">Ficha <em>Viva</em></div>
+        <div class="sub">Grupo Villa Ramos</div>
+      </div>
+    </div>
+    <button class="nav-btn active" data-view="insumos"><span class="ico">&#9673;</span> Insumos</button>
+    <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9636;</span> Fichas técnicas</button>
+    <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9633;</span> Cardápio</button>
+    <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9737;</span> Contratos</button>
+    <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9650;</span> Vendas</button>
+    <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9881;</span> PCP / Expedição</button>
+    <div class="sidebar-foot">
+      <div>Cadastro único de custo dos insumos. Os demais módulos do Ficha Viva ainda serão migrados para cá.</div>
+      <div class="who">
+        <div class="me"><span class="dot"></span>Logado como <strong id="meEmail"></strong></div>
+        <button class="btn ghost small" id="logoutBtn">Sair</button>
+      </div>
+    </div>
+  </nav>
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <h1 id="page-title">Insumos</h1>
+        <div class="desc" id="page-desc">Cadastro único de custo</div>
+      </div>
+      <div id="topbar-actions"></div>
+    </div>
+    <div class="content" id="content">
+      <div class="loading-screen">Carregando insumos…</div>
+    </div>
+  </div>
+</div>
+
+<div id="modal-root"></div>
+<div id="confirm-root"></div>
+
+<p class="toast-err" id="bootErr" hidden>A biblioteca de conexão com o banco não carregou. Recarregue a página.</p>
+
+<script>
+const SUPABASE_URL = "https://brydbjqkatluhpfireko.supabase.co";
+const SUPABASE_KEY = "sb_publishable_gw7rYmfvCEMkPWKneEgesQ_l_8-yhOH";
+if (!window.supabase){
+  document.getElementById('bootErr').hidden = false;
+  throw new Error('supabase-js não carregou');
+}
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+/* ===================================================================== AUTH */
+const loginScreen = document.getElementById('loginScreen');
+const appEl = document.getElementById('app');
+const loginForm = document.getElementById('loginForm');
+const loginErr = document.getElementById('loginErr');
+const loginBtn = document.getElementById('loginBtn');
+const meEmailEl = document.getElementById('meEmail');
+
+let currentUser = null;
+
+async function showApp(user){
+  currentUser = user;
+  usuarioId = user.email;
+  meEmailEl.textContent = user.email;
+  loginScreen.hidden = true;
+  appEl.hidden = false;
+  await loadInsumos();
+  renderInsumos();
+}
+
+function showLogin(){
+  currentUser = null;
+  usuarioId = null;
+  appEl.hidden = true;
+  loginScreen.hidden = false;
+}
+
+loginForm.addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  loginErr.textContent = '';
+  const email = document.getElementById('loginEmail').value.trim();
+  const password = document.getElementById('loginPass').value;
+  if (!email || !password){ loginErr.textContent = 'Preencha email e senha.'; return; }
+  loginBtn.disabled = true;
+  loginBtn.textContent = 'Entrando…';
+  const { data, error } = await sb.auth.signInWithPassword({ email, password });
+  loginBtn.disabled = false;
+  loginBtn.textContent = 'Entrar';
+  if (error){ loginErr.textContent = 'Não foi possível entrar: ' + error.message; return; }
+  showApp(data.user);
+});
+
+document.getElementById('logoutBtn').addEventListener('click', async ()=>{
+  await sb.auth.signOut();
+  showLogin();
+});
+
+/* ===================================================================== HELPERS (portados do Ficha Viva) */
+let usuarioId = null;
+function carimbo(){ return {alterado_em: new Date().toISOString(), alterado_por: usuarioId || null}; }
+function hojeYMD(){
+  const d = new Date();
+  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+}
+function fmtDataYMD(ymd){
+  if(!ymd) return null;
+  const [y,m,d] = ymd.split("-");
+  return `${d}/${m}/${y}`;
+}
+function normalizeText(s){
+  return (s||"").toString().normalize("NFKD").replace(/[̀-ͯ]/g,"").toLowerCase();
+}
+function fmtMoney(n){
+  if(n === null || n === undefined || !isFinite(n)) return "—";
+  return "R$ " + n.toLocaleString("pt-BR",{minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function fmtNum(n, d=3){
+  if(n === null || n === undefined || !isFinite(n)) return "—";
+  return n.toLocaleString("pt-BR",{minimumFractionDigits:0, maximumFractionDigits:d});
+}
+function escapeHtml(s){
+  return (s===null||s===undefined) ? "" : s.toString().replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function ultimaAlteracaoTxt(d){
+  if(!d || !d.alterado_em) return "";
+  const t = new Date(d.alterado_em);
+  return `Última alteração: ${String(t.getDate()).padStart(2,"0")}/${String(t.getMonth()+1).padStart(2,"0")}/${t.getFullYear()} ${String(t.getHours()).padStart(2,"0")}:${String(t.getMinutes()).padStart(2,"0")}${d.alterado_por ? " · por "+escapeHtml(d.alterado_por) : ""}`;
+}
+function historicoPrecoCom(ins, novoUnit, novoKg, origem, data){
+  const h = Array.isArray(ins && ins.historico_precos) ? ins.historico_precos.slice() : [];
+  if(!h.length && ins && ins.custo_unitario != null) h.push({data: ins.custo_atualizado_em || null, custo_unitario: ins.custo_unitario, custo_kg_l_und: ins.custo_kg_l_und ?? null, origem: ins.custo_origem || "inicial"});
+  h.push({data: data || hojeYMD(), custo_unitario: novoUnit, custo_kg_l_und: novoKg, origem, por: usuarioId || null});
+  return h.slice(-24);
+}
+function historicoPrecoHtml(ins){
+  const h = Array.isArray(ins && ins.historico_precos) ? ins.historico_precos : [];
+  if(!h.length) return "";
+  return `<details class="footnote" style="margin-top:10px;"><summary style="cursor:pointer;">Histórico de preço (${h.length})</summary><table style="margin-top:6px;"><thead><tr><th>Data</th><th style="text-align:right;">Preço compra</th><th style="text-align:right;">Por kg/L/un</th><th>Origem</th></tr></thead><tbody>
+    ${h.slice().reverse().map(x => `<tr><td>${x.data ? escapeHtml(fmtDataYMD(x.data)) : "—"}</td><td class="num-cell">${fmtMoney(x.custo_unitario)}</td><td class="num-cell">${fmtMoney(x.custo_kg_l_und)}</td><td>${escapeHtml(x.origem || "")}</td></tr>`).join("")}</tbody></table></details>`;
+}
+const ORDEM_GRUPO_COMPRA_BASE = ["PROTEÍNAS","BASE","GUARNIÇÕES E MERCADO","SALADAS E HORTIFRÚTIS","PADARIA","SOBREMESAS E SUCOS","EMBALAGENS","REVENDA"];
+function blocosCadastro(){
+  const extras = [...new Set([...insumos.values()].map(d => d.grupo_compra).filter(g => g && !ORDEM_GRUPO_COMPRA_BASE.includes(g)))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
+  return [...ORDEM_GRUPO_COMPRA_BASE, ...extras];
+}
+function confirmDialog(message){
+  return new Promise(resolve => {
+    const root = document.getElementById("confirm-root");
+    root.innerHTML = `
+      <div class="modal-overlay" id="cf-ov">
+        <div class="modal">
+          <div class="modal-body" style="padding-top:22px;">
+            <p style="margin:0; font-size:14px; line-height:1.5;">${escapeHtml(message)}</p>
+          </div>
+          <div class="modal-foot">
+            <button class="btn ghost" id="cf-cancel">Cancelar</button>
+            <button class="btn danger" id="cf-ok">Confirmar</button>
+          </div>
+        </div>
+      </div>`;
+    const cleanup = (val) => { root.innerHTML = ""; resolve(val); };
+    document.getElementById("cf-cancel").onclick = () => cleanup(false);
+    document.getElementById("cf-ok").onclick = () => cleanup(true);
+    document.getElementById("cf-ov").addEventListener("click", e => { if(e.target.id==="cf-ov") cleanup(false); });
+  });
+}
+function showAlert(message){
+  const root = document.getElementById("confirm-root");
+  root.innerHTML = `
+    <div class="modal-overlay" id="al-ov">
+      <div class="modal">
+        <div class="modal-body" style="padding-top:22px;">
+          <p style="margin:0; font-size:14px; line-height:1.5; color:var(--critical);">${escapeHtml(message)}</p>
+        </div>
+        <div class="modal-foot" style="justify-content:flex-end;">
+          <button class="btn primary" id="al-ok">OK</button>
+        </div>
+      </div>
+    </div>`;
+  const close = () => { root.innerHTML = ""; };
+  document.getElementById("al-ok").onclick = close;
+  document.getElementById("al-ov").addEventListener("click", e => { if(e.target.id==="al-ov") close(); });
+}
+
+/* ===================================================================== DADOS */
+let insumos = new Map(); // id -> {nome, unidade_medida, unidade_convertida, custo_unitario, custo_kg_l_und, grupo_compra, ...}
+
+async function loadInsumos(){
+  const { data, error } = await sb.from('insumos').select('*').order('nome');
+  insumos = new Map();
+  if (error){ showAlert('Erro ao carregar insumos: ' + error.message); return; }
+  (data || []).forEach(row => {
+    const { id, ...rest } = row;
+    insumos.set(id, rest);
+  });
+}
+
+/* ===================================================================== INSUMOS (portado do Ficha Viva) */
+let insumoFilter = "";
+let insumoGrupoFilter = "";
+let insumoSort = {field:"nome", dir:"asc"};
+
+function renderInsumos(){
+  document.getElementById("page-title").textContent = "Insumos";
+  document.getElementById("page-desc").textContent = "Cadastro único de custo — toda ficha vai ler daqui, ninguém digita custo na ficha";
+  document.getElementById("topbar-actions").innerHTML = `<button class="btn primary" id="btn-novo-insumo">+ Novo insumo</button>`;
+  document.getElementById("btn-novo-insumo").addEventListener("click", () => openInsumoModal(null));
+
+  const grupos = [...new Set([...insumos.values()].map(d=>d.grupo_compra).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
+
+  const content = document.getElementById("content");
+  content.innerHTML = `
+    <div class="search-bar">
+      <input type="text" id="insumo-search" placeholder="Buscar insumo…" value="${escapeHtml(insumoFilter)}">
+      <select id="insumo-grupo"><option value="">Todos os grupos de compra</option>${grupos.map(g=>`<option value="${escapeHtml(g)}" ${insumoGrupoFilter===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}</select>
+      <span class="footnote" id="insumo-count" style="align-self:center;"></span>
+    </div>
+    <div class="panel">
+      <div class="table-wrap">
+        <table>
+          <thead><tr id="insumo-thead-row">
+            <th class="sortable" data-field="nome" style="cursor:pointer;">Ingrediente</th>
+            <th class="sortable" data-field="grupo_compra" style="cursor:pointer;">Grupo de compra</th>
+            <th style="text-align:right;">Unid. compra</th>
+            <th class="sortable" data-field="custo_unitario" style="cursor:pointer; text-align:right;">Custo de compra</th>
+            <th class="sortable" data-field="custo_kg_l_und" style="cursor:pointer; text-align:right;">Custo kg/L/un (usado nas fichas)</th>
+            <th></th>
+          </tr></thead>
+          <tbody id="insumo-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  function updateInsumoTable(){
+    let rows = [...insumos.entries()].map(([id,d]) => ({id, ...d}));
+    if(insumoGrupoFilter) rows = rows.filter(r => r.grupo_compra === insumoGrupoFilter);
+    if(insumoFilter){
+      const nf = normalizeText(insumoFilter);
+      rows = rows.filter(r => normalizeText(r.nome).includes(nf));
+    }
+    rows.sort((a,b) => {
+      let av = a[insumoSort.field], bv = b[insumoSort.field];
+      if(typeof av === "string") { av = normalizeText(av); bv = normalizeText(bv); }
+      if(av === null || av === undefined) av = "";
+      if(bv === null || bv === undefined) bv = "";
+      let cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      return insumoSort.dir === "asc" ? cmp : -cmp;
+    });
+
+    document.getElementById("insumo-count").textContent = `${rows.length} de ${insumos.size} insumos`;
+    const tbody = document.getElementById("insumo-tbody");
+    tbody.innerHTML = rows.map(r => `
+              <tr>
+                <td class="name-cell">${escapeHtml(r.nome)}</td>
+                <td class="tag-sheet">${escapeHtml(r.grupo_compra||"—")}</td>
+                <td class="num-cell">${escapeHtml(r.unidade_medida||"—")} ${r.unidade_convertida?("· "+fmtNum(r.unidade_convertida,3)):""}</td>
+                <td class="num-cell">${fmtMoney(r.custo_unitario)}${r.custo_atualizado_em ? `<div class="footnote" style="margin:2px 0 0; text-align:right;" title="${r.custo_anterior != null ? "preço anterior: " + fmtMoney(r.custo_anterior) : ""}">pedido de ${fmtDataYMD(r.custo_atualizado_em)}</div>` : ""}</td>
+                <td class="num-cell">${fmtMoney(r.custo_kg_l_und)}</td>
+                <td style="text-align:right; white-space:nowrap;">
+                  <button class="btn small ghost" data-edit="${r.id}">editar</button>
+                  <button class="btn small ghost" data-del="${r.id}" style="color:var(--critical);">excluir</button>
+                </td>
+              </tr>`).join("") || `<tr><td colspan="6" class="empty-state">Nenhum insumo encontrado.</td></tr>`;
+    tbody.querySelectorAll("[data-edit]").forEach(b => b.addEventListener("click", () => openInsumoModal(b.dataset.edit)));
+    tbody.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", () => deleteInsumo(b.dataset.del)));
+
+    content.querySelectorAll("#insumo-thead-row th.sortable").forEach(th => {
+      th.textContent = th.textContent.replace(/ [↑↓]$/, "") + (insumoSort.field===th.dataset.field ? (insumoSort.dir==="asc"?" ↑":" ↓") : "");
+    });
+  }
+
+  updateInsumoTable();
+  document.getElementById("insumo-search").addEventListener("input", e => { insumoFilter = e.target.value; updateInsumoTable(); });
+  document.getElementById("insumo-grupo").addEventListener("change", e => { insumoGrupoFilter = e.target.value; updateInsumoTable(); });
+  content.querySelectorAll("#insumo-thead-row th.sortable").forEach(th => th.addEventListener("click", () => {
+    const f = th.dataset.field;
+    if(insumoSort.field === f) insumoSort.dir = insumoSort.dir === "asc" ? "desc" : "asc";
+    else insumoSort = {field:f, dir:"asc"};
+    updateInsumoTable();
+  }));
+}
+
+function openInsumoModal(id){
+  const existing = id ? insumos.get(id) : null;
+  const root = document.getElementById("modal-root");
+  root.innerHTML = `
+    <div class="modal-overlay" id="ov">
+      <div class="modal" style="max-width:460px;">
+        <div class="modal-head"><h2>${existing?"Editar insumo":"Novo insumo"}</h2><button class="close-x" id="close-m">&times;</button></div>
+        <div class="modal-body">
+          <div class="field"><label>Nome do ingrediente</label><input type="text" id="f-nome" value="${escapeHtml(existing?existing.nome:"")}" placeholder="Ex.: FILÉ DE FRANGO A MILANESA"></div>
+          <div class="field-row">
+            <div class="field"><label>Unidade de compra</label><input type="text" id="f-unid" value="${escapeHtml(existing?existing.unidade_medida||"":"")}" placeholder="KG, UNI, LT…"></div>
+            <div class="field"><label>Unid. convertida (fator p/ kg/L/un)</label><input type="number" step="0.0001" id="f-conv" value="${existing&&existing.unidade_convertida!==null&&existing.unidade_convertida!==undefined?existing.unidade_convertida:1}"></div>
+          </div>
+          <div class="field"><label>Custo de compra (R$ por unidade de compra)</label><input type="number" step="0.0001" id="f-custo" value="${existing&&existing.custo_unitario!==null&&existing.custo_unitario!==undefined?existing.custo_unitario:""}"></div>
+          <div class="field"><label for="f-grupo">Bloco de compra</label>
+            <select id="f-grupo">
+              <option value="">— sem bloco —</option>
+              ${blocosCadastro().map(b => `<option value="${escapeHtml(b)}" ${(existing && existing.grupo_compra===b)?"selected":""}>${escapeHtml(b)}</option>`).join("")}
+              <option value="__novo__">＋ Criar novo bloco…</option>
+            </select>
+            <input type="text" id="f-grupo-novo" hidden placeholder="Nome do novo bloco (ex.: CONGELADOS)" style="margin-top:6px;">
+          </div>
+          <div class="footnote">Custo por kg/L/un (usado no cálculo das fichas): <strong id="f-preview">—</strong> &nbsp;=&nbsp; custo de compra ÷ unid. convertida</div>
+          ${existing ? historicoPrecoHtml(existing) : ""}
+          ${existing ? `<div class="footnote" id="f-autor" style="margin-top:6px;">${ultimaAlteracaoTxt(existing)}</div>` : ""}
+          <div class="footnote" id="err-msg" style="color:var(--critical); margin-top:10px;"></div>
+        </div>
+        <div class="modal-foot">
+          <span class="footnote">O nome precisa ser único — é a chave usada nas fichas.</span>
+          <button class="btn primary" id="save-m">Salvar</button>
+        </div>
+      </div>
+    </div>`;
+  const updatePreview = () => {
+    const custo = parseFloat(document.getElementById("f-custo").value);
+    const conv = parseFloat(document.getElementById("f-conv").value);
+    const val = (!isNaN(custo) && conv > 0) ? custo/conv : null;
+    document.getElementById("f-preview").textContent = val!==null ? fmtMoney(val) : "—";
+  };
+  document.getElementById("f-custo").addEventListener("input", updatePreview);
+  document.getElementById("f-conv").addEventListener("input", updatePreview);
+  document.getElementById("f-grupo").addEventListener("change", e => {
+    const novo = document.getElementById("f-grupo-novo");
+    novo.hidden = e.target.value !== "__novo__";
+    if(!novo.hidden) novo.focus();
+  });
+  updatePreview();
+  document.getElementById("close-m").onclick = () => root.innerHTML = "";
+  document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
+  document.getElementById("save-m").onclick = async () => {
+    const nome = document.getElementById("f-nome").value.trim();
+    const unidade_medida = document.getElementById("f-unid").value.trim();
+    const unidade_convertida = parseFloat(document.getElementById("f-conv").value);
+    const custo_unitario = parseFloat(document.getElementById("f-custo").value);
+    let grupo_compra = document.getElementById("f-grupo").value.trim();
+    if(grupo_compra === "__novo__") grupo_compra = document.getElementById("f-grupo-novo").value.trim().replace(/\s+/g," ").toUpperCase();
+    const errEl = document.getElementById("err-msg");
+    if(!nome){ errEl.textContent = "Informe um nome."; return; }
+    if(document.getElementById("f-grupo").value === "__novo__" && !grupo_compra){ errEl.textContent = "Digite o nome do novo bloco ou escolha um da lista."; return; }
+    if(isNaN(custo_unitario) || custo_unitario < 0){ errEl.textContent = "Informe um custo de compra válido."; return; }
+    if(isNaN(unidade_convertida) || unidade_convertida <= 0){ errEl.textContent = "Informe uma unidade convertida maior que zero."; return; }
+    const dupe = [...insumos.entries()].find(([iid,d]) => iid !== id && normalizeText(d.nome) === normalizeText(nome));
+    if(dupe){ errEl.textContent = `Já existe um insumo com esse nome: "${dupe[1].nome}".`; return; }
+    const data = {
+      nome, unidade_medida, unidade_convertida, custo_unitario,
+      custo_kg_l_und: custo_unitario / unidade_convertida,
+      grupo_compra: grupo_compra || null
+    };
+    const antes = id ? insumos.get(id) : null;
+    if(antes && antes.custo_unitario !== custo_unitario){
+      data.custo_anterior = antes.custo_unitario != null ? antes.custo_unitario : null;
+      data.custo_atualizado_em = null;
+      data.custo_origem = null;
+      data.historico_precos = historicoPrecoCom(antes, custo_unitario, data.custo_kg_l_und, "cadastro", hojeYMD());
+    }
+    Object.assign(data, carimbo());
+    errEl.textContent = "Salvando…";
+    try{
+      let error;
+      if(id){ ({error} = await sb.from('insumos').update(data).eq('id', id)); }
+      else{ ({error} = await sb.from('insumos').insert(data)); }
+      if(error) throw error;
+      await loadInsumos();
+      root.innerHTML = "";
+      renderInsumos();
+    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+  };
+}
+
+async function deleteInsumo(id){
+  const ing = insumos.get(id);
+  if(!ing) return;
+  const msg = `Excluir "${ing.nome}"? Os demais módulos do Ficha Viva (fichas técnicas, cardápio) ainda não foram migrados para cá, então não há como checar automaticamente se este insumo está em uso em outro lugar — confirme com cuidado.`;
+  if(!(await confirmDialog(msg))) return;
+  try{
+    const { error } = await sb.from('insumos').delete().eq('id', id);
+    if(error) throw error;
+    await loadInsumos();
+    renderInsumos();
+  }catch(e){ showAlert("Erro ao excluir: "+(e.message||e.code||e)); }
+}
+
+/* ===================================================================== INIT */
+(async function init(){
+  const { data } = await sb.auth.getSession();
+  if (data.session && data.session.user){
+    showApp(data.session.user);
+  } else {
+    showLogin();
+  }
+})();
+</script>
+
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
