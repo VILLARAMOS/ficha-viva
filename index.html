@@ -4,7 +4,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <style>
-/* layout: banner de status no topo, lista de insumos editável em cartões, formulário de novo insumo ao final */
+/* layout: tela de login centralizada; depois do login, banner de status, lista de insumos editável em cartões, formulário de novo insumo ao final */
 :root{
   --bg:#F7F5F0; --surface:#FFFFFF; --border:#DDD7CC;
   --fg:#1F2420; --muted:#6B7268; --accent:#1F6F5C; --accent-fg:#F7F5F0;
@@ -35,8 +35,10 @@ h1{font-family:'Fraunces',serif;font-weight:600;font-size:1.5rem;margin:0;text-w
 .stat div{display:flex;flex-direction:column;gap:2px;min-width:110px}
 .stat .n{font-family:'IBM Plex Mono',monospace;font-variant-numeric:tabular-nums;font-size:1.6rem;font-weight:600}
 .stat .l{font-size:.72rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
-.who{display:flex;gap:8px;align-items:center;font-size:.85rem;color:var(--muted)}
-.who input{font:inherit;color:var(--fg);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 10px;min-width:0;flex:1}
+.who{display:flex;gap:8px;align-items:center;font-size:.85rem;color:var(--muted);justify-content:space-between;flex-wrap:wrap}
+.who .me{display:flex;align-items:center;gap:8px}
+.who .dot{width:8px;height:8px;border-radius:50%;background:var(--good)}
+.btn-ghost{background:transparent;color:var(--muted);border:1px solid var(--border)!important;padding:6px 10px!important;font-size:.78rem!important}
 .list{display:flex;flex-direction:column;gap:10px}
 .card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:12px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .card .nome{font-weight:500;flex:1;min-width:120px}
@@ -55,9 +57,41 @@ button{font:600 .85rem/1 'IBM Plex Sans',sans-serif;border:none;border-radius:8p
 .add button{background:var(--fg);color:var(--bg)}
 .empty,.err{color:var(--muted);font-size:.85rem;padding:8px 2px}
 .err{color:var(--bad)}
+
+/* tela de login */
+.loginWrap{min-height:70vh;display:flex;align-items:center;justify-content:center}
+.loginCard{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:32px 28px;width:100%;max-width:360px;display:flex;flex-direction:column;gap:14px}
+.loginCard h1{font-size:1.3rem}
+.loginCard .lede{margin-bottom:6px}
+.field{display:flex;flex-direction:column;gap:4px}
+.field label{font-size:.78rem;color:var(--muted)}
+.field input{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 12px}
+.btn-entrar{background:var(--accent);color:var(--accent-fg);padding:11px 14px;margin-top:4px}
+.btn-entrar:disabled{opacity:.55;cursor:default}
+.loginErr{color:var(--bad);font-size:.82rem;min-height:1.2em}
+[hidden]{display:none!important}
 </style>
 
-<div class="wrap">
+<div class="wrap loginWrap" id="loginScreen">
+  <form class="loginCard" id="loginForm" novalidate>
+    <div>
+      <h1>Protótipo Ficha Viva</h1>
+      <p class="lede">Entre com o email e senha cadastrados para acessar os dados de teste.</p>
+    </div>
+    <div class="field">
+      <label for="loginEmail">Email</label>
+      <input id="loginEmail" type="email" autocomplete="username" placeholder="voce@exemplo.com">
+    </div>
+    <div class="field">
+      <label for="loginPass">Senha</label>
+      <input id="loginPass" type="password" autocomplete="current-password" placeholder="••••••••">
+    </div>
+    <p class="loginErr" id="loginErr"></p>
+    <button type="submit" class="btn-entrar" id="loginBtn">Entrar</button>
+  </form>
+</div>
+
+<div class="wrap" id="appScreen" hidden>
   <div>
     <h1>Protótipo — Insumos</h1>
     <p class="lede">Teste de velocidade e permissão de escrita, ligado direto ao banco Supabase do Ficha Viva.</p>
@@ -72,8 +106,8 @@ button{font:600 .85rem/1 'IBM Plex Sans',sans-serif;border:none;border-radius:8p
   </div>
 
   <div class="who">
-    Testando como:
-    <input id="who" placeholder="seu nome" maxlength="40">
+    <div class="me"><span class="dot"></span>Logado como <strong id="meEmail"></strong></div>
+    <button class="btn-ghost" id="logoutBtn">Sair</button>
   </div>
 
   <div class="list" id="list">
@@ -87,8 +121,9 @@ button{font:600 .85rem/1 'IBM Plex Sans',sans-serif;border:none;border-radius:8p
     <button type="submit">+ Adicionar</button>
   </form>
   <p class="err" id="addErr" hidden></p>
-  <p class="err" id="bootErr" hidden>A biblioteca de conexão com o banco não carregou. Recarregue a página.</p>
 </div>
+
+<p class="err" id="bootErr" hidden style="max-width:640px;margin:28px auto;padding-inline:16px">A biblioteca de conexão com o banco não carregou. Recarregue a página.</p>
 
 <script>
 const SUPABASE_URL = "https://brydbjqkatluhpfireko.supabase.co";
@@ -99,10 +134,55 @@ if (!window.supabase){
 }
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
+const loginScreen = document.getElementById('loginScreen');
+const appScreen = document.getElementById('appScreen');
+const loginForm = document.getElementById('loginForm');
+const loginErr = document.getElementById('loginErr');
+const loginBtn = document.getElementById('loginBtn');
+const meEmailEl = document.getElementById('meEmail');
 const listEl = document.getElementById('list');
-const whoEl = document.getElementById('who');
-try{ whoEl.value = localStorage.getItem('fv_who') || ''; }catch(e){}
-whoEl.addEventListener('input', ()=>{ try{ localStorage.setItem('fv_who', whoEl.value); }catch(e){} });
+
+let currentUser = null;
+
+async function showApp(user){
+  currentUser = user;
+  meEmailEl.textContent = user.email;
+  loginScreen.hidden = true;
+  appScreen.hidden = false;
+  load();
+}
+
+function showLogin(){
+  currentUser = null;
+  appScreen.hidden = true;
+  loginScreen.hidden = false;
+}
+
+loginForm.addEventListener('submit', async (e)=>{
+  e.preventDefault();
+  loginErr.textContent = '';
+  const email = document.getElementById('loginEmail').value.trim();
+  const password = document.getElementById('loginPass').value;
+  if (!email || !password){
+    loginErr.textContent = 'Preencha email e senha.';
+    return;
+  }
+  loginBtn.disabled = true;
+  loginBtn.textContent = 'Entrando…';
+  const { data, error } = await sb.auth.signInWithPassword({ email, password });
+  loginBtn.disabled = false;
+  loginBtn.textContent = 'Entrar';
+  if (error){
+    loginErr.textContent = 'Não foi possível entrar: ' + error.message;
+    return;
+  }
+  showApp(data.user);
+});
+
+document.getElementById('logoutBtn').addEventListener('click', async ()=>{
+  await sb.auth.signOut();
+  showLogin();
+});
 
 let times = [];
 function recordTiming(ms){
@@ -134,7 +214,7 @@ function renderRow(row){
       .update({
         custo: parseFloat(input.value),
         atualizado_em: new Date().toISOString(),
-        atualizado_por: whoEl.value || null
+        atualizado_por: currentUser ? currentUser.email : null
       })
       .eq('id', row.id);
     const ms = performance.now() - t0;
@@ -187,7 +267,7 @@ document.getElementById('addForm').addEventListener('submit', async (e)=>{
   const t0 = performance.now();
   const { error } = await sb.from('insumos_teste').insert({
     nome, unidade, custo,
-    atualizado_por: whoEl.value || null
+    atualizado_por: currentUser ? currentUser.email : null
   });
   const ms = performance.now() - t0;
   if (error){
@@ -203,5 +283,12 @@ document.getElementById('addForm').addEventListener('submit', async (e)=>{
   load();
 });
 
-load();
+(async function init(){
+  const { data } = await sb.auth.getSession();
+  if (data.session && data.session.user){
+    showApp(data.session.user);
+  } else {
+    showLogin();
+  }
+})();
 </script>
