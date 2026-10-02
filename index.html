@@ -110,6 +110,27 @@ tbody tr:hover{background:var(--surface-alt);}
 .close-x{background:none;border:none;font-size:18px;color:var(--text-faint);cursor:pointer;line-height:1;}
 .loading-screen{padding:60px;text-align:center;color:var(--text-faint);}
 .toast-err{color:var(--critical);font-size:13px;padding:16px;}
+
+/* ---------- fichas técnicas: editor de ingredientes ---------- */
+.chip{display:inline-flex; align-items:center; gap:5px; padding:3px 9px; border-radius:100px; font-size:11.5px; font-weight:600; letter-spacing:.02em;}
+.chip.critical{background:var(--critical-soft); color:var(--critical);}
+.chip.neutral{background:var(--surface-alt); color:var(--text-muted);}
+.panel-body{padding:16px 20px;}
+.ing-line{display:grid; grid-template-columns:2fr .95fr .85fr .85fr .9fr auto; gap:8px; align-items:end; margin-bottom:8px; padding-bottom:8px; border-bottom:1px dashed var(--border);}
+.ing-line .microlabel{font-size:10.5px; color:var(--text-faint); margin-bottom:3px;}
+.ing-line-missing{outline:1.5px solid var(--critical); border-radius:8px;}
+.ing-line .ing-ckg{padding:8px 0; color:var(--text-muted); white-space:nowrap;}
+.ing-line .ing-aviso{font-size:10.5px; color:var(--critical); margin-top:3px;}
+.autocomplete{position:relative;}
+.autocomplete .options{position:absolute; top:100%; left:0; right:0; background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow); max-height:180px; overflow-y:auto; z-index:10; margin-top:2px;}
+.autocomplete .options div{padding:7px 10px; font-size:13px; cursor:pointer;}
+.autocomplete .options div:hover{background:var(--accent-soft);}
+.two-col-num{display:flex; gap:26px; flex-wrap:wrap;}
+.stat-block .label{font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-faint);}
+.stat-block .val{font-size:19px; font-weight:600; font-family:'IBM Plex Mono',monospace;}
+.stat-block .val.small{font-size:14px; font-weight:500; color:var(--text-muted);}
+textarea{font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 11px;width:100%;}
+@media (max-width:720px){ .ing-line{grid-template-columns:1fr 1fr;} .ing-line .autocomplete{grid-column:1 / -1;} }
 </style>
 
 <div class="loginWrap" id="loginScreen">
@@ -140,7 +161,7 @@ tbody tr:hover{background:var(--surface-alt);}
       </div>
     </div>
     <button class="nav-btn active" data-view="insumos"><span class="ico">&#9673;</span> Insumos</button>
-    <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9636;</span> Fichas técnicas</button>
+    <button class="nav-btn" data-view="fichas"><span class="ico">&#9636;</span> Fichas técnicas</button>
     <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9633;</span> Cardápio</button>
     <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9737;</span> Contratos</button>
     <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9650;</span> Vendas</button>
@@ -193,6 +214,21 @@ const loginBtn = document.getElementById('loginBtn');
 const meEmailEl = document.getElementById('meEmail');
 
 let currentUser = null;
+let currentView = "insumos";
+
+const VIEWS = {
+  insumos: renderInsumos,
+  fichas: () => renderFichas(),
+};
+
+function goToView(view){
+  if(!VIEWS[view]) return;
+  currentView = view;
+  document.querySelectorAll(".nav-btn[data-view]").forEach(b => b.classList.toggle("active", b.dataset.view === view));
+  VIEWS[view]();
+}
+
+document.querySelectorAll(".nav-btn[data-view]").forEach(b => b.addEventListener("click", () => goToView(b.dataset.view)));
 
 async function showApp(user){
   currentUser = user;
@@ -200,8 +236,8 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await loadInsumos();
-  renderInsumos();
+  await Promise.all([loadInsumos(), loadFichas()]);
+  goToView(currentView);
 }
 
 function showLogin(){
@@ -253,6 +289,10 @@ function fmtMoney(n){
 function fmtNum(n, d=3){
   if(n === null || n === undefined || !isFinite(n)) return "—";
   return n.toLocaleString("pt-BR",{minimumFractionDigits:0, maximumFractionDigits:d});
+}
+function fmtPct(n){
+  if(n === null || n === undefined || !isFinite(n)) return "—";
+  return (n*100).toLocaleString("pt-BR",{minimumFractionDigits:1, maximumFractionDigits:1}) + "%";
 }
 function escapeHtml(s){
   return (s===null||s===undefined) ? "" : s.toString().replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -320,6 +360,8 @@ function showAlert(message){
 
 /* ===================================================================== DADOS */
 let insumos = new Map(); // id -> {nome, unidade_medida, unidade_convertida, custo_unitario, custo_kg_l_und, grupo_compra, ...}
+let fichas = new Map(); // id -> {nome, grupo, rendimento_kg, rendimento_und, preco_venda, ingredientes:[{insumo_id|ficha_id, nome, peso_bruto, peso_liquido, fator_correcao}], vendavel, disponivel_como_insumo, servido_por_unidade, modo_preparo}
+let _cacheFicha = new Map();
 
 async function loadInsumos(){
   const { data, error } = await sb.from('insumos').select('*').order('nome');
@@ -328,6 +370,17 @@ async function loadInsumos(){
   (data || []).forEach(row => {
     const { id, ...rest } = row;
     insumos.set(id, rest);
+  });
+}
+
+async function loadFichas(){
+  const { data, error } = await sb.from('fichas').select('*').order('nome');
+  fichas = new Map();
+  _cacheFicha = new Map();
+  if (error){ showAlert('Erro ao carregar fichas técnicas: ' + error.message); return; }
+  (data || []).forEach(row => {
+    const { id, ...rest } = row;
+    fichas.set(id, rest);
   });
 }
 
@@ -341,6 +394,9 @@ function renderInsumos(){
   document.getElementById("page-desc").textContent = "Cadastro único de custo — toda ficha vai ler daqui, ninguém digita custo na ficha";
   document.getElementById("topbar-actions").innerHTML = `<button class="btn primary" id="btn-novo-insumo">+ Novo insumo</button>`;
   document.getElementById("btn-novo-insumo").addEventListener("click", () => openInsumoModal(null));
+
+  const usage = new Map();
+  fichas.forEach(f => (f.ingredientes||[]).forEach(l => { if(l.insumo_id) usage.set(l.insumo_id, (usage.get(l.insumo_id)||0)+1); }));
 
   const grupos = [...new Set([...insumos.values()].map(d=>d.grupo_compra).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
 
@@ -360,6 +416,7 @@ function renderInsumos(){
             <th style="text-align:right;">Unid. compra</th>
             <th class="sortable" data-field="custo_unitario" style="cursor:pointer; text-align:right;">Custo de compra</th>
             <th class="sortable" data-field="custo_kg_l_und" style="cursor:pointer; text-align:right;">Custo kg/L/un (usado nas fichas)</th>
+            <th style="text-align:right;">Usado em</th>
             <th></th>
           </tr></thead>
           <tbody id="insumo-tbody"></tbody>
@@ -393,11 +450,12 @@ function renderInsumos(){
                 <td class="num-cell">${escapeHtml(r.unidade_medida||"—")} ${r.unidade_convertida?("· "+fmtNum(r.unidade_convertida,3)):""}</td>
                 <td class="num-cell">${fmtMoney(r.custo_unitario)}${r.custo_atualizado_em ? `<div class="footnote" style="margin:2px 0 0; text-align:right;" title="${r.custo_anterior != null ? "preço anterior: " + fmtMoney(r.custo_anterior) : ""}">pedido de ${fmtDataYMD(r.custo_atualizado_em)}</div>` : ""}</td>
                 <td class="num-cell">${fmtMoney(r.custo_kg_l_und)}</td>
+                <td class="num-cell">${usage.get(r.id)||0} ficha(s)</td>
                 <td style="text-align:right; white-space:nowrap;">
                   <button class="btn small ghost" data-edit="${r.id}">editar</button>
                   <button class="btn small ghost" data-del="${r.id}" style="color:var(--critical);">excluir</button>
                 </td>
-              </tr>`).join("") || `<tr><td colspan="6" class="empty-state">Nenhum insumo encontrado.</td></tr>`;
+              </tr>`).join("") || `<tr><td colspan="7" class="empty-state">Nenhum insumo encontrado.</td></tr>`;
     tbody.querySelectorAll("[data-edit]").forEach(b => b.addEventListener("click", () => openInsumoModal(b.dataset.edit)));
     tbody.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", () => deleteInsumo(b.dataset.del)));
 
@@ -506,17 +564,426 @@ function openInsumoModal(id){
   };
 }
 
+function usoDoInsumo(id){
+  const out = [];
+  const nF = [...fichas.values()].filter(f => (f.ingredientes||[]).some(l => l.insumo_id === id)).length;
+  if(nF) out.push(`${nF} ficha(s) técnica(s)`);
+  return out;
+}
+
 async function deleteInsumo(id){
   const ing = insumos.get(id);
   if(!ing) return;
-  const msg = `Excluir "${ing.nome}"? Os demais módulos do Ficha Viva (fichas técnicas, cardápio) ainda não foram migrados para cá, então não há como checar automaticamente se este insumo está em uso em outro lugar — confirme com cuidado.`;
-  if(!(await confirmDialog(msg))) return;
+  // insumo em uso não pode ser excluído — o custo das fichas que o usam cairia pra zero sem aviso.
+  const uso = usoDoInsumo(id);
+  if(uso.length){ showAlert(`"${ing.nome}" não pode ser excluído: está em uso em ${uso.join(", ")}. Troque por outro insumo nessas fichas antes de excluir.`); return; }
+  if(!(await confirmDialog(`Excluir "${ing.nome}"?`))) return;
   try{
     const { error } = await sb.from('insumos').delete().eq('id', id);
     if(error) throw error;
     await loadInsumos();
     renderInsumos();
   }catch(e){ showAlert("Erro ao excluir: "+(e.message||e.code||e)); }
+}
+
+/* ===================================================================== MOTOR DE CUSTO (portado do Ficha Viva) */
+function computeFicha(f, selfId, visiting){
+  if(selfId && (!visiting || !visiting.size) && fichas.get(selfId) === f){
+    const c = _cacheFicha.get(selfId);
+    if(c) return c;
+    const r = _computeFicha(f, selfId, visiting);
+    _cacheFicha.set(selfId, r);
+    return r;
+  }
+  return _computeFicha(f, selfId, visiting);
+}
+function _computeFicha(f, selfId, visiting){
+  selfId = selfId || null;
+  visiting = visiting ? new Set(visiting) : new Set();
+  if(selfId) visiting.add(selfId);
+  let custoTotal = 0;
+  let temCiclo = false;
+  const lines = (f.ingredientes||[]).map(l => {
+    let custoUnitario = 0, encontrado = false, ciclo = false;
+    if(l.ficha_id){
+      if(visiting.has(l.ficha_id)){
+        ciclo = true; temCiclo = true;
+      } else {
+        const refFicha = fichas.get(l.ficha_id);
+        if(refFicha){
+          encontrado = true;
+          const sub = computeFicha(refFicha, l.ficha_id, visiting);
+          if(sub.temCiclo) temCiclo = true;
+          custoUnitario = sub.custoKg ?? 0;
+        }
+      }
+    } else if(l.insumo_id){
+      const ing = insumos.get(l.insumo_id);
+      encontrado = !!ing;
+      custoUnitario = ing ? (ing.custo_kg_l_und ?? 0) : 0;
+    }
+    const custoLinha = ciclo ? 0 : custoUnitario * (l.peso_bruto||0);
+    if(!ciclo) custoTotal += custoLinha;
+    const fator = (l.peso_liquido && l.peso_liquido > 0) ? (l.peso_bruto||0) / l.peso_liquido : (l.fator_correcao ?? null);
+    return {...l, custo_kg_l_und: custoUnitario, custo_linha: custoLinha, fator_correcao: fator, encontrado: encontrado || ciclo, ciclo};
+  });
+  const custoKg = f.rendimento_kg > 0 ? custoTotal / f.rendimento_kg : null;
+  const custoUnd = f.rendimento_und > 0 ? custoTotal / f.rendimento_und : null;
+  const temPreco = f.preco_venda !== null && f.preco_venda !== undefined && f.preco_venda > 0;
+  const cmvKg = (custoKg !== null && temPreco) ? custoKg / f.preco_venda : null;
+  const cmvUnd = (custoUnd !== null && temPreco) ? custoUnd / f.preco_venda : null;
+  return {lines, custoTotal, custoKg, custoUnd, cmvKg, cmvUnd, temCiclo};
+}
+// unidade em que o custo do insumo está expresso (custo_kg_l_und = custo_unitario / unidade_convertida):
+// KG/G → por kg; LT/GL/ML → por litro; o resto (UNI, UND, PC, CX, MAÇO…) → por unidade.
+function unidadeCustoInsumo(ins){
+  const u = normalizeText(String((ins && ins.unidade_medida) || "")).toUpperCase();
+  if(u === "KG" || u === "G" || u === "GR") return "kg";
+  if(u === "LT" || u === "L" || u === "GL" || u === "ML") return "L";
+  return "un";
+}
+function fichaServidaPorUnidade(f){ return !!(f && f.servido_por_unidade === true); }
+// busca por nome com ranking — todas as palavras digitadas precisam aparecer (em qualquer ordem, sem acento);
+// nome exato > começa com o texto > alguma palavra começa com o texto > contém.
+function buscarPorNome(entries, texto, limite){
+  const nf = normalizeText(texto).trim().replace(/\s+/g, " ");
+  if(!nf) return [];
+  const toks = nf.split(" ");
+  const out = [];
+  for(const e of entries){
+    const n = normalizeText(e[1].nome || "").trim().replace(/\s+/g, " ");
+    if(!toks.every(t => n.includes(t))) continue;
+    const score = n === nf ? 0 : n.startsWith(nf) ? 1 : (" " + n).includes(" " + nf) ? 2 : n.includes(nf) ? 3 : 4;
+    out.push([score, n, e]);
+  }
+  out.sort((a,b) => a[0] - b[0] || a[1].localeCompare(b[1]));
+  return out.slice(0, limite).map(x => x[2]);
+}
+// fichas disponíveis para uso como ingrediente de OUTRA ficha (marcadas com o checkbox
+// "Disponível como insumo" no cadastro da ficha). excludeId tira a própria ficha sendo editada da lista.
+function fichasComoInsumoOptions(excludeId){
+  return [...fichas.entries()].filter(([id,d]) => d.disponivel_como_insumo === true && id !== excludeId);
+}
+
+/* ================================================================= FICHAS TÉCNICAS (portado do Ficha Viva) */
+let fichaFilters = {grupo:"", busca:""};
+
+function usoDaFicha(id){
+  const out = [];
+  const nF = [...fichas.entries()].filter(([fid, f]) => fid !== id && (f.ingredientes||[]).some(l => l.ficha_id === id)).length;
+  if(nF) out.push(`${nF} outra(s) ficha(s) como ingrediente`);
+  return out;
+}
+
+function renderFichas(){
+  document.getElementById("page-title").textContent = "Fichas técnicas";
+  document.getElementById("page-desc").textContent = "Cada ficha calcula o custo sozinha a partir do cadastro de insumos";
+  document.getElementById("topbar-actions").innerHTML = `<button class="btn primary" id="btn-nova-ficha">+ Nova ficha</button>`;
+  document.getElementById("btn-nova-ficha").addEventListener("click", () => openFichaModal(null));
+
+  const grupos = [...new Set([...fichas.values()].map(f=>f.grupo).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
+
+  const content = document.getElementById("content");
+  content.innerHTML = `
+    <div class="search-bar">
+      <input type="text" id="f-busca" placeholder="Buscar ficha…" value="${escapeHtml(fichaFilters.busca)}">
+      <select id="f-grupo"><option value="">Todos os grupos</option>${grupos.map(g=>`<option value="${escapeHtml(g)}" ${fichaFilters.grupo===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}</select>
+      <span class="footnote" id="ficha-count" style="align-self:center;"></span>
+    </div>
+    <div class="panel">
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Ficha</th><th>Grupo</th>
+            <th style="text-align:right;">Custo/kg</th><th style="text-align:right;" title="Só para fichas marcadas como servidas por unidade">Custo/un</th><th></th>
+          </tr></thead>
+          <tbody id="ficha-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  function updateFichaTable(){
+    let rows = [...fichas.entries()].map(([id,f]) => ({id, f, c: computeFicha(f, id)}));
+    if(fichaFilters.grupo) rows = rows.filter(r => r.f.grupo === fichaFilters.grupo);
+    if(fichaFilters.busca){
+      const nb = normalizeText(fichaFilters.busca);
+      rows = rows.filter(r => normalizeText(r.f.nome).includes(nb));
+    }
+    rows.sort((a,b) => normalizeText(a.f.nome).localeCompare(normalizeText(b.f.nome)));
+
+    document.getElementById("ficha-count").textContent = `${rows.length} de ${fichas.size} fichas`;
+    const tbody = document.getElementById("ficha-tbody");
+    tbody.innerHTML = rows.map(({id,f,c}) => `
+            <tr>
+              <td class="name-cell">${escapeHtml(f.nome)}${f.disponivel_como_insumo?' <span class="chip neutral" title="Disponível como insumo em outras fichas">insumo</span>':''}${c.temCiclo?' <span class="chip critical" title="Referência circular entre fichas">ciclo</span>':''}</td>
+              <td class="tag-sheet">${escapeHtml(f.grupo||"—")}</td>
+              <td class="num-cell">${fmtMoney(c.custoKg)}</td>
+              <td class="num-cell">${fichaServidaPorUnidade(f) ? fmtMoney(c.custoUnd) : '<span style="color:var(--text-faint);">—</span>'}</td>
+              <td style="text-align:right; white-space:nowrap;"><button class="btn small ghost" data-open="${id}">abrir</button></td>
+            </tr>`).join("") || `<tr><td colspan="5" class="empty-state">Nenhuma ficha encontrada.</td></tr>`;
+    tbody.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", () => openFichaModal(b.dataset.open)));
+  }
+
+  updateFichaTable();
+  document.getElementById("f-busca").addEventListener("input", e => { fichaFilters.busca = e.target.value; updateFichaTable(); });
+  document.getElementById("f-grupo").addEventListener("change", e => { fichaFilters.grupo = e.target.value; updateFichaTable(); });
+}
+
+function openFichaModal(id){
+  const existing = id ? fichas.get(id) : null;
+  const draft = existing ? JSON.parse(JSON.stringify(existing)) : {
+    nome:"", grupo:"", rendimento_kg:0, rendimento_und:0, preco_venda:null,
+    modo_preparo:null, ingredientes:[], vendavel:false, servido_por_unidade:false,
+    disponivel_como_insumo:false
+  };
+  renderFichaModal(id, draft);
+}
+
+function renderFichaModal(id, draft){
+  const root = document.getElementById("modal-root");
+  const insumoOptions = [...insumos.entries()].sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+  const fichaIngOptions = fichasComoInsumoOptions(id).sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+
+  root.innerHTML = `
+    <div class="modal-overlay" id="ov">
+      <div class="modal">
+        <div class="modal-head"><h2>${id? "Editar ficha" : "Nova ficha técnica"}</h2><button class="close-x" id="close-m">&times;</button></div>
+        <div class="modal-body">
+          <div class="field"><label>Nome / prato</label><input type="text" id="ff-nome" value="${escapeHtml(draft.nome)}"></div>
+          <div class="field-row">
+            <div class="field"><label>Grupo (opcional)</label><input type="text" id="ff-grupo" value="${escapeHtml(draft.grupo||"")}" placeholder="Ex.: MARMITA"></div>
+            <div class="field"><label>Rendimento (kg)</label><input type="number" step="0.001" id="ff-rkg" value="${draft.rendimento_kg||""}"></div>
+            <div class="field"><label>Rendimento (und/pç)</label><input type="number" step="0.001" id="ff-rund" value="${draft.rendimento_und||""}"></div>
+          </div>
+          <div class="field"><label>Preço de venda (R$, opcional)</label><input type="number" step="0.01" id="ff-preco" value="${draft.preco_venda===null||draft.preco_venda===undefined?"":draft.preco_venda}"></div>
+          <div class="field"><label><input type="checkbox" id="ff-vendavel" style="width:auto; display:inline-block; margin-right:6px;" ${draft.vendavel===true?"checked":""}> Item vendável</label></div>
+          <div class="field"><label><input type="checkbox" id="ff-por-unidade" style="width:auto; display:inline-block; margin-right:6px;" ${draft.servido_por_unidade===true?"checked":""}> Servido por unidade (ovo, panqueca, hambúrguer, lanche…) — mostra o "Custo / un" desta ficha</label></div>
+          <div class="field"><label><input type="checkbox" id="ff-como-insumo" style="width:auto; display:inline-block; margin-right:6px;" ${draft.disponivel_como_insumo===true?"checked":""}> Disponível como insumo (esta ficha passa a aparecer na busca de ingredientes de OUTRAS fichas, como um preparo/sub-receita pronta)</label></div>
+
+          <div class="field"><label>Modo de preparo (opcional)</label><textarea id="ff-modo" rows="5" placeholder="Passo a passo para a cozinha seguir">${escapeHtml(draft.modo_preparo||"")}</textarea></div>
+          ${id && fichas.get(id) ? `<div class="footnote">${ultimaAlteracaoTxt(fichas.get(id))}</div>` : ""}
+
+          <h3 style="font-size:14px; margin:18px 0 4px;">Ingredientes</h3>
+          <div class="footnote" style="margin-bottom:10px;">Peso bruto (kg) é sempre o da receita padrão desenhada. Fator de correção e peso líquido são opcionais.</div>
+          <div id="ing-lines"></div>
+          <button class="btn small" id="add-line">+ adicionar ingrediente</button>
+
+          <div class="panel" style="margin-top:18px; background:var(--surface-alt);">
+            <div class="panel-body">
+              <div class="two-col-num" id="totals-box"></div>
+            </div>
+          </div>
+          <div class="footnote" id="err-msg" style="color:var(--critical); margin-top:10px;"></div>
+        </div>
+        <div class="modal-foot">
+          <div>${id ? `<button class="btn danger" id="del-m">Excluir ficha</button>` : ""}</div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn" id="cancel-m">Cancelar</button>
+            <button class="btn primary" id="save-m">Salvar</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+  function custoRefLinha(l, line){
+    if(!line || !line.encontrado || line.ciclo) return "—";
+    if(l.ficha_id) return `${fmtMoney(line.custo_kg_l_und)}/kg`;
+    const ins = l.insumo_id ? insumos.get(l.insumo_id) : null;
+    return ins ? `${fmtMoney(line.custo_kg_l_und)}/${unidadeCustoInsumo(ins)}` : "—";
+  }
+  function avisoLinha(l, line){
+    if(!line || line.ciclo) return "";
+    if(!line.encontrado && (l.nome||"").trim()) return `<div class="ing-aviso">Não vinculado ao cadastro — escolha o ingrediente na lista para entrar no custo.</div>`;
+    return "";
+  }
+
+  function atualizarLinhaDom(i){
+    const row = document.querySelector(`#ing-lines .ing-line[data-i="${i}"]`);
+    if(!row) return;
+    const cc = computeFicha(draft, id);
+    const l = draft.ingredientes[i], line = cc.lines[i];
+    row.querySelector(".ing-ckg").textContent = custoRefLinha(l, line);
+    row.querySelector(".ing-custo-linha").textContent = fmtMoney(line ? line.custo_linha : 0);
+    row.classList.toggle("ing-line-missing", !!(line && (line.ciclo || !line.encontrado)));
+    const av = row.querySelector(".ing-aviso-slot");
+    if(av) av.innerHTML = avisoLinha(l, line);
+  }
+
+  function vincularLinha(i, tipo, refId){
+    const l = draft.ingredientes[i];
+    if(tipo === "insumo"){ l.insumo_id = refId; l.ficha_id = null; l.nome = insumos.get(refId).nome; }
+    else { l.ficha_id = refId; l.insumo_id = null; l.nome = fichas.get(refId).nome; }
+  }
+  function autoVincularPorNome(i){
+    const l = draft.ingredientes[i];
+    if(l.insumo_id || l.ficha_id) return false;
+    const nf = normalizeText(l.nome||"").trim();
+    if(!nf) return false;
+    const ins = insumoOptions.filter(([iid,d]) => normalizeText(d.nome).trim() === nf);
+    const fic = fichaIngOptions.filter(([fid,d]) => normalizeText(d.nome).trim() === nf);
+    if(ins.length + fic.length !== 1) return false;
+    if(ins.length) vincularLinha(i, "insumo", ins[0][0]); else vincularLinha(i, "ficha", fic[0][0]);
+    return true;
+  }
+
+  function renderLines(){
+    const wrap = document.getElementById("ing-lines");
+    const cc = computeFicha(draft, id);
+    wrap.innerHTML = draft.ingredientes.map((l, i) => {
+      const line = cc.lines[i];
+      const viaFicha = !!l.ficha_id;
+      const problema = line && (line.ciclo || !line.encontrado);
+      return `
+      <div class="ing-line ${problema ? 'ing-line-missing' : ''}" data-i="${i}">
+        <div class="autocomplete">
+          <div class="microlabel">Ingrediente ${viaFicha ? '<span class="footnote" style="margin:0;">(ficha técnica usada como insumo)</span>' : ''}</div>
+          <input type="text" class="ing-name" value="${escapeHtml(l.nome||"")}" autocomplete="off">
+          ${line && line.ciclo ? `<div class="footnote" style="color:var(--critical);">Referência circular — esta ficha (direta ou indiretamente) usa a si mesma. Linha ignorada no cálculo de custo.</div>` : ""}
+          <div class="ing-aviso-slot">${avisoLinha(l, line)}</div>
+        </div>
+        <div><div class="microlabel">Custo kg/L/un</div><div class="num ing-ckg">${custoRefLinha(l, line)}</div></div>
+        <div><div class="microlabel">Peso bruto (kg)</div><input type="number" step="0.001" class="ing-bruto" value="${l.peso_bruto||""}"></div>
+        <div><div class="microlabel">Peso líquido (kg)</div><input type="number" step="0.001" class="ing-liquido" value="${l.peso_liquido||""}"></div>
+        <div><div class="microlabel">Custo linha</div><div class="num ing-custo-linha" style="padding:8px 0;">${fmtMoney(line?line.custo_linha:0)}</div></div>
+        <div><button class="btn small ghost" data-rm="${i}" style="color:var(--critical);">remover</button></div>
+      </div>`;
+    }).join("") || `<div class="empty-state" style="padding:14px;">Nenhum ingrediente ainda.</div>`;
+
+    wrap.querySelectorAll(".ing-name").forEach((inp, i) => {
+      let optsEl = null;
+      const fecharOpts = () => { if(optsEl){ optsEl.remove(); optsEl = null; } };
+      const escolher = (tipo, refId) => {
+        fecharOpts();
+        vincularLinha(i, tipo, refId);
+        renderLines(); refreshTotals();
+        const prox = document.querySelector(`#ing-lines .ing-line[data-i="${i}"] .ing-bruto`);
+        if(prox){ prox.focus(); prox.select(); }
+      };
+      inp.addEventListener("input", () => {
+        draft.ingredientes[i].nome = inp.value;
+        draft.ingredientes[i].insumo_id = null;
+        draft.ingredientes[i].ficha_id = null;
+        const nf = normalizeText(inp.value);
+        const matchesInsumo = nf ? buscarPorNome([...insumos.entries()], inp.value, 10) : [];
+        const matchesFicha = nf ? buscarPorNome(fichasComoInsumoOptions(id), inp.value, 5) : [];
+        fecharOpts();
+        if(matchesInsumo.length || matchesFicha.length){
+          optsEl = document.createElement("div");
+          optsEl.className = "options";
+          optsEl.innerHTML =
+            matchesInsumo.map(([iid,d]) => `<div data-pick-insumo="${iid}">${escapeHtml(d.nome)} <span class="footnote">(${fmtMoney(d.custo_kg_l_und)}/${unidadeCustoInsumo(d)})</span></div>`).join("") +
+            matchesFicha.map(([fid,d]) => `<div data-pick-ficha="${fid}">${escapeHtml(d.nome)} <span class="footnote">(ficha técnica · ${fmtMoney(computeFicha(d, fid).custoKg)}/kg)</span></div>`).join("");
+          inp.parentElement.appendChild(optsEl);
+          optsEl.querySelectorAll("[data-pick-insumo]").forEach(opt => opt.addEventListener("mousedown", e => { e.preventDefault(); escolher("insumo", opt.dataset.pickInsumo); }));
+          optsEl.querySelectorAll("[data-pick-ficha]").forEach(opt => opt.addEventListener("mousedown", e => { e.preventDefault(); escolher("ficha", opt.dataset.pickFicha); }));
+        }
+        atualizarLinhaDom(i);
+        refreshTotals();
+      });
+      inp.addEventListener("keydown", e => {
+        if(e.key === "Enter" && optsEl){
+          const first = optsEl.querySelector("[data-pick-insumo],[data-pick-ficha]");
+          if(first){ e.preventDefault(); first.dataset.pickInsumo ? escolher("insumo", first.dataset.pickInsumo) : escolher("ficha", first.dataset.pickFicha); }
+        }
+      });
+      inp.addEventListener("blur", () => {
+        fecharOpts();
+        const vinculou = autoVincularPorNome(i);
+        if(vinculou) inp.value = draft.ingredientes[i].nome;
+        atualizarLinhaDom(i); refreshTotals();
+      });
+    });
+    wrap.querySelectorAll(".ing-bruto").forEach((inp,i) => inp.addEventListener("input", () => { draft.ingredientes[i].peso_bruto = parseFloat(inp.value)||0; atualizarLinhaDom(i); refreshTotals(); }));
+    wrap.querySelectorAll(".ing-liquido").forEach((inp,i) => inp.addEventListener("input", () => { draft.ingredientes[i].peso_liquido = inp.value?parseFloat(inp.value):null; refreshTotals(); }));
+    wrap.querySelectorAll("[data-rm]").forEach(b => b.addEventListener("click", () => { draft.ingredientes.splice(+b.dataset.rm,1); renderLines(); refreshTotals(); }));
+  }
+
+  function refreshTotals(){
+    const cc = computeFicha(draft, id);
+    const box = document.getElementById("totals-box");
+    const porUnidade = document.getElementById("ff-por-unidade").checked;
+    const rund = parseFloat(document.getElementById("ff-rund").value) || 0;
+    box.innerHTML = `
+      <div class="stat-block"><div class="label">Custo total</div><div class="val">${fmtMoney(cc.custoTotal)}</div></div>
+      <div class="stat-block"><div class="label">Custo / kg</div><div class="val">${fmtMoney(cc.custoKg)}</div></div>
+      ${porUnidade ? `<div class="stat-block"><div class="label">Custo / un</div><div class="val">${rund ? fmtMoney(cc.custoUnd) : `<span class="val small">informe o rendimento (und/pç)</span>`}</div></div>` : ""}
+      <div class="stat-block"><div class="label">CMV</div><div class="val">${fmtPct(cc.cmvKg ?? cc.cmvUnd)}</div></div>
+    `;
+  }
+
+  renderLines();
+  refreshTotals();
+
+  document.getElementById("ff-rund").addEventListener("input", () => { draft.rendimento_und = parseFloat(document.getElementById("ff-rund").value)||0; renderLines(); refreshTotals(); });
+  document.getElementById("ff-preco").addEventListener("input", () => { draft.preco_venda = document.getElementById("ff-preco").value===""?null:parseFloat(document.getElementById("ff-preco").value); refreshTotals(); });
+  document.getElementById("ff-rkg").addEventListener("input", () => { draft.rendimento_kg = parseFloat(document.getElementById("ff-rkg").value)||0; renderLines(); refreshTotals(); });
+  document.getElementById("ff-por-unidade").addEventListener("change", refreshTotals);
+
+  document.getElementById("add-line").onclick = () => { draft.ingredientes.push({insumo_id:null, ficha_id:null, nome:"", peso_bruto:0, peso_liquido:null, fator_correcao:null}); renderLines(); refreshTotals(); };
+  document.getElementById("close-m").onclick = () => root.innerHTML = "";
+  document.getElementById("cancel-m").onclick = () => root.innerHTML = "";
+  document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
+  if(id) document.getElementById("del-m").onclick = async () => {
+    const uso = usoDaFicha(id);
+    if(uso.length){ showAlert(`A ficha "${draft.nome}" não pode ser excluída: está em uso em ${uso.join(", ")}. Troque por outra nessas fichas antes de excluir.`); return; }
+    if(!(await confirmDialog(`Excluir a ficha "${draft.nome}"?`))) return;
+    try{
+      const { error } = await sb.from('fichas').delete().eq('id', id);
+      if(error) throw error;
+      await loadFichas();
+      root.innerHTML="";
+      renderFichas();
+    }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
+  };
+  document.getElementById("save-m").onclick = async () => {
+    const errEl = document.getElementById("err-msg");
+    const nome = document.getElementById("ff-nome").value.trim();
+    if(!nome){ errEl.textContent = "Informe um nome para a ficha."; return; }
+    const _nk = x => normalizeText(x).trim().replace(/\s+/g, " ");
+    const nn = _nk(nome);
+    const igual = [...fichas.entries()].find(([fid,f]) => fid !== id && _nk(f.nome||"") === nn);
+    if(igual){ errEl.textContent = `Já existe uma ficha chamada "${igual[1].nome}". Use outro nome antes de salvar.`; document.getElementById("ff-nome").focus(); return; }
+    const ingredientesFinal = draft.ingredientes.filter(l => l.nome).map(l => ({
+      insumo_id: l.insumo_id || null,
+      ficha_id: l.ficha_id || null,
+      nome: l.nome,
+      peso_bruto: l.peso_bruto || 0,
+      peso_liquido: l.peso_liquido ?? null,
+      fator_correcao: (l.peso_liquido && l.peso_liquido > 0) ? (l.peso_bruto||0)/l.peso_liquido : (l.fator_correcao ?? null)
+    }));
+    const draftParaChecagem = {...draft, ingredientes: ingredientesFinal};
+    const checagem = _computeFicha(draftParaChecagem, id);
+    if(checagem.temCiclo){
+      errEl.textContent = "Há uma referência circular entre fichas usadas como insumo (uma ficha acaba dependendo dela mesma). Corrija a linha marcada em vermelho antes de salvar.";
+      return;
+    }
+    const semVinculo = checagem.lines.filter(l => !l.encontrado && !l.ciclo).map(l => l.nome);
+    if(semVinculo.length && !(await confirmDialog(`${semVinculo.length} ingrediente(s) sem vínculo com o cadastro — entram com custo ZERO: ${semVinculo.slice(0,5).join(", ")}${semVinculo.length>5?"…":""}. Salvar mesmo assim?`))) return;
+    const data = {
+      nome,
+      grupo: document.getElementById("ff-grupo").value.trim() || null,
+      vendavel: document.getElementById("ff-vendavel").checked,
+      disponivel_como_insumo: document.getElementById("ff-como-insumo").checked,
+      servido_por_unidade: document.getElementById("ff-por-unidade").checked,
+      rendimento_kg: parseFloat(document.getElementById("ff-rkg").value)||0,
+      rendimento_und: parseFloat(document.getElementById("ff-rund").value)||0,
+      preco_venda: document.getElementById("ff-preco").value===""?null:parseFloat(document.getElementById("ff-preco").value),
+      modo_preparo: document.getElementById("ff-modo").value.trim() || null,
+      ingredientes: ingredientesFinal,
+    };
+    Object.assign(data, carimbo());
+    errEl.textContent = "Salvando…";
+    try{
+      let error;
+      if(id){ ({error} = await sb.from('fichas').update(data).eq('id', id)); }
+      else{ ({error} = await sb.from('fichas').insert(data)); }
+      if(error) throw error;
+      await loadFichas();
+      root.innerHTML = "";
+      renderFichas();
+    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+  };
 }
 
 /* ===================================================================== INIT */
