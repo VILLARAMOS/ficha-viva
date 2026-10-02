@@ -91,13 +91,13 @@ button{font:600 .85rem/1 'IBM Plex Sans',sans-serif;border:none;border-radius:8p
 </div>
 
 <script>
-const URL = "https://brydbjqkatluhpfireko.supabase.co";
-const KEY = "sb_publishable_gw7rYmfvCEMkPWKneEgesQ_l_8-yhOH";
+const SUPABASE_URL = "https://brydbjqkatluhpfireko.supabase.co";
+const SUPABASE_KEY = "sb_publishable_gw7rYmfvCEMkPWKneEgesQ_l_8-yhOH";
 if (!window.supabase){
   document.getElementById('bootErr').hidden = false;
   throw new Error('supabase-js não carregou');
 }
-const sb = supabase.createClient(URL, KEY);
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const listEl = document.getElementById('list');
 const whoEl = document.getElementById('who');
