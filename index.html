@@ -745,7 +745,7 @@ const DIA_KEY_CAFE = {SEGUNDA:"segunda",TERCA:"terca",QUARTA:"quarta",QUINTA:"qu
 
 let cardapioNumSel = null;
 let cardapioSemanaSel = null;
-let cardapioTabSel = "almoco"; // "almoco" | "cafe"
+let cardapioTabSel = "refeicao"; // "refeicao" | "marmita" | "cafe"
 
 function custoFichaOuInsumo(item){
   if(item.ficha_id){
@@ -762,23 +762,45 @@ function custoFichaOuInsumo(item){
 let draftAlmoco = null; // { [dia]: { id, precoVenda, itens:[20] } }
 let draftCafe = null;   // { id, linhas, itens: { [dia]: [...] } }
 
+/* Refeição = cardapio_num 1-5 · Marmita = cardapio_num 6-8 (mesma tabela `cardapios`, grade de 20
+   categorias igual à Refeição; a gramagem da Marmita é independente — não herda/trava com a Refeição). */
+const REFEICAO_NUMS = [1,2,3,4,5];
+const MARMITA_NUMS = [6,7,8];
+const CAFE_NUMS = [1,2,3,4,5];
+
+function labelNumeroCardapio(grupo, n){
+  if(grupo === "marmita") return `Marmita ${n - 5}`;
+  if(grupo === "cafe") return `Café ${n}`;
+  return `Cardápio ${n}`;
+}
+
 function renderCardapio(){
   document.getElementById("page-title").textContent = "Cardápio";
-  document.getElementById("page-desc").textContent = "Edição direto na tabela — almoço/jantar e café da manhã";
+  document.getElementById("page-desc").textContent = "Edição direto na tabela — refeição, marmita e café da manhã";
   document.getElementById("topbar-actions").innerHTML = "";
 
-  const numeros = [...new Set([...cardapiosAlmoco.values()].map(r => r.cardapio_num))].sort((a,b)=>a-b);
-  if (cardapioNumSel === null || !numeros.includes(cardapioNumSel)) cardapioNumSel = numeros[0] ?? 1;
-  const semanasDisponiveis = [...new Set([...cardapiosAlmoco.values()].filter(r => r.cardapio_num === cardapioNumSel).map(r => r.semana))].sort((a,b)=>a-b);
-  if (cardapioSemanaSel === null || !semanasDisponiveis.includes(cardapioSemanaSel)) cardapioSemanaSel = semanasDisponiveis[0] ?? 1;
+  const grupo = cardapioTabSel; // "refeicao" | "marmita" | "cafe"
+  const numerosPorGrupo = grupo === "marmita" ? MARMITA_NUMS : grupo === "cafe" ? CAFE_NUMS : REFEICAO_NUMS;
+  if (cardapioNumSel === null || !numerosPorGrupo.includes(cardapioNumSel)) cardapioNumSel = numerosPorGrupo[0];
+
+  const semanasTodas = [...new Set([...cardapiosAlmoco.values()].map(r => r.semana))].sort((a,b)=>a-b);
+  let semanasDisponiveis;
+  if(grupo === "cafe"){
+    semanasDisponiveis = [...new Set([...cafeSemanas.values()].filter(r => r.cardapio_num === cardapioNumSel).map(r => r.semana))].sort((a,b)=>a-b);
+  } else {
+    semanasDisponiveis = [...new Set([...cardapiosAlmoco.values()].filter(r => r.cardapio_num === cardapioNumSel).map(r => r.semana))].sort((a,b)=>a-b);
+  }
+  if(!semanasDisponiveis.length) semanasDisponiveis = semanasTodas.length ? semanasTodas : [1];
+  if (cardapioSemanaSel === null || !semanasDisponiveis.includes(cardapioSemanaSel)) cardapioSemanaSel = semanasDisponiveis[0];
 
   const content = document.getElementById("content");
   content.innerHTML = `
     <div class="menu-controls">
-      <select id="card-num">${numeros.map(n => `<option value="${n}" ${n===cardapioNumSel?"selected":""}>Cardápio ${n}</option>`).join("")}</select>
+      <select id="card-num">${numerosPorGrupo.map(n => `<option value="${n}" ${n===cardapioNumSel?"selected":""}>${labelNumeroCardapio(grupo, n)}</option>`).join("")}</select>
       <select id="card-semana">${semanasDisponiveis.map(s => `<option value="${s}" ${s===cardapioSemanaSel?"selected":""}>Semana ${s}</option>`).join("")}</select>
       <div class="seg-toggle">
-        <button type="button" data-tab="almoco" class="${cardapioTabSel==="almoco"?"active":""}">Almoço / Jantar</button>
+        <button type="button" data-tab="refeicao" class="${cardapioTabSel==="refeicao"?"active":""}">Refeição</button>
+        <button type="button" data-tab="marmita" class="${cardapioTabSel==="marmita"?"active":""}">Marmita</button>
         <button type="button" data-tab="cafe" class="${cardapioTabSel==="cafe"?"active":""}">Café da manhã</button>
       </div>
     </div>
@@ -787,14 +809,17 @@ function renderCardapio(){
 
   document.getElementById("card-num").addEventListener("change", e => { cardapioNumSel = Number(e.target.value); cardapioSemanaSel = null; renderCardapio(); });
   document.getElementById("card-semana").addEventListener("change", e => { cardapioSemanaSel = Number(e.target.value); renderCardapio(); });
-  content.querySelectorAll(".seg-toggle button").forEach(b => b.addEventListener("click", () => { cardapioTabSel = b.dataset.tab; renderCardapio(); }));
+  content.querySelectorAll(".seg-toggle button").forEach(b => b.addEventListener("click", () => { cardapioTabSel = b.dataset.tab; cardapioNumSel = null; cardapioSemanaSel = null; renderCardapio(); }));
 
-  if(cardapioTabSel === "almoco") montarTabelaAlmoco(cardapioNumSel, cardapioSemanaSel);
-  else montarTabelaCafe(cardapioNumSel, cardapioSemanaSel);
+  if(cardapioTabSel === "cafe") montarTabelaCafe(cardapioNumSel, cardapioSemanaSel);
+  else montarTabelaAlmoco(cardapioNumSel, cardapioSemanaSel);
 }
 
-/* ===== ALMOÇO / JANTAR — tabela editável (categorias × dias) ===== */
+/* ===== REFEIÇÃO / MARMITA — tabela editável (categorias × dias) =====
+   Mesma estrutura e mesmo código para as duas: Refeição usa cardapio_num 1-5, Marmita usa 6-8.
+   A gramagem da Marmita é independente — não herda nem trava com a Refeição (decisão de 03/10/2026). */
 function montarTabelaAlmoco(num, semana){
+  const grupo = cardapioTabSel;
   const porDia = new Map([...cardapiosAlmoco.values()].filter(r => r.cardapio_num === num && r.semana === semana).map(r => [r.dia, r]));
   draftAlmoco = {};
   DIAS_ORDEM.forEach(dia => {
@@ -918,7 +943,7 @@ function montarTabelaAlmoco(num, semana){
     const dia = b.dataset.delDia;
     const id = draftAlmoco[dia].id;
     if(!id){ draftAlmoco[dia].itens.forEach(l => { l.nome=""; l.ficha_id=null; l.insumo_id=null; l.gramagem_kg=null; }); draftAlmoco[dia].precoVenda=null; montarTabelaAlmoco(num, semana); return; }
-    if(!(await confirmDialog(`Excluir o cardápio de ${DIA_LABEL[dia]} (Semana ${semana}, Cardápio ${num})?`))) return;
+    if(!(await confirmDialog(`Excluir o cardápio de ${DIA_LABEL[dia]} (Semana ${semana}, ${labelNumeroCardapio(grupo, num)})?`))) return;
     try{
       const { error } = await sb.from('cardapios').delete().eq('id', id);
       if(error) throw error;
@@ -1069,7 +1094,7 @@ function montarTabelaCafe(num, semana){
   host.querySelectorAll("[data-del-dia]").forEach(b => b.addEventListener("click", async () => {
     const dia = b.dataset.delDia;
     if(!draftCafe.id){ draftCafe.itens[dia].forEach(l => { l.nome=""; l.ficha_id=null; l.insumo_id=null; l.gramagem_kg=null; }); montarTabelaCafe(num, semana); return; }
-    if(!(await confirmDialog(`Excluir o café da manhã de ${DIA_LABEL[dia]} (Semana ${semana}, Cardápio ${num})?`))) return;
+    if(!(await confirmDialog(`Excluir o café da manhã de ${DIA_LABEL[dia]} (Semana ${semana}, ${labelNumeroCardapio("cafe", num)})?`))) return;
     try{
       const novasDias = {...diasSrc};
       delete novasDias[DIA_KEY_CAFE[dia]];
