@@ -125,6 +125,15 @@ tbody tr:hover{background:var(--surface-alt);}
 .autocomplete .options{position:absolute; top:100%; left:0; right:0; background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow); max-height:180px; overflow-y:auto; z-index:10; margin-top:2px;}
 .autocomplete .options div{padding:7px 10px; font-size:13px; cursor:pointer;}
 .autocomplete .options div:hover{background:var(--accent-soft);}
+/* campos que abrem busca/escolha (fichas, insumos) ganham um ícone de lupa e cursor de texto, pra indicar que são pesquisáveis */
+.search-input{
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23888888' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'><circle cx='11' cy='11' r='7'/><line x1='21' y1='21' x2='16.65' y2='16.65'/></svg>");
+  background-repeat:no-repeat;
+  background-position:right 7px center;
+  background-size:13px 13px;
+  padding-right:24px !important;
+  cursor:text;
+}
 .two-col-num{display:flex; gap:26px; flex-wrap:wrap;}
 .stat-block .label{font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-faint);}
 .stat-block .val{font-size:19px; font-weight:600; font-family:'IBM Plex Mono',monospace;}
@@ -856,7 +865,7 @@ function montarTabelaAlmoco(num, semana){
               ${DIAS_ORDEM.map(dia => `
                 <td class="cel">
                   <div class="autocomplete">
-                    <input type="text" class="cel-nome" data-dia="${dia}" data-ci="${ci}" value="${escapeHtml(draftAlmoco[dia].itens[ci].nome||"")}" placeholder="—" autocomplete="off">
+                    <input type="text" class="cel-nome search-input" data-dia="${dia}" data-ci="${ci}" value="${escapeHtml(draftAlmoco[dia].itens[ci].nome||"")}" placeholder="—" autocomplete="off">
                   </div>
                   <input type="number" step="0.001" class="cel-gram" data-dia="${dia}" data-ci="${ci}" value="${draftAlmoco[dia].itens[ci].gramagem_kg ?? ""}" placeholder="kg">
                 </td>`).join("")}
@@ -1009,7 +1018,7 @@ function montarTabelaCafe(num, semana){
               ${DIAS_ORDEM.map(dia => `
                 <td class="cel">
                   <div class="autocomplete">
-                    <input type="text" class="cel-nome" data-dia="${dia}" data-ci="${ri}" value="${escapeHtml(draftCafe.itens[dia][ri].nome||"")}" placeholder="—" autocomplete="off">
+                    <input type="text" class="cel-nome search-input" data-dia="${dia}" data-ci="${ri}" value="${escapeHtml(draftCafe.itens[dia][ri].nome||"")}" placeholder="—" autocomplete="off">
                   </div>
                   <input type="number" step="0.001" class="cel-gram" data-dia="${dia}" data-ci="${ri}" value="${draftCafe.itens[dia][ri].gramagem_kg ?? ""}" placeholder="kg">
                 </td>`).join("")}
@@ -1084,7 +1093,7 @@ function montarTabelaCafe(num, semana){
     tr.dataset.row = ri;
     tr.innerHTML = `<td class="cat-col">Item ${ri+1}</td>${DIAS_ORDEM.map(dia => `
       <td class="cel">
-        <div class="autocomplete"><input type="text" class="cel-nome" data-dia="${dia}" data-ci="${ri}" value="" placeholder="—" autocomplete="off"></div>
+        <div class="autocomplete"><input type="text" class="cel-nome search-input" data-dia="${dia}" data-ci="${ri}" value="" placeholder="—" autocomplete="off"></div>
         <input type="number" step="0.001" class="cel-gram" data-dia="${dia}" data-ci="${ri}" value="" placeholder="kg">
       </td>`).join("")}`;
     tbody.appendChild(tr);
@@ -1299,7 +1308,7 @@ function renderFichaModal(id, draft){
       <div class="ing-line ${problema ? 'ing-line-missing' : ''}" data-i="${i}">
         <div class="autocomplete">
           <div class="microlabel">Ingrediente ${viaFicha ? '<span class="footnote" style="margin:0;">(ficha técnica usada como insumo)</span>' : ''}</div>
-          <input type="text" class="ing-name" value="${escapeHtml(l.nome||"")}" autocomplete="off">
+          <input type="text" class="ing-name search-input" value="${escapeHtml(l.nome||"")}" autocomplete="off">
           ${line && line.ciclo ? `<div class="footnote" style="color:var(--critical);">Referência circular — esta ficha (direta ou indiretamente) usa a si mesma. Linha ignorada no cálculo de custo.</div>` : ""}
           <div class="ing-aviso-slot">${avisoLinha(l, line)}</div>
         </div>
