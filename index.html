@@ -1198,9 +1198,10 @@ function renderFichas(){
               <td class="tag-sheet">${escapeHtml(f.grupo||"—")}</td>
               <td class="num-cell">${fmtMoney(c.custoKg)}</td>
               <td class="num-cell">${fichaServidaPorUnidade(f) ? fmtMoney(c.custoUnd) : '<span style="color:var(--text-faint);">—</span>'}</td>
-              <td style="text-align:right; white-space:nowrap;"><button class="btn small ghost" data-open="${id}">abrir</button></td>
+              <td style="text-align:right; white-space:nowrap;"><button class="btn small ghost" data-print="${id}" title="Imprimir ficha de produção">imprimir</button> <button class="btn small ghost" data-open="${id}">abrir</button></td>
             </tr>`).join("") || `<tr><td colspan="5" class="empty-state">Nenhuma ficha encontrada.</td></tr>`;
     tbody.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", () => openFichaModal(b.dataset.open)));
+    tbody.querySelectorAll("[data-print]").forEach(b => b.addEventListener("click", () => imprimirFichaProducao(fichas.get(b.dataset.print))));
   }
 
   updateFichaTable();
@@ -1216,6 +1217,48 @@ function openFichaModal(id){
     disponivel_como_insumo:false
   };
   renderFichaModal(id, draft);
+}
+
+/* Ficha de produção pra cozinha: nome, ingredientes com peso, modo de preparo — sem custo/preço. */
+function imprimirFichaProducao(draft){
+  const linhas = (draft.ingredientes||[]).filter(l => (l.nome||"").trim()).map(l => {
+    const peso = (l.peso_liquido!==null && l.peso_liquido!==undefined && l.peso_liquido!=="") ? l.peso_liquido : l.peso_bruto;
+    const pesoTxt = (peso===null || peso===undefined || peso==="") ? "—" : `${Number(peso).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg`;
+    return `<tr><td>${escapeHtml(l.nome||"")}</td><td class="peso">${pesoTxt}</td></tr>`;
+  }).join("") || `<tr><td colspan="2" class="vazio">Nenhum ingrediente cadastrado.</td></tr>`;
+
+  const rendTxt = [
+    draft.rendimento_kg ? `${Number(draft.rendimento_kg).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg` : "",
+    draft.rendimento_und ? `${Number(draft.rendimento_und).toLocaleString('pt-BR')} und/pç` : ""
+  ].filter(Boolean).join(" · ");
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Ficha de produção — ${escapeHtml(draft.nome||"")}</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif; color:#111; margin:32px; font-size:14px;}
+    h1{font-size:20px; margin:0 0 4px;}
+    .meta{color:#555; font-size:12.5px; margin-bottom:18px;}
+    h2{font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:#333; border-bottom:1px solid #ccc; padding-bottom:4px; margin:22px 0 8px;}
+    table{width:100%; border-collapse:collapse; margin-bottom:6px;}
+    td, th{border:1px solid #ccc; padding:6px 8px; text-align:left; font-size:13px;}
+    td.peso{width:140px; text-align:right; font-family:'Courier New',monospace;}
+    td.vazio{color:#777; font-style:italic;}
+    .modo{white-space:pre-wrap; border:1px solid #ccc; padding:10px 12px; border-radius:4px; min-height:60px;}
+    @media print{ body{margin:12mm;} }
+  </style></head><body>
+    <h1>${escapeHtml(draft.nome||"(sem nome)")}</h1>
+    <div class="meta">${draft.grupo ? `Grupo: ${escapeHtml(draft.grupo)}` : ""}${draft.grupo && rendTxt ? " · " : ""}${rendTxt ? `Rendimento: ${rendTxt}` : ""}</div>
+    <h2>Ingredientes</h2>
+    <table><thead><tr><th>Ingrediente</th><th style="width:140px;">Peso</th></tr></thead><tbody>${linhas}</tbody></table>
+    <h2>Modo de preparo</h2>
+    <div class="modo">${escapeHtml(draft.modo_preparo||"").trim() || "—"}</div>
+  </body></html>`;
+
+  const w = window.open("", "_blank");
+  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para este site e tente novamente."); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+  w.focus();
+  w.onload = () => w.print();
+  setTimeout(() => { try{ w.print(); }catch(e){} }, 300);
 }
 
 function renderFichaModal(id, draft){
@@ -1258,7 +1301,10 @@ function renderFichaModal(id, draft){
           <div class="footnote" id="err-msg" style="color:var(--critical); margin-top:10px;"></div>
         </div>
         <div class="modal-foot">
-          <div>${id ? `<button class="btn danger" id="del-m">Excluir ficha</button>` : ""}</div>
+          <div style="display:flex; gap:8px;">
+            ${id ? `<button class="btn danger" id="del-m">Excluir ficha</button>` : ""}
+            <button class="btn" id="print-m">Imprimir ficha de produção</button>
+          </div>
           <div style="display:flex; gap:8px;">
             <button class="btn" id="cancel-m">Cancelar</button>
             <button class="btn primary" id="save-m">Salvar</button>
@@ -1402,6 +1448,7 @@ function renderFichaModal(id, draft){
   document.getElementById("ff-por-unidade").addEventListener("change", refreshTotals);
 
   document.getElementById("add-line").onclick = () => { draft.ingredientes.push({insumo_id:null, ficha_id:null, nome:"", peso_bruto:0, peso_liquido:null, fator_correcao:null}); renderLines(); refreshTotals(); };
+  document.getElementById("print-m").onclick = () => imprimirFichaProducao(draft);
   document.getElementById("close-m").onclick = () => root.innerHTML = "";
   document.getElementById("cancel-m").onclick = () => root.innerHTML = "";
   document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
