@@ -148,6 +148,11 @@ textarea{font:inherit;color:var(--text);background:var(--bg);border:1px solid va
 .day-item .nome{color:var(--text);}
 .day-card .day-foot{padding:8px 14px;border-top:1px dashed var(--border);font-size:11.5px;color:var(--text-muted);}
 @media (max-width:1100px){ .week-grid{grid-template-columns:repeat(auto-fit,minmax(190px,1fr));} }
+.day-card .day-edit{padding:8px 14px;border-top:1px solid var(--border);}
+.cardapio-item-line{display:grid; grid-template-columns:1.1fr 2fr .8fr .9fr .9fr auto; gap:8px; align-items:end; margin-bottom:8px; padding-bottom:8px; border-bottom:1px dashed var(--border);}
+.cardapio-item-line .microlabel{font-size:10.5px; color:var(--text-faint); margin-bottom:3px;}
+.cardapio-item-line .cat-label{padding:8px 0; font-size:12.5px; font-weight:600; color:var(--text-muted);}
+@media (max-width:860px){ .cardapio-item-line{grid-template-columns:1fr 1fr;} }
 </style>
 
 <div class="loginWrap" id="loginScreen">
@@ -729,6 +734,18 @@ let cardapioNumSel = null;
 let cardapioSemanaSel = null;
 let cardapioTabSel = "almoco"; // "almoco" | "cafe"
 
+function custoFichaOuInsumo(item){
+  if(item.ficha_id){
+    const f = fichas.get(item.ficha_id);
+    return f ? computeFicha(f, item.ficha_id).custoKg : null;
+  }
+  if(item.insumo_id){
+    const ins = insumos.get(item.insumo_id);
+    return ins ? (ins.custo_kg_l_und ?? null) : null;
+  }
+  return null;
+}
+
 function renderCardapio(){
   document.getElementById("page-title").textContent = "Cardápio";
   document.getElementById("page-desc").textContent = "Visualização por semana — almoço/jantar e café da manhã";
@@ -759,16 +776,22 @@ function renderCardapio(){
   document.getElementById("card-week").innerHTML = cardapioTabSel === "almoco"
     ? renderSemanaAlmoco(cardapioNumSel, cardapioSemanaSel)
     : renderSemanaCafe(cardapioNumSel, cardapioSemanaSel);
+
+  document.querySelectorAll("#card-week [data-edit-dia]").forEach(b => {
+    b.addEventListener("click", () => openCardapioDiaModal(cardapioTabSel, cardapioNumSel, cardapioSemanaSel, b.dataset.editDia));
+  });
 }
 
 function renderSemanaAlmoco(num, semana){
-  if (!cardapiosAlmoco.size) return `<div class="empty-state">Nenhum cardápio carregado.</div>`;
   const porDia = new Map([...cardapiosAlmoco.values()].filter(r => r.cardapio_num === num && r.semana === semana).map(r => [r.dia, r]));
-  if (!porDia.size) return `<div class="empty-state">Sem dados de almoço/jantar para esta semana.</div>`;
   return `<div class="week-grid">
     ${DIAS_ORDEM.map(dia => {
       const row = porDia.get(dia);
-      if (!row) return `<div class="day-card"><div class="day-head"><div class="day-name">${DIA_LABEL[dia]}</div></div><div class="day-body"><div class="empty-state" style="padding:14px 0;">Sem registro</div></div></div>`;
+      if (!row) return `<div class="day-card">
+        <div class="day-head"><div class="day-name">${DIA_LABEL[dia]}</div></div>
+        <div class="day-body"><div class="empty-state" style="padding:14px 0;">Sem registro</div></div>
+        <div class="day-edit"><button class="btn small" data-edit-dia="${dia}">+ criar</button></div>
+      </div>`;
       const itens = (row.itens || []).filter(i => i.nome);
       const custo = row.custo_planejado != null ? Number(row.custo_planejado) : null;
       const venda = row.preco_venda_planejado != null ? Number(row.preco_venda_planejado) : null;
@@ -778,6 +801,7 @@ function renderSemanaAlmoco(num, semana){
           ${itens.length ? itens.map(i => `<div class="day-item"><span class="cat">${escapeHtml(i.categoria||"")}</span><span class="nome">${escapeHtml(i.nome)}${i.gramagem_kg!=null?` <span class="footnote">(${fmtNum(i.gramagem_kg,3)} kg)</span>`:""}</span></div>`).join("") : `<div class="empty-state" style="padding:14px 0;">Sem itens</div>`}
         </div>
         <div class="day-foot">Custo: ${fmtMoney(custo)} · Venda: ${fmtMoney(venda)}</div>
+        <div class="day-edit"><button class="btn small" data-edit-dia="${dia}">editar</button></div>
       </div>`;
     }).join("")}
   </div>`;
@@ -786,8 +810,7 @@ function renderSemanaAlmoco(num, semana){
 function renderSemanaCafe(num, semana){
   const row = [...cafeSemanas.values()].find(r => r.cardapio_num === num && r.semana === semana);
   const cfg = cafeConfigs.get(num);
-  if (!row) return `<div class="empty-state">Sem dados de café da manhã para esta semana${cfg ? "" : " (este cardápio pode não ter café cadastrado)"}.</div>`;
-  const dias = row.dias || {};
+  const dias = row ? (row.dias || {}) : {};
   return `
     ${cfg ? `<div class="footnote" style="margin-bottom:10px;">${escapeHtml(cfg.label)}</div>` : ""}
     <div class="week-grid">
@@ -799,9 +822,223 @@ function renderSemanaCafe(num, semana){
           <div class="day-body">
             ${itens.length ? itens.map(i => `<div class="day-item"><span class="nome">${escapeHtml(i.nome)}${i.gramagem_kg!=null?` <span class="footnote">(${fmtNum(i.gramagem_kg,3)} kg)</span>`:""}</span></div>`).join("") : `<div class="empty-state" style="padding:14px 0;">Sem registro</div>`}
           </div>
+          <div class="day-edit"><button class="btn small" data-edit-dia="${dia}">${itens.length ? "editar" : "+ criar"}</button></div>
         </div>`;
       }).join("")}
     </div>`;
+}
+
+/* ---- modal de edição de um dia do cardápio (almoço/jantar ou café da manhã) ---- */
+function openCardapioDiaModal(tipo, num, semana, diaCodigo){
+  if(tipo === "almoco"){
+    const existing = [...cardapiosAlmoco.values()].find(r => r.cardapio_num === num && r.semana === semana && r.dia === diaCodigo) || null;
+    const existentes = new Map((existing?.itens||[]).filter(i=>i.categoria).map(i => [i.categoria, i]));
+    const draftItens = CATEGORIAS_CARDAPIO.map(cat => {
+      const e = existentes.get(cat);
+      return e ? {categoria: cat, nome: e.nome||"", ficha_id: e.ficha_id||null, insumo_id: e.insumo_id||null, gramagem_kg: e.gramagem_kg ?? null}
+                : {categoria: cat, nome:"", ficha_id:null, insumo_id:null, gramagem_kg:null};
+    });
+    const precoVenda = existing?.preco_venda_planejado ?? null;
+    renderCardapioDiaModal("almoco", num, semana, diaCodigo, existing?.id||null, draftItens, precoVenda, null);
+  } else {
+    const weekRow = [...cafeSemanas.values()].find(r => r.cardapio_num === num && r.semana === semana) || null;
+    const diaObj = weekRow ? (weekRow.dias||{})[DIA_KEY_CAFE[diaCodigo]] : null;
+    const draftItens = (diaObj?.itens||[]).map(i => ({nome:i.nome||"", ficha_id:i.ficha_id||null, insumo_id:i.insumo_id||null, gramagem_kg:i.gramagem_kg ?? null}));
+    renderCardapioDiaModal("cafe", num, semana, diaCodigo, weekRow?.id||null, draftItens, null, weekRow);
+  }
+}
+
+function renderCardapioDiaModal(tipo, num, semana, diaCodigo, existingId, draftItens, precoVenda, weekRow){
+  const root = document.getElementById("modal-root");
+  const draft = { itens: draftItens, precoVenda };
+  const todosInsumos = [...insumos.entries()];
+  const todasFichas = [...fichas.entries()];
+
+  function custoRefLinha(l){
+    if(!l.ficha_id && !l.insumo_id) return "—";
+    const c = custoFichaOuInsumo(l);
+    if(c == null) return "—";
+    if(l.ficha_id) return `${fmtMoney(c)}/kg`;
+    const ins = insumos.get(l.insumo_id);
+    return ins ? `${fmtMoney(c)}/${unidadeCustoInsumo(ins)}` : `${fmtMoney(c)}`;
+  }
+  function custoLinha(l){
+    const c = custoFichaOuInsumo(l);
+    if(c == null || l.gramagem_kg == null) return 0;
+    return c * l.gramagem_kg;
+  }
+  function custoTotalDraft(){
+    return draft.itens.reduce((s,l) => s + custoLinha(l), 0);
+  }
+
+  root.innerHTML = `
+    <div class="modal-overlay" id="ov">
+      <div class="modal">
+        <div class="modal-head"><h2>Cardápio ${num} — Semana ${semana} — ${DIA_LABEL[diaCodigo]} (${tipo==="almoco"?"Almoço/Jantar":"Café da manhã"})</h2><button class="close-x" id="close-m">&times;</button></div>
+        <div class="modal-body">
+          ${tipo==="almoco" ? `<div class="field"><label>Preço de venda (R$, opcional)</label><input type="number" step="0.01" id="cm-preco" value="${draft.precoVenda==null?"":draft.precoVenda}"></div>` : ""}
+          <h3 style="font-size:14px; margin:14px 0 4px;">Itens</h3>
+          <div id="cm-lines"></div>
+          ${tipo==="cafe" ? `<button class="btn small" id="cm-add-line">+ adicionar item</button>` : ""}
+          <div class="panel" style="margin-top:18px; background:var(--surface-alt);">
+            <div class="panel-body"><div class="two-col-num"><div class="stat-block"><div class="label">Custo total do dia</div><div class="val" id="cm-custo-total">${fmtMoney(custoTotalDraft())}</div></div></div></div>
+          </div>
+          <div class="footnote" id="cm-err" style="color:var(--critical); margin-top:10px;"></div>
+        </div>
+        <div class="modal-foot">
+          <div>${existingId ? `<button class="btn danger" id="cm-del">Excluir dia</button>` : ""}</div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn" id="cm-cancel">Cancelar</button>
+            <button class="btn primary" id="cm-save">Salvar</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+  function renderLines(){
+    const wrap = document.getElementById("cm-lines");
+    wrap.innerHTML = draft.itens.map((l, i) => `
+      <div class="cardapio-item-line" data-i="${i}">
+        ${tipo==="almoco" ? `<div class="cat-label">${escapeHtml(l.categoria)}</div>` : `<div class="microlabel">Item</div>`}
+        <div class="autocomplete">
+          ${tipo==="cafe" ? `<div class="microlabel">&nbsp;</div>` : ""}
+          <input type="text" class="ci-name" value="${escapeHtml(l.nome||"")}" autocomplete="off" placeholder="Nome do item">
+        </div>
+        <div><div class="microlabel">Custo ref.</div><div class="num ci-custo-ref" style="padding:8px 0;">${custoRefLinha(l)}</div></div>
+        <div><div class="microlabel">Gramagem (kg)</div><input type="number" step="0.001" class="ci-gram" value="${l.gramagem_kg ?? ""}"></div>
+        <div><div class="microlabel">Custo linha</div><div class="num ci-custo-linha" style="padding:8px 0;">${fmtMoney(custoLinha(l))}</div></div>
+        <div>${tipo==="cafe" ? `<button class="btn small ghost" data-rm="${i}" style="color:var(--critical);">remover</button>` : ""}</div>
+      </div>`).join("") || `<div class="empty-state" style="padding:14px;">Nenhum item ainda.</div>`;
+
+    wrap.querySelectorAll(".ci-name").forEach((inp, i) => {
+      let optsEl = null;
+      const fecharOpts = () => { if(optsEl){ optsEl.remove(); optsEl = null; } };
+      const escolher = (t, refId) => {
+        fecharOpts();
+        const l = draft.itens[i];
+        if(t === "insumo"){ l.insumo_id = refId; l.ficha_id = null; l.nome = insumos.get(refId).nome; }
+        else { l.ficha_id = refId; l.insumo_id = null; l.nome = fichas.get(refId).nome; }
+        renderLines(); refreshTotal();
+        const prox = document.querySelector(`#cm-lines .cardapio-item-line[data-i="${i}"] .ci-gram`);
+        if(prox){ prox.focus(); prox.select(); }
+      };
+      inp.addEventListener("input", () => {
+        draft.itens[i].nome = inp.value;
+        draft.itens[i].insumo_id = null;
+        draft.itens[i].ficha_id = null;
+        const matchesInsumo = inp.value ? buscarPorNome(todosInsumos, inp.value, 10) : [];
+        const matchesFicha = inp.value ? buscarPorNome(todasFichas, inp.value, 10) : [];
+        fecharOpts();
+        if(matchesInsumo.length || matchesFicha.length){
+          optsEl = document.createElement("div");
+          optsEl.className = "options";
+          optsEl.innerHTML =
+            matchesFicha.map(([fid,d]) => `<div data-pick-ficha="${fid}">${escapeHtml(d.nome)} <span class="footnote">(ficha técnica · ${fmtMoney(computeFicha(d, fid).custoKg)}/kg)</span></div>`).join("") +
+            matchesInsumo.map(([iid,d]) => `<div data-pick-insumo="${iid}">${escapeHtml(d.nome)} <span class="footnote">(${fmtMoney(d.custo_kg_l_und)}/${unidadeCustoInsumo(d)})</span></div>`).join("");
+          inp.parentElement.appendChild(optsEl);
+          optsEl.querySelectorAll("[data-pick-insumo]").forEach(opt => opt.addEventListener("mousedown", e => { e.preventDefault(); escolher("insumo", opt.dataset.pickInsumo); }));
+          optsEl.querySelectorAll("[data-pick-ficha]").forEach(opt => opt.addEventListener("mousedown", e => { e.preventDefault(); escolher("ficha", opt.dataset.pickFicha); }));
+        }
+        refreshTotal();
+      });
+      inp.addEventListener("keydown", e => {
+        if(e.key === "Enter" && optsEl){
+          const first = optsEl.querySelector("[data-pick-insumo],[data-pick-ficha]");
+          if(first){ e.preventDefault(); first.dataset.pickInsumo ? escolher("insumo", first.dataset.pickInsumo) : escolher("ficha", first.dataset.pickFicha); }
+        }
+      });
+      inp.addEventListener("blur", () => { fecharOpts(); });
+    });
+    wrap.querySelectorAll(".ci-gram").forEach((inp,i) => inp.addEventListener("input", () => {
+      draft.itens[i].gramagem_kg = inp.value===""?null:parseFloat(inp.value);
+      const row = wrap.querySelector(`.cardapio-item-line[data-i="${i}"]`);
+      row.querySelector(".ci-custo-linha").textContent = fmtMoney(custoLinha(draft.itens[i]));
+      refreshTotal();
+    }));
+    wrap.querySelectorAll("[data-rm]").forEach(b => b.addEventListener("click", () => { draft.itens.splice(+b.dataset.rm,1); renderLines(); refreshTotal(); }));
+  }
+
+  function refreshTotal(){
+    document.getElementById("cm-custo-total").textContent = fmtMoney(custoTotalDraft());
+  }
+
+  renderLines();
+
+  if(tipo==="cafe") document.getElementById("cm-add-line").onclick = () => { draft.itens.push({nome:"", ficha_id:null, insumo_id:null, gramagem_kg:null}); renderLines(); refreshTotal(); };
+  if(tipo==="almoco") document.getElementById("cm-preco").addEventListener("input", () => { draft.precoVenda = document.getElementById("cm-preco").value===""?null:parseFloat(document.getElementById("cm-preco").value); });
+  document.getElementById("close-m").onclick = () => root.innerHTML = "";
+  document.getElementById("cm-cancel").onclick = () => root.innerHTML = "";
+  document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
+
+  if(existingId) document.getElementById("cm-del").onclick = async () => {
+    if(!(await confirmDialog(`Excluir o cardápio de ${DIA_LABEL[diaCodigo]} (Semana ${semana}, Cardápio ${num})?`))) return;
+    try{
+      if(tipo === "almoco"){
+        const { error } = await sb.from('cardapios').delete().eq('id', existingId);
+        if(error) throw error;
+        await loadCardapios();
+      } else {
+        const novasDias = {...(weekRow?.dias||{})};
+        delete novasDias[DIA_KEY_CAFE[diaCodigo]];
+        const data = { dias: novasDias };
+        Object.assign(data, carimbo());
+        const { error } = await sb.from('cardapios_cafe_semana').update(data).eq('id', existingId);
+        if(error) throw error;
+        await loadCafeSemanas();
+      }
+      root.innerHTML = "";
+      renderCardapio();
+    }catch(e){ showAlert("Erro ao excluir: " + (e.message || e.code || e)); }
+  };
+
+  document.getElementById("cm-save").onclick = async () => {
+    const errEl = document.getElementById("cm-err");
+    const itensFinal = draft.itens.filter(l => l.nome);
+    errEl.textContent = "Salvando…";
+    try{
+      if(tipo === "almoco"){
+        const itensParaSalvar = draft.itens.map(l => ({
+          categoria: l.categoria, nome: l.nome||"", ficha_id: l.ficha_id||null, insumo_id: l.insumo_id||null,
+          gramagem_kg: l.gramagem_kg ?? null
+        }));
+        const custoPlanejado = custoTotalDraft();
+        const data = {
+          cardapio_num: num, semana, dia: diaCodigo,
+          itens: itensParaSalvar,
+          custo_planejado: custoPlanejado,
+          preco_venda_planejado: draft.precoVenda,
+        };
+        Object.assign(data, carimbo());
+        let error;
+        if(existingId){ ({error} = await sb.from('cardapios').update(data).eq('id', existingId)); }
+        else{
+          data.doc_id_legado = `semana${semana}-${diaCodigo.toLowerCase()}-cardapio${num}`;
+          ({error} = await sb.from('cardapios').insert(data));
+        }
+        if(error) throw error;
+        await loadCardapios();
+      } else {
+        const itensParaSalvar = itensFinal.map(l => ({ nome: l.nome, ficha_id: l.ficha_id||null, insumo_id: l.insumo_id||null, gramagem_kg: l.gramagem_kg ?? null }));
+        const novasDias = {...(weekRow?.dias||{})};
+        novasDias[DIA_KEY_CAFE[diaCodigo]] = { cardapio_num: num, dia: diaCodigo, semana, itens: itensParaSalvar };
+        const data = { dias: novasDias };
+        Object.assign(data, carimbo());
+        let error;
+        if(weekRow?.id){ ({error} = await sb.from('cardapios_cafe_semana').update(data).eq('id', weekRow.id)); }
+        else{
+          data.doc_id_legado = `cafe-${num}-semana${semana}`;
+          data.chave = `cafe-${num}`;
+          data.cardapio_num = num;
+          data.semana = semana;
+          ({error} = await sb.from('cardapios_cafe_semana').insert(data));
+        }
+        if(error) throw error;
+        await loadCafeSemanas();
+      }
+      root.innerHTML = "";
+      renderCardapio();
+    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+  };
 }
 
 function renderFichas(){
