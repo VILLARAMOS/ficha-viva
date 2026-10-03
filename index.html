@@ -215,7 +215,7 @@ table.cardapio-table .autocomplete{position:relative;}
     <button class="nav-btn active" data-view="insumos"><span class="ico">&#9673;</span> Insumos</button>
     <button class="nav-btn" data-view="fichas"><span class="ico">&#9636;</span> Fichas técnicas</button>
     <button class="nav-btn" data-view="cardapio"><span class="ico">&#9633;</span> Cardápio</button>
-    <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9737;</span> Contratos</button>
+    <button class="nav-btn" data-view="contratos"><span class="ico">&#9737;</span> Contratos</button>
     <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9650;</span> Vendas</button>
     <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9881;</span> PCP / Expedição</button>
     <div class="sidebar-foot">
@@ -272,6 +272,7 @@ const VIEWS = {
   insumos: renderInsumos,
   fichas: () => renderFichas(),
   cardapio: renderCardapio,
+  contratos: renderContratos,
 };
 
 function goToView(view){
@@ -289,7 +290,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens()]);
   goToView(currentView);
 }
 
@@ -461,6 +462,35 @@ async function loadCafeConfig(){
   cafeConfigs = new Map();
   if (error) return; // não trava o módulo de cardápio por falta de config/label
   (data || []).forEach(row => cafeConfigs.set(row.cardapio_num, row));
+}
+
+/* ---- contratos ---- */
+let catalogoItens = new Map();   // id -> {ordem, nome, categoria, tipo_custo, ficha_id, custo_unitario, multiplicador, ativo}
+let contratos = new Map();       // id -> {nome_cliente, ativo, modelo_faturamento, valor_fixo_mensal, unidade, data_inicio, data_fim, cardapio_refeicao_num, cardapio_marmita_num, marmita_especial_ativo, cardapio_marmita_especial_num, cardapio_cafe_num, cafe_especial_ativo, cardapio_cafe_especial_num, observacoes, ...}
+let contratoItens = new Map();   // id -> {contrato_id, catalogo_item_id, nome_customizado, preco_venda, quantidade_minima, ordem}
+
+async function loadCatalogoItens(){
+  const { data, error } = await sb.from('catalogo_itens_contratacao').select('*').order('ordem');
+  catalogoItens = new Map();
+  if (error){ showAlert('Erro ao carregar catálogo de contratação: ' + error.message); return; }
+  (data || []).forEach(row => { const { id, ...rest } = row; catalogoItens.set(id, rest); });
+}
+
+async function loadContratos(){
+  const { data, error } = await sb.from('contratos').select('*').order('nome_cliente');
+  contratos = new Map();
+  if (error){ showAlert('Erro ao carregar contratos: ' + error.message); return; }
+  (data || []).forEach(row => { const { id, ...rest } = row; contratos.set(id, rest); });
+}
+
+async function loadContratoItens(){
+  const { data, error } = await sb.from('contrato_itens').select('*').order('ordem');
+  contratoItens = new Map();
+  if (error){ showAlert('Erro ao carregar itens contratados: ' + error.message); return; }
+  (data || []).forEach(row => { const { id, ...rest } = row; contratoItens.set(id, rest); });
+}
+function itensDoContrato(contratoId){
+  return [...contratoItens.entries()].filter(([,it]) => it.contrato_id === contratoId);
 }
 
 /* ===================================================================== INSUMOS (portado do Ficha Viva) */
@@ -1149,6 +1179,301 @@ function montarTabelaCafe(num, semana){
       errEl.textContent = "";
       montarTabelaCafe(num, semana);
       showAlert("Semana salva com sucesso.");
+    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+  };
+}
+
+/* ===================================================================== CONTRATOS
+   Réplica do módulo de Contratos do sistema antigo: um contrato por cliente, com
+   cardápio de referência (Refeição/Marmita/Café, com variantes "especial" opcionais)
+   e uma grade única de itens contratados (catálogo padrão de 22 linhas + itens
+   específicos do cliente fora do padrão). Ainda não inclui Vendas/CMV real,
+   Previsão de Compra ou Pedidos — ficam para uma próxima etapa, combinado com o Marcelo. */
+let contratoFilters = { busca: "", status: "ativos" };
+
+function fmtDataBr(d){
+  if(!d) return "—";
+  const [y,m,dd] = d.split("-");
+  return `${dd}/${m}/${y}`;
+}
+
+function renderContratos(){
+  document.getElementById("page-title").textContent = "Contratos";
+  document.getElementById("page-desc").textContent = "Cadastro de clientes, cardápio de referência e itens contratados";
+  document.getElementById("topbar-actions").innerHTML = `<button class="btn primary" id="btn-novo-contrato">+ Novo contrato</button>`;
+  document.getElementById("btn-novo-contrato").addEventListener("click", () => openContratoModal(null));
+
+  const content = document.getElementById("content");
+  content.innerHTML = `
+    <div class="search-bar">
+      <input type="text" id="k-busca" placeholder="Buscar cliente…" value="${escapeHtml(contratoFilters.busca)}">
+      <select id="k-status">
+        <option value="ativos" ${contratoFilters.status==="ativos"?"selected":""}>Só ativos</option>
+        <option value="inativos" ${contratoFilters.status==="inativos"?"selected":""}>Só inativos</option>
+        <option value="todos" ${contratoFilters.status==="todos"?"selected":""}>Todos</option>
+      </select>
+      <span class="footnote" id="k-count" style="align-self:center;"></span>
+    </div>
+    <div class="panel">
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Cliente</th><th>Unidade</th><th>Faturamento</th><th>Cardápio de referência</th><th>Vigência</th><th></th>
+          </tr></thead>
+          <tbody id="k-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  function updateTable(){
+    let rows = [...contratos.entries()];
+    if(contratoFilters.status === "ativos") rows = rows.filter(([,c]) => c.ativo);
+    else if(contratoFilters.status === "inativos") rows = rows.filter(([,c]) => !c.ativo);
+    if(contratoFilters.busca){
+      const nb = normalizeText(contratoFilters.busca);
+      rows = rows.filter(([,c]) => normalizeText(c.nome_cliente||"").includes(nb));
+    }
+    rows.sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)));
+
+    document.getElementById("k-count").textContent = `${rows.length} de ${contratos.size} contratos`;
+    const tbody = document.getElementById("k-tbody");
+    tbody.innerHTML = rows.map(([id,c]) => {
+      const refTxt = [
+        c.cardapio_refeicao_num ? labelNumeroCardapio("refeicao", c.cardapio_refeicao_num) : null,
+        c.cardapio_marmita_num ? labelNumeroCardapio("marmita", c.cardapio_marmita_num) + (c.marmita_especial_ativo ? " (+especial)" : "") : null,
+        c.cardapio_cafe_num ? labelNumeroCardapio("cafe", c.cardapio_cafe_num) + (c.cafe_especial_ativo ? " (+especial)" : "") : null,
+      ].filter(Boolean).join(" · ") || '<span style="color:var(--text-faint);">não definido</span>';
+      const vigTxt = (c.data_inicio || c.data_fim) ? `${fmtDataBr(c.data_inicio)} – ${fmtDataBr(c.data_fim)}` : '<span style="color:var(--text-faint);">—</span>';
+      return `
+            <tr>
+              <td class="name-cell">${escapeHtml(c.nome_cliente)}${!c.ativo ? ' <span class="chip neutral">inativo</span>' : ''}</td>
+              <td class="tag-sheet">${c.unidade === "filial" ? "Filial" : "Matriz"}</td>
+              <td>${c.modelo_faturamento === "fixo" ? `Fixo · ${fmtMoney(c.valor_fixo_mensal||0)}/mês` : "Itemizado"}</td>
+              <td style="font-size:12.5px;">${refTxt}</td>
+              <td style="font-size:12.5px; white-space:nowrap;">${vigTxt}</td>
+              <td style="text-align:right; white-space:nowrap;"><button class="btn small ghost" data-open="${id}">abrir</button></td>
+            </tr>`;
+    }).join("") || `<tr><td colspan="6" class="empty-state">Nenhum contrato encontrado.</td></tr>`;
+    tbody.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", () => openContratoModal(b.dataset.open)));
+  }
+
+  updateTable();
+  document.getElementById("k-busca").addEventListener("input", e => { contratoFilters.busca = e.target.value; updateTable(); });
+  document.getElementById("k-status").addEventListener("change", e => { contratoFilters.status = e.target.value; updateTable(); });
+}
+
+function openContratoModal(id){
+  const existing = id ? contratos.get(id) : null;
+  const draft = existing ? JSON.parse(JSON.stringify(existing)) : {
+    nome_cliente:"", ativo:true, modelo_faturamento:"itemizado", valor_fixo_mensal:null,
+    unidade:"matriz", data_inicio:null, data_fim:null,
+    cardapio_refeicao_num: REFEICAO_NUMS[0], cardapio_marmita_num: MARMITA_NUMS[0], marmita_especial_ativo:false, cardapio_marmita_especial_num:null,
+    cardapio_cafe_num: CAFE_NUMS[0], cafe_especial_ativo:false, cardapio_cafe_especial_num:null,
+    observacoes:null
+  };
+
+  // grade de itens: as 22 linhas do catálogo padrão (sempre presentes) + itens específicos deste cliente (fora do padrão)
+  const catalogoOrdenado = [...catalogoItens.entries()].sort((a,b) => a[1].ordem - b[1].ordem);
+  const existentesPorCatalogo = new Map();
+  const customizados = [];
+  if(id) itensDoContrato(id).forEach(([, it]) => {
+    if(it.catalogo_item_id) existentesPorCatalogo.set(it.catalogo_item_id, it);
+    else customizados.push({...it});
+  });
+  const draftCatalogo = catalogoOrdenado.map(([catId, cat]) => {
+    const ex = existentesPorCatalogo.get(catId);
+    return { catalogo_item_id: catId, nome: cat.nome, categoria: cat.categoria, preco_venda: ex?.preco_venda ?? null, quantidade_minima: ex?.quantidade_minima ?? null };
+  });
+  const draftCustom = customizados.map(c => ({ nome_customizado: c.nome_customizado, preco_venda: c.preco_venda, quantidade_minima: c.quantidade_minima }));
+
+  renderContratoModal(id, draft, draftCatalogo, draftCustom);
+}
+
+function renderContratoModal(id, draft, draftCatalogo, draftCustom){
+  const root = document.getElementById("modal-root");
+  const CATS = [["refeicao","Refeição"],["cafe","Café da manhã/tarde/noite"],["outros","Outros itens"]];
+
+  root.innerHTML = `
+    <div class="modal-overlay" id="ov">
+      <div class="modal modal-wide">
+        <div class="modal-head"><h2>${id? "Editar contrato" : "Novo contrato"}</h2><button class="close-x" id="close-m">&times;</button></div>
+        <div class="modal-body">
+          <div class="field-row">
+            <div class="field" style="flex:2;"><label>Cliente</label><input type="text" id="kk-nome" value="${escapeHtml(draft.nome_cliente)}"></div>
+            <div class="field"><label>Unidade</label>
+              <select id="kk-unidade"><option value="matriz" ${draft.unidade==="matriz"?"selected":""}>Matriz</option><option value="filial" ${draft.unidade==="filial"?"selected":""}>Filial</option></select>
+            </div>
+            <div class="field"><label><input type="checkbox" id="kk-ativo" style="width:auto; display:inline-block; margin-right:6px;" ${draft.ativo?"checked":""}> Ativo</label></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>Modelo de faturamento</label>
+              <select id="kk-modelo"><option value="itemizado" ${draft.modelo_faturamento==="itemizado"?"selected":""}>Itemizado</option><option value="fixo" ${draft.modelo_faturamento==="fixo"?"selected":""}>Valor fixo mensal</option></select>
+            </div>
+            <div class="field" id="kk-valorfixo-wrap" style="display:${draft.modelo_faturamento==="fixo"?"block":"none"};"><label>Valor fixo mensal (R$)</label><input type="number" step="0.01" id="kk-valorfixo" value="${draft.valor_fixo_mensal??""}"></div>
+            <div class="field"><label>Início do contrato</label><input type="date" id="kk-inicio" value="${draft.data_inicio||""}"></div>
+            <div class="field"><label>Fim do contrato</label><input type="date" id="kk-fim" value="${draft.data_fim||""}"></div>
+          </div>
+
+          <h3 style="font-size:14px; margin:18px 0 8px;">Cardápio de referência</h3>
+          <div class="footnote" style="margin-bottom:10px;">Vale pra semana inteira — define de onde vem o custo das linhas de Refeição e Café da grade de itens abaixo.</div>
+          <div class="field-row" style="align-items:flex-start;">
+            <div class="field"><label>Refeição</label>
+              <select id="kk-ref-num">${REFEICAO_NUMS.map(n => `<option value="${n}" ${n===draft.cardapio_refeicao_num?"selected":""}>${labelNumeroCardapio("refeicao",n)}</option>`).join("")}</select>
+            </div>
+            <div class="field">
+              <label>Marmita</label>
+              <select id="kk-marmita-num">${MARMITA_NUMS.map(n => `<option value="${n}" ${n===draft.cardapio_marmita_num?"selected":""}>${labelNumeroCardapio("marmita",n)}</option>`).join("")}</select>
+              <label style="margin-top:6px; font-size:12.5px;"><input type="checkbox" id="kk-marmita-esp-on" style="width:auto; display:inline-block; margin-right:6px;" ${draft.marmita_especial_ativo?"checked":""}> este cliente também tem marmita especial</label>
+              <select id="kk-marmita-esp-num" style="margin-top:4px; display:${draft.marmita_especial_ativo?"block":"none"};">${MARMITA_NUMS.map(n => `<option value="${n}" ${n===draft.cardapio_marmita_especial_num?"selected":""}>${labelNumeroCardapio("marmita",n)} (especial)</option>`).join("")}</select>
+            </div>
+            <div class="field">
+              <label>Café</label>
+              <select id="kk-cafe-num">${CAFE_NUMS.map(n => `<option value="${n}" ${n===draft.cardapio_cafe_num?"selected":""}>${labelNumeroCardapio("cafe",n)}</option>`).join("")}</select>
+              <label style="margin-top:6px; font-size:12.5px;"><input type="checkbox" id="kk-cafe-esp-on" style="width:auto; display:inline-block; margin-right:6px;" ${draft.cafe_especial_ativo?"checked":""}> este cliente tem café especial de fim de semana</label>
+              <select id="kk-cafe-esp-num" style="margin-top:4px; display:${draft.cafe_especial_ativo?"block":"none"};">${CAFE_NUMS.map(n => `<option value="${n}" ${n===draft.cardapio_cafe_especial_num?"selected":""}>${labelNumeroCardapio("cafe",n)} (especial)</option>`).join("")}</select>
+            </div>
+          </div>
+
+          <h3 style="font-size:14px; margin:18px 0 8px;">Itens contratados</h3>
+          <div class="footnote" style="margin-bottom:10px;">Preço de venda e quantidade mínima por item. Linhas em branco ficam pendentes de preenchimento — não bloqueiam o salvamento.</div>
+          ${CATS.map(([catKey, catLabel]) => {
+            const linhas = draftCatalogo.filter(l => l.categoria === catKey);
+            if(!linhas.length) return "";
+            return `
+            <div class="ing-table" style="margin-bottom:12px;">
+              <div class="ing-header" style="grid-template-columns:2.4fr 1fr 1fr;"><div>${escapeHtml(catLabel)}</div><div>Preço de venda (R$)</div><div>Qtd. mínima</div></div>
+              ${linhas.map(l => `
+              <div class="ing-line" style="grid-template-columns:2.4fr 1fr 1fr;" data-cat-item="${l.catalogo_item_id}">
+                <div>${escapeHtml(l.nome)}</div>
+                <input type="number" step="0.01" class="kk-preco" value="${l.preco_venda??""}">
+                <input type="number" step="0.01" class="kk-min" value="${l.quantidade_minima??""}">
+              </div>`).join("")}
+            </div>`;
+          }).join("")}
+
+          <h3 style="font-size:14px; margin:18px 0 4px;">Itens específicos deste cliente</h3>
+          <div class="footnote" style="margin-bottom:10px;">Fora do catálogo padrão — exclusivos deste contrato.</div>
+          <div class="ing-table" id="kk-custom-wrap"></div>
+          <button class="btn small" id="kk-add-custom" style="margin-top:10px;">+ adicionar item específico</button>
+
+          <div class="field" style="margin-top:16px;"><label>Observações</label><textarea id="kk-obs" rows="3">${escapeHtml(draft.observacoes||"")}</textarea></div>
+          <div class="footnote" id="kk-err" style="color:var(--critical); margin-top:10px;"></div>
+        </div>
+        <div class="modal-foot">
+          <div>${id ? `<button class="btn danger" id="del-m">Excluir contrato</button>` : ""}</div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn" id="cancel-m">Cancelar</button>
+            <button class="btn primary" id="save-m">Salvar</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+  function renderCustomLines(){
+    const wrap = document.getElementById("kk-custom-wrap");
+    wrap.innerHTML = (draftCustom.length ? `<div class="ing-header" style="grid-template-columns:2.4fr 1fr 1fr 60px;"><div>Item</div><div>Preço de venda (R$)</div><div>Qtd. mínima</div><div></div></div>` : `<div class="empty-state" style="padding:12px;">Nenhum item específico ainda.</div>`) +
+      draftCustom.map((l, i) => `
+      <div class="ing-line" style="grid-template-columns:2.4fr 1fr 1fr 60px;" data-custom-i="${i}">
+        <input type="text" class="kk-custom-nome" value="${escapeHtml(l.nome_customizado||"")}" placeholder="Nome do item">
+        <input type="number" step="0.01" class="kk-custom-preco" value="${l.preco_venda??""}">
+        <input type="number" step="0.01" class="kk-custom-min" value="${l.quantidade_minima??""}">
+        <button class="btn small ghost" data-rm-custom="${i}" style="color:var(--critical);">remover</button>
+      </div>`).join("");
+    wrap.querySelectorAll(".kk-custom-nome").forEach((inp,i) => inp.addEventListener("input", () => draftCustom[i].nome_customizado = inp.value));
+    wrap.querySelectorAll(".kk-custom-preco").forEach((inp,i) => inp.addEventListener("input", () => draftCustom[i].preco_venda = inp.value===""?null:parseFloat(inp.value)));
+    wrap.querySelectorAll(".kk-custom-min").forEach((inp,i) => inp.addEventListener("input", () => draftCustom[i].quantidade_minima = inp.value===""?null:parseFloat(inp.value)));
+    wrap.querySelectorAll("[data-rm-custom]").forEach(b => b.addEventListener("click", () => { draftCustom.splice(Number(b.dataset.rmCustom), 1); renderCustomLines(); }));
+  }
+  renderCustomLines();
+  document.getElementById("kk-add-custom").addEventListener("click", () => { draftCustom.push({nome_customizado:"", preco_venda:null, quantidade_minima:null}); renderCustomLines(); });
+
+  document.getElementById("kk-modelo").addEventListener("change", e => {
+    document.getElementById("kk-valorfixo-wrap").style.display = e.target.value === "fixo" ? "block" : "none";
+  });
+  document.getElementById("kk-marmita-esp-on").addEventListener("change", e => {
+    document.getElementById("kk-marmita-esp-num").style.display = e.target.checked ? "block" : "none";
+  });
+  document.getElementById("kk-cafe-esp-on").addEventListener("change", e => {
+    document.getElementById("kk-cafe-esp-num").style.display = e.target.checked ? "block" : "none";
+  });
+
+  document.getElementById("close-m").onclick = () => root.innerHTML = "";
+  document.getElementById("cancel-m").onclick = () => root.innerHTML = "";
+  document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
+
+  if(id) document.getElementById("del-m").onclick = async () => {
+    if(!(await confirmDialog(`Excluir o contrato de "${draft.nome_cliente}"? Os itens contratados também serão removidos.`))) return;
+    try{
+      const { error } = await sb.from('contratos').delete().eq('id', id);
+      if(error) throw error;
+      await Promise.all([loadContratos(), loadContratoItens()]);
+      root.innerHTML="";
+      renderContratos();
+    }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
+  };
+
+  document.getElementById("save-m").onclick = async () => {
+    const errEl = document.getElementById("kk-err");
+    const nome = document.getElementById("kk-nome").value.trim();
+    if(!nome){ errEl.textContent = "Informe o nome do cliente."; return; }
+
+    const payload = {
+      nome_cliente: nome,
+      ativo: document.getElementById("kk-ativo").checked,
+      modelo_faturamento: document.getElementById("kk-modelo").value,
+      valor_fixo_mensal: document.getElementById("kk-valorfixo").value === "" ? null : parseFloat(document.getElementById("kk-valorfixo").value),
+      unidade: document.getElementById("kk-unidade").value,
+      data_inicio: document.getElementById("kk-inicio").value || null,
+      data_fim: document.getElementById("kk-fim").value || null,
+      cardapio_refeicao_num: Number(document.getElementById("kk-ref-num").value),
+      cardapio_marmita_num: Number(document.getElementById("kk-marmita-num").value),
+      marmita_especial_ativo: document.getElementById("kk-marmita-esp-on").checked,
+      cardapio_marmita_especial_num: document.getElementById("kk-marmita-esp-on").checked ? Number(document.getElementById("kk-marmita-esp-num").value) : null,
+      cardapio_cafe_num: Number(document.getElementById("kk-cafe-num").value),
+      cafe_especial_ativo: document.getElementById("kk-cafe-esp-on").checked,
+      cardapio_cafe_especial_num: document.getElementById("kk-cafe-esp-on").checked ? Number(document.getElementById("kk-cafe-esp-num").value) : null,
+      observacoes: document.getElementById("kk-obs").value.trim() || null,
+      ...carimbo(),
+    };
+
+    // coleta a grade de itens direto do DOM (preço/mínimo podem ter sido editados)
+    const itensCatalogo = [...document.querySelectorAll("#modal-root [data-cat-item]")].map(row => ({
+      catalogo_item_id: row.dataset.catItem,
+      nome_customizado: null,
+      preco_venda: row.querySelector(".kk-preco").value === "" ? null : parseFloat(row.querySelector(".kk-preco").value),
+      quantidade_minima: row.querySelector(".kk-min").value === "" ? null : parseFloat(row.querySelector(".kk-min").value),
+    }));
+    const itensCustom = draftCustom.filter(c => (c.nome_customizado||"").trim()).map(c => ({
+      catalogo_item_id: null,
+      nome_customizado: c.nome_customizado.trim(),
+      preco_venda: c.preco_venda===""||c.preco_venda===undefined ? null : c.preco_venda,
+      quantidade_minima: c.quantidade_minima===""||c.quantidade_minima===undefined ? null : c.quantidade_minima,
+    }));
+
+    try{
+      let contratoId = id;
+      if(id){
+        const { error } = await sb.from('contratos').update(payload).eq('id', id);
+        if(error) throw error;
+      } else {
+        const { data, error } = await sb.from('contratos').insert(payload).select('id').single();
+        if(error) throw error;
+        contratoId = data.id;
+      }
+
+      // substitui a grade de itens inteira (mais simples e seguro do que diffs parciais)
+      const { error: delErr } = await sb.from('contrato_itens').delete().eq('contrato_id', contratoId);
+      if(delErr) throw delErr;
+      const todasLinhas = [...itensCatalogo, ...itensCustom].map((l, i) => ({ ...l, contrato_id: contratoId, ordem: i }));
+      if(todasLinhas.length){
+        const { error: insErr } = await sb.from('contrato_itens').insert(todasLinhas);
+        if(insErr) throw insErr;
+      }
+
+      await Promise.all([loadContratos(), loadContratoItens()]);
+      root.innerHTML = "";
+      renderContratos();
     }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
   };
 }
