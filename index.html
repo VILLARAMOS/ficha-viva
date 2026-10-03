@@ -1248,7 +1248,7 @@ function renderContratos(){
       return `
             <tr>
               <td class="name-cell">${escapeHtml(c.nome_cliente)}${!c.ativo ? ' <span class="chip neutral">inativo</span>' : ''}</td>
-              <td class="tag-sheet">${c.unidade === "filial" ? "Filial" : "Matriz"}</td>
+              <td class="tag-sheet">${c.unidade === "filial" ? "Filial" : c.unidade === "matriz" ? "Matriz" : '<span style="color:var(--text-faint);">não definida</span>'}</td>
               <td>${c.modelo_faturamento === "fixo" ? `Fixo · ${fmtMoney(c.valor_fixo_mensal||0)}/mês` : "Itemizado"}</td>
               <td style="font-size:12.5px;">${refTxt}</td>
               <td style="font-size:12.5px; white-space:nowrap;">${vigTxt}</td>
@@ -1302,7 +1302,11 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
           <div class="field-row">
             <div class="field" style="flex:2;"><label>Cliente</label><input type="text" id="kk-nome" value="${escapeHtml(draft.nome_cliente)}"></div>
             <div class="field"><label>Unidade</label>
-              <select id="kk-unidade"><option value="matriz" ${draft.unidade==="matriz"?"selected":""}>Matriz</option><option value="filial" ${draft.unidade==="filial"?"selected":""}>Filial</option></select>
+              <select id="kk-unidade">
+                <option value="" ${!draft.unidade?"selected":""}>— não definida —</option>
+                <option value="matriz" ${draft.unidade==="matriz"?"selected":""}>Matriz</option>
+                <option value="filial" ${draft.unidade==="filial"?"selected":""}>Filial</option>
+              </select>
             </div>
             <div class="field"><label><input type="checkbox" id="kk-ativo" style="width:auto; display:inline-block; margin-right:6px;" ${draft.ativo?"checked":""}> Ativo</label></div>
           </div>
@@ -1423,7 +1427,7 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
       ativo: document.getElementById("kk-ativo").checked,
       modelo_faturamento: document.getElementById("kk-modelo").value,
       valor_fixo_mensal: document.getElementById("kk-valorfixo").value === "" ? null : parseFloat(document.getElementById("kk-valorfixo").value),
-      unidade: document.getElementById("kk-unidade").value,
+      unidade: document.getElementById("kk-unidade").value || null,
       data_inicio: document.getElementById("kk-inicio").value || null,
       data_fim: document.getElementById("kk-fim").value || null,
       cardapio_refeicao_num: Number(document.getElementById("kk-ref-num").value),
