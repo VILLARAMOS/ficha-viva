@@ -103,6 +103,9 @@ tbody tr:hover{background:var(--surface-alt);}
 #confirm-root .modal-overlay{z-index:200;align-items:center;}
 #confirm-root .modal{max-width:420px;}
 .modal{background:var(--surface);border-radius:14px;max-width:460px;width:100%;box-shadow:0 24px 60px -20px rgba(0,0,0,.4);border:1px solid var(--border);}
+/* modal mais largo — usado só na ficha técnica, pra grade de ingredientes caber sem rolagem lateral */
+.modal-wide{max-width:900px;}
+@media (max-width:960px){ .modal-wide{max-width:96vw;} }
 .modal-head{display:flex;align-items:center;justify-content:space-between;padding:18px 22px;border-bottom:1px solid var(--border);}
 .modal-head h2{margin:0;font-size:18px;}
 .modal-body{padding:20px 22px;max-height:70vh;overflow-y:auto;}
@@ -116,11 +119,16 @@ tbody tr:hover{background:var(--surface-alt);}
 .chip.critical{background:var(--critical-soft); color:var(--critical);}
 .chip.neutral{background:var(--surface-alt); color:var(--text-muted);}
 .panel-body{padding:16px 20px;}
-.ing-line{display:grid; grid-template-columns:2fr .95fr .85fr .85fr .9fr auto; gap:8px; align-items:end; margin-bottom:8px; padding-bottom:8px; border-bottom:1px dashed var(--border);}
+.ing-table{border:1px solid var(--border); border-radius:10px; overflow:hidden;}
+.ing-header, .ing-line{display:grid; grid-template-columns:2.4fr .95fr .9fr .9fr .9fr 70px; gap:10px; align-items:center;}
+.ing-header{padding:7px 10px; background:var(--surface-alt); font-size:10.5px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.03em;}
+.ing-line{padding:6px 10px; border-top:1px solid var(--border);}
 .ing-line .microlabel{font-size:10.5px; color:var(--text-faint); margin-bottom:3px;}
 .ing-line-missing{outline:1.5px solid var(--critical); border-radius:8px;}
 .ing-line .ing-ckg{padding:8px 0; color:var(--text-muted); white-space:nowrap;}
-.ing-line .ing-aviso{font-size:10.5px; color:var(--critical); margin-top:3px;}
+.ing-line .ing-aviso{font-size:10.5px; color:var(--critical); margin-top:3px; grid-column:1 / -1;}
+.ing-line .ing-ficha-tag{font-size:10px; color:var(--text-faint); grid-column:1 / -1; margin-top:-2px;}
+@media (max-width:720px){ .ing-header{display:none;} }
 .autocomplete{position:relative;}
 .autocomplete .options{position:absolute; top:100%; left:0; right:0; background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow); max-height:180px; overflow-y:auto; z-index:10; margin-top:2px;}
 .autocomplete .options div{padding:7px 10px; font-size:13px; cursor:pointer;}
@@ -1217,7 +1225,7 @@ function renderFichaModal(id, draft){
 
   root.innerHTML = `
     <div class="modal-overlay" id="ov">
-      <div class="modal">
+      <div class="modal modal-wide">
         <div class="modal-head"><h2>${id? "Editar ficha" : "Nova ficha técnica"}</h2><button class="close-x" id="close-m">&times;</button></div>
         <div class="modal-body">
           <div class="field"><label>Nome / prato</label><input type="text" id="ff-nome" value="${escapeHtml(draft.nome)}"></div>
@@ -1236,8 +1244,11 @@ function renderFichaModal(id, draft){
 
           <h3 style="font-size:14px; margin:18px 0 4px;">Ingredientes</h3>
           <div class="footnote" style="margin-bottom:10px;">Peso bruto (kg) é sempre o da receita padrão desenhada. Fator de correção e peso líquido são opcionais.</div>
-          <div id="ing-lines"></div>
-          <button class="btn small" id="add-line">+ adicionar ingrediente</button>
+          <div class="ing-table">
+            <div class="ing-header"><div>Ingrediente</div><div>Custo kg/L/un</div><div>Peso bruto (kg)</div><div>Peso líquido (kg)</div><div>Custo linha</div><div></div></div>
+            <div id="ing-lines"></div>
+          </div>
+          <button class="btn small" id="add-line" style="margin-top:10px;">+ adicionar ingrediente</button>
 
           <div class="panel" style="margin-top:18px; background:var(--surface-alt);">
             <div class="panel-body">
@@ -1307,16 +1318,16 @@ function renderFichaModal(id, draft){
       return `
       <div class="ing-line ${problema ? 'ing-line-missing' : ''}" data-i="${i}">
         <div class="autocomplete">
-          <div class="microlabel">Ingrediente ${viaFicha ? '<span class="footnote" style="margin:0;">(ficha técnica usada como insumo)</span>' : ''}</div>
           <input type="text" class="ing-name search-input" value="${escapeHtml(l.nome||"")}" autocomplete="off">
-          ${line && line.ciclo ? `<div class="footnote" style="color:var(--critical);">Referência circular — esta ficha (direta ou indiretamente) usa a si mesma. Linha ignorada no cálculo de custo.</div>` : ""}
-          <div class="ing-aviso-slot">${avisoLinha(l, line)}</div>
         </div>
-        <div><div class="microlabel">Custo kg/L/un</div><div class="num ing-ckg">${custoRefLinha(l, line)}</div></div>
-        <div><div class="microlabel">Peso bruto (kg)</div><input type="number" step="0.001" class="ing-bruto" value="${l.peso_bruto||""}"></div>
-        <div><div class="microlabel">Peso líquido (kg)</div><input type="number" step="0.001" class="ing-liquido" value="${l.peso_liquido||""}"></div>
-        <div><div class="microlabel">Custo linha</div><div class="num ing-custo-linha" style="padding:8px 0;">${fmtMoney(line?line.custo_linha:0)}</div></div>
-        <div><button class="btn small ghost" data-rm="${i}" style="color:var(--critical);">remover</button></div>
+        <div class="num ing-ckg">${custoRefLinha(l, line)}</div>
+        <input type="number" step="0.001" class="ing-bruto" value="${l.peso_bruto||""}">
+        <input type="number" step="0.001" class="ing-liquido" value="${l.peso_liquido||""}">
+        <div class="num ing-custo-linha">${fmtMoney(line?line.custo_linha:0)}</div>
+        <button class="btn small ghost" data-rm="${i}" style="color:var(--critical);">remover</button>
+        ${viaFicha ? `<div class="ing-ficha-tag">ficha técnica usada como insumo</div>` : ""}
+        ${line && line.ciclo ? `<div class="ing-aviso" style="grid-column:1 / -1;">Referência circular — esta ficha (direta ou indiretamente) usa a si mesma. Linha ignorada no cálculo de custo.</div>` : ""}
+        <div class="ing-aviso-slot" style="grid-column:1 / -1;">${avisoLinha(l, line)}</div>
       </div>`;
     }).join("") || `<div class="empty-state" style="padding:14px;">Nenhum ingrediente ainda.</div>`;
 
