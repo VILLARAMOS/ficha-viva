@@ -3214,7 +3214,14 @@ let compraContratoSel = null;
 let compraSemanaSel = null;
 let compraMesSel = null;
 let compraTabSel = "previsao"; // "previsao" | "lista"
+let compraClientesSel = null; // Set de contrato_id na Lista de compra — null = todos
 let draftPrevisao = null; // { [DIA]: { [produto_id]: quantidade_ajustada } }
+
+// café/extras são terceirizados — fora da lista de compra (igual ao sistema antigo). Previsão
+// continua mostrando só os itens de refeição também, já que é a única coisa que a lista usa.
+function itensRefeicaoDoContrato(contratoId){
+  return itensDoContratoVenda(contratoId).filter(it => it.produto_id && categoriaSimples(it.produto_id) === "refeicao");
+}
 
 function carregarDraftPrevisao(contratoId, semana){
   const d = {};
@@ -3258,7 +3265,7 @@ function renderCompras(){
         <select id="cp-semana">${semanas.map(s => `<option value="${s}" ${s===compraSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
         <button class="btn primary" id="cp-salvar" style="margin-left:auto;">Salvar ajustes</button>
       </div>
-      <div class="footnote" style="margin:10px 0;">Sem ajuste, a célula mostra a <strong>sugestão automática</strong> como placeholder (passe o mouse pra ver a origem): o que já foi lançado em Vendas nesta semana → mediana do mês (mín. 2 lançamentos) → o mesmo dia 9 semanas atrás (ciclo de 2 meses) → quantidade contratada por dia. Digite um número pra sobrepor; apague o campo pra voltar a usar a sugestão.</div>
+      <div class="footnote" style="margin:10px 0;">Sem ajuste, a célula mostra a <strong>sugestão automática</strong> como placeholder (passe o mouse pra ver a origem): o que já foi lançado em Vendas nesta semana → mediana do mês (mín. 2 lançamentos) → o mesmo dia 9 semanas atrás (ciclo de 2 meses) → quantidade contratada por dia. Digite um número pra sobrepor; apague o campo pra voltar a usar a sugestão. Só itens de <strong>refeição</strong> aparecem aqui — café e extras são terceirizados e não entram na Lista de compra.</div>
       <div class="panel">
         <div class="table-wrap">
           <table class="cardapio-table">
@@ -3269,7 +3276,7 @@ function renderCompras(){
       </div>
     `;
 
-    const itens = itensDoContratoVenda(compraContratoSel);
+    const itens = itensRefeicaoDoContrato(compraContratoSel);
     function redraw(){
       const tbody = document.getElementById("cp-tbody");
       tbody.innerHTML = itens.map(item => `<tr>
@@ -3317,11 +3324,12 @@ function renderCompras(){
   function montarLista(){
     const mes = meses.find(m => m.id === compraMesSel);
     const totalInsumos = new Map(); // insumo_id -> kg/und
+    const contratosNaLista = compraClientesSel === null ? contratosAtivos : contratosAtivos.filter(([id]) => compraClientesSel.has(id));
     if(mes){
       const almocoIdx = indiceCardapioAlmoco();
       const cafeIdx = indiceCafeSemana();
-      contratosAtivos.forEach(([id, ct]) => {
-        const itensContrato = itensDoContratoVenda(id).filter(it => it.produto_id);
+      contratosNaLista.forEach(([id, ct]) => {
+        const itensContrato = itensRefeicaoDoContrato(id);
         mes.semanas.forEach(semana => {
           DIAS_ORDEM.forEach(dia => {
             if(mesDoDia(semana, dia) !== mes.id) return;
@@ -3360,10 +3368,32 @@ function renderCompras(){
   }
 
   function renderTabLista(){
+    if(compraClientesSel === null) compraClientesSel = new Set(contratosAtivos.map(([id]) => id));
+    compraClientesSel = new Set([...compraClientesSel].filter(id => contratosAtivos.some(([cid]) => cid === id)));
+    const idsMatriz = contratosAtivos.filter(([,c]) => c.unidade === "matriz").map(([id]) => id);
+    const idsFilial = contratosAtivos.filter(([,c]) => c.unidade === "filial").map(([id]) => id);
+    const mesmoConjunto = (a,b) => a.length === b.length && a.every(id => b.includes(id));
+
     const body = document.getElementById("cp-body");
     body.innerHTML = `
       <div class="menu-controls"><select id="cp-mes">${meses.map(m => `<option value="${m.id}" ${m.id===compraMesSel?"selected":""}>${escapeHtml(m.nome)}</option>`).join("")}</select></div>
-      <div class="footnote" style="margin:10px 0;">Soma a previsão (ajuste manual, ou sugestão automática quando não há ajuste) de todos os contratos ativos e vigentes no mês, convertida em kg/unidade de insumo — mesmo motor de cálculo usado no custo de Vendas, só que acumulando insumo em vez de R$.</div>
+      <div class="footnote" style="margin:10px 0;">Soma a previsão (ajuste manual, ou sugestão automática quando não há ajuste) dos clientes marcados abaixo, vigentes no mês, convertida em kg/unidade de insumo — mesmo motor de cálculo usado no custo de Vendas, só que acumulando insumo em vez de R$. Só itens de <strong>refeição</strong> entram — café e extras são terceirizados.</div>
+      <div class="panel">
+        <div class="panel-head">
+          <h3>Clientes da lista</h3>
+          <span class="hint">${compraClientesSel.size} de ${contratosAtivos.length}</span>
+        </div>
+        <div class="panel-body">
+          <div class="seg-toggle" id="cp-cli-atalhos" style="width:fit-content; margin-bottom:10px;">
+            <button type="button" data-atalho="todos">Todos</button>
+            <button type="button" data-atalho="matriz" ${idsMatriz.length?"":"disabled"}>Matriz</button>
+            <button type="button" data-atalho="filial" ${idsFilial.length?"":"disabled"}>Filial</button>
+          </div>
+          <div class="kk-dias-chips" style="flex-wrap:wrap;">
+            ${contratosAtivos.map(([id,c]) => `<button type="button" class="chip-dia cp-cli-chip ${compraClientesSel.has(id)?"on":""}" data-id="${id}">${escapeHtml(c.nome_cliente)}</button>`).join("")}
+          </div>
+        </div>
+      </div>
       <div class="panel"><div class="table-wrap"><table>
         <thead><tr><th>Insumo</th><th>Grupo de compra</th><th style="text-align:right;">Quantidade</th><th>Unidade</th><th style="text-align:right;">Custo estimado</th></tr></thead>
         <tbody id="cp-lista-tbody"></tbody>
@@ -3372,6 +3402,27 @@ function renderCompras(){
     `;
     montarLista();
     document.getElementById("cp-mes").addEventListener("change", e => { compraMesSel = e.target.value; montarLista(); });
+
+    function atualizarChipsCliente(){
+      document.querySelectorAll(".cp-cli-chip").forEach(b => b.classList.toggle("on", compraClientesSel.has(b.dataset.id)));
+      document.querySelectorAll("#cp-cli-atalhos button").forEach(b => {
+        const ids = b.dataset.atalho === "matriz" ? idsMatriz : b.dataset.atalho === "filial" ? idsFilial : contratosAtivos.map(([id])=>id);
+        b.classList.toggle("active", ids.length > 0 && mesmoConjunto([...compraClientesSel].sort(), [...ids].sort()));
+      });
+    }
+    atualizarChipsCliente();
+
+    document.getElementById("cp-cli-atalhos").addEventListener("click", e => {
+      const b = e.target.closest("button[data-atalho]"); if(!b) return;
+      const ids = b.dataset.atalho === "matriz" ? idsMatriz : b.dataset.atalho === "filial" ? idsFilial : contratosAtivos.map(([id])=>id);
+      compraClientesSel = new Set(ids);
+      atualizarChipsCliente(); montarLista();
+    });
+    document.querySelectorAll(".cp-cli-chip").forEach(b => b.addEventListener("click", () => {
+      const id = b.dataset.id;
+      if(compraClientesSel.has(id)) compraClientesSel.delete(id); else compraClientesSel.add(id);
+      atualizarChipsCliente(); montarLista();
+    }));
   }
 
   document.getElementById("cp-tabs").addEventListener("click", e => {
