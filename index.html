@@ -222,6 +222,7 @@ table.cardapio-table .autocomplete{position:relative;}
     <button class="nav-btn" data-view="eventos"><span class="ico">&#9671;</span> Eventos</button>
     <button class="nav-btn" data-view="incidencia"><span class="ico">&#9661;</span> Incidência</button>
     <button class="nav-btn" data-view="vendas"><span class="ico">&#9650;</span> Vendas</button>
+    <button class="nav-btn" data-view="faturamento"><span class="ico">&#9679;</span> Faturamento apurado</button>
     <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9881;</span> PCP / Expedição</button>
     <div class="sidebar-foot">
       Cadastro único de custo dos insumos. Os demais módulos do Ficha Viva ainda serão migrados para cá.
@@ -281,6 +282,7 @@ const VIEWS = {
   eventos: renderEventos,
   incidencia: renderIncidencia,
   vendas: renderVendas,
+  faturamento: renderFaturamento,
 };
 
 function goToView(view){
@@ -298,7 +300,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados()]);
   goToView(currentView);
 }
 
@@ -506,6 +508,41 @@ async function loadVendas(){
   vendas = new Map();
   if (error){ showAlert('Erro ao carregar vendas: ' + error.message); return; }
   (data || []).forEach(row => vendas.set(`${row.contrato_id}|${row.semana}|${row.dia}`, row));
+}
+
+/* ---- ajuste de mínimo (por contrato/semana — entra só na receita apurada, sem custo/compra/PCP) ---- */
+let ajustesMinimo = new Map(); // "contratoId|semana" -> {id, contrato_id, semana, itens:[{produto_id,quantidade}]}
+
+async function loadAjustesMinimo(){
+  const { data, error } = await sb.from('ajustes_minimo').select('*');
+  ajustesMinimo = new Map();
+  if (error){ showAlert('Erro ao carregar ajustes de mínimo: ' + error.message); return; }
+  (data || []).forEach(row => ajustesMinimo.set(`${row.contrato_id}|${row.semana}`, row));
+}
+
+/* ---- feriados (calendário) ---- */
+let feriados = new Map(); // "YYYY-MM-DD" -> {data, descricao, unidade}
+
+async function loadFeriados(){
+  const { data, error } = await sb.from('feriados').select('*').order('data');
+  feriados = new Map();
+  if (error){ showAlert('Erro ao carregar feriados: ' + error.message); return; }
+  (data || []).forEach(row => feriados.set(row.data, row));
+}
+function ymdDia(semana, dia){
+  const d = dataDoDia(semana, dia);
+  return (d && !isNaN(d)) ? d.toISOString().slice(0,10) : null;
+}
+function ehFeriado(semana, dia, unidade){
+  const y = ymdDia(semana, dia);
+  if(!y) return false;
+  const f = feriados.get(y);
+  if(!f) return false;
+  return !f.unidade || !unidade || f.unidade === unidade;
+}
+function ehFdsOuFeriado(semana, dia, unidade){
+  const d = String(dia).toUpperCase();
+  return d === "SABADO" || d === "DOMINGO" || ehFeriado(semana, dia, unidade);
 }
 
 /* ---- eventos (produção pontual fora do cardápio padrão, fora do escopo de Contratos) ---- */
@@ -2422,6 +2459,7 @@ function renderFichaModal(id, draft){
 let vendaContratoSel = null;
 let vendaSemanaSel = null;
 let draftVendas = null; // { [DIA]: { [produto_id]: quantidade } }
+let draftAjusteMinimo = {}; // { [produto_id]: quantidade } — diferença mínimo contratado x enviado, só entra na receita
 
 function indiceCardapioAlmoco(){
   const idx = new Map();
@@ -2524,6 +2562,9 @@ function renderVendas(){
   if(vendaSemanaSel === null || !semanas.includes(vendaSemanaSel)) vendaSemanaSel = semanas[0];
 
   draftVendas = carregarDraftVendas(vendaContratoSel, vendaSemanaSel);
+  const ajusteExistente = ajustesMinimo.get(`${vendaContratoSel}|${vendaSemanaSel}`);
+  draftAjusteMinimo = {};
+  (ajusteExistente?.itens || []).forEach(it => { if(it.produto_id) draftAjusteMinimo[it.produto_id] = it.quantidade; });
 
   const content = document.getElementById("content");
   content.innerHTML = `
@@ -2546,6 +2587,15 @@ function renderVendas(){
           </tr></thead>
           <tbody id="vd-tbody"></tbody>
           <tfoot id="vd-tfoot"></tfoot>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Ajuste de mínimo da semana</h3><span class="hint">cliente contratou X/dia, enviamos menos — a diferença fatura, sem gerar custo/compra/PCP</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th class="cat-col">Item</th><th style="text-align:right;">Preço unit.</th><th style="text-align:right;">Qtde ajuste (semana)</th><th style="text-align:right;">Receita do ajuste</th></tr></thead>
+          <tbody id="vd-ajuste-tbody"></tbody>
         </table>
       </div>
     </div>
@@ -2610,6 +2660,28 @@ function renderVendas(){
   }
   redraw();
 
+  function redrawAjuste(){
+    const tbody = document.getElementById("vd-ajuste-tbody");
+    tbody.innerHTML = itens.filter(item => item.produto_id).map(item => {
+      const q = draftAjusteMinimo[item.produto_id] ?? null;
+      const receita = (q && item.preco_venda != null) ? q * item.preco_venda : 0;
+      return `<tr>
+        <td class="cat-col">${escapeHtml(item.nome)}</td>
+        <td class="num-cell">${fmtMoney(item.preco_venda)}</td>
+        <td class="num-cell"><input type="number" step="1" class="vd-ajuste-qtd" data-produto="${escapeHtml(item.produto_id)}" value="${q ?? ""}" style="width:90px; text-align:right;"></td>
+        <td class="num-cell">${receita ? fmtMoney(receita) : "—"}</td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="4" class="empty-state">Este contrato não tem itens cadastrados.</td></tr>`;
+    tbody.querySelectorAll(".vd-ajuste-qtd").forEach(inp => inp.addEventListener("input", () => {
+      const produtoId = inp.dataset.produto;
+      const val = inp.value === "" ? null : Number(inp.value);
+      if(val === null || val === 0) delete draftAjusteMinimo[produtoId]; else draftAjusteMinimo[produtoId] = val;
+      redrawAjuste();
+      document.querySelector(`.vd-ajuste-qtd[data-produto="${CSS.escape(produtoId)}"]`)?.focus();
+    }));
+  }
+  redrawAjuste();
+
   document.getElementById("vd-contrato").addEventListener("change", e => { vendaContratoSel = e.target.value; renderVendas(); });
   document.getElementById("vd-semana").addEventListener("change", e => { vendaSemanaSel = Number(e.target.value); renderVendas(); });
 
@@ -2627,11 +2699,269 @@ function renderVendas(){
       }));
       const { error } = await sb.from('vendas').upsert(linhas, { onConflict: 'contrato_id,semana,dia' });
       if(error) throw error;
-      await loadVendas();
+
+      const ajusteItens = Object.entries(draftAjusteMinimo).map(([produto_id, quantidade]) => ({ produto_id, quantidade }));
+      const { error: errAjuste } = await sb.from('ajustes_minimo').upsert({
+        contrato_id: vendaContratoSel, semana: vendaSemanaSel, itens: ajusteItens, ...carimbo(),
+      }, { onConflict: 'contrato_id,semana' });
+      if(errAjuste) throw errAjuste;
+
+      await Promise.all([loadVendas(), loadAjustesMinimo()]);
       showAlert("Semana salva.");
     }catch(e){ showAlert("Erro ao salvar: " + (e.message || e.code || e)); }
     finally{ btn.disabled = false; btn.textContent = "Salvar semana"; }
   });
+}
+
+/* ===================================================================== FATURAMENTO APURADO
+   V1 — apura por mês (não por "todos os períodos") o que foi realmente lançado em Vendas.
+   Portado de apurarContrato() do sistema antigo, em escopo reduzido:
+     - itemizado, fixo e franquia (fixo + excedente por grupo, faixas já cadastradas no contrato);
+     - ajuste de mínimo (só itemizado — fixo/franquia já cobrem o mínimo pelo próprio valor fixo);
+     - eventos do mês, cada um como linha própria (igual ao sistema antigo: evento não se mistura
+       com o contrato do mesmo cliente);
+     - dia futuro não conta como realizado (diaJaAconteceu);
+     - custo transferido Matriz→Filial (fim de semana/feriado produzido pela Matriz) mostrado como
+       informação à parte, não muda o total.
+   Deliberadamente fora desta V1: fechamento/arquivamento mensal (o mês nunca "congela" — muda se
+   Vendas mudar depois); preço de venda não é congelado por venda (sempre lê o preço atual do contrato). */
+function vendasDoContrato(contratoId){
+  return [...vendas.values()].filter(v => v.contrato_id === contratoId);
+}
+function precoItemVendaApurado(produtoId, contratoId){
+  const ci = [...contratoItens.values()].find(c => c.contrato_id === contratoId && c.produto_id === produtoId);
+  return (ci && ci.preco_venda != null) ? ci.preco_venda : null;
+}
+function categoriaSimples(produtoId){
+  const cat = catalogoPorProduto(produtoId);
+  if(!cat) return null;
+  return cat.categoria === "refeicao" ? "refeicao" : "cafeExtras"; // agrupa café + outros
+}
+function diaJaAconteceu(semana, dia){
+  const y = ymdDia(semana, dia);
+  return !y || y <= hojeYMD();
+}
+function receitaFranquia(ct, porProduto){
+  const grupos = (ct && ct.franquia) || [];
+  const noGrupo = new Set(grupos.flatMap(g => g.produtos || []));
+  const fixo = Number(ct && ct.valor_fixo_mensal) || 0;
+  let total = fixo;
+  const linhas = grupos.map(g => {
+    const efetivo = (g.produtos || []).reduce((a, pid) => a + ((porProduto.get(pid) || {}).quantidade || 0), 0);
+    const minimo = Number(g.minimo) || 0, preco = Number(g.preco_excedente) || 0;
+    const excedente = Math.max(0, efetivo - minimo);
+    const valor = excedente * preco;
+    total += valor;
+    return { rotulo: g.rotulo || "", produtos: g.produtos || [], minimo, efetivo, saldo: efetivo - minimo, excedente, preco, valor };
+  });
+  let fora = 0;
+  porProduto.forEach((acc, pid) => { if(!noGrupo.has(pid)) fora += acc.receita || 0; });
+  total += fora;
+  return { total, fixo, linhas, fora };
+}
+
+function apurarContrato(id, ct, mesId, almocoIdx, cafeIdx){
+  const mes = MESES_REFERENCIA.find(m => m.id === mesId);
+  const semanasMes = mes ? mes.semanas : [];
+  const docs = vendasDoContrato(id).filter(v => semanasMes.includes(v.semana) && mesDoDia(v.semana, v.dia) === mesId && diaJaAconteceu(v.semana, v.dia));
+
+  let custoTotal = 0, custoTransferido = 0, receitaItemizada = 0, itensSemCusto = 0, itensSemPreco = 0, registros = 0;
+  const porProduto = new Map(); // produto_id -> {quantidade, custo, receita}
+  const porCategoria = { refeicao: {custo:0, receita:0, quantidade:0}, cafeExtras: {custo:0, receita:0, quantidade:0} };
+
+  docs.forEach(v => {
+    (v.itens || []).forEach(it => {
+      if(!it.quantidade) return;
+      registros++;
+      const custoUnd = custoUnidadeItemVenda(almocoIdx, cafeIdx, it.produto_id, ct, v.semana, v.dia);
+      const preco = precoItemVendaApurado(it.produto_id, id);
+      if(custoUnd === null || custoUnd === undefined) itensSemCusto++;
+      else {
+        custoTotal += custoUnd * it.quantidade;
+        if(ct.unidade === "filial" && ct.producao_fds_feriado === "matriz" && ehFdsOuFeriado(v.semana, v.dia, ct.unidade)) custoTransferido += custoUnd * it.quantidade;
+      }
+      if(preco === null || preco === undefined) itensSemPreco++;
+      else receitaItemizada += preco * it.quantidade;
+
+      const acc = porProduto.get(it.produto_id) || { quantidade:0, custo:0, receita:0 };
+      acc.quantidade += it.quantidade;
+      if(custoUnd !== null && custoUnd !== undefined) acc.custo += custoUnd * it.quantidade;
+      if(preco !== null && preco !== undefined) acc.receita += preco * it.quantidade;
+      porProduto.set(it.produto_id, acc);
+
+      const cat = categoriaSimples(it.produto_id);
+      if(cat){
+        const cUnd = (custoUnd !== null && custoUnd !== undefined) ? custoUnd * it.quantidade : 0;
+        const rUnd = (preco !== null && preco !== undefined) ? preco * it.quantidade : 0;
+        porCategoria[cat].custo += cUnd; porCategoria[cat].receita += rUnd; porCategoria[cat].quantidade += it.quantidade;
+      }
+    });
+  });
+
+  // ajuste de mínimo — só entra na receita (sem custo), e só faz sentido para modelo itemizado
+  let receitaAjusteMinimo = 0, quantidadeAjusteMinimo = 0;
+  if(ct.modelo_faturamento !== "fixo" && ct.modelo_faturamento !== "franquia"){
+    semanasMes.forEach(s => {
+      const aj = ajustesMinimo.get(`${id}|${s}`);
+      if(!aj) return;
+      (aj.itens || []).forEach(a => {
+        if(!a.quantidade) return;
+        const preco = precoItemVendaApurado(a.produto_id, id);
+        if(preco === null || preco === undefined) return;
+        const r = preco * a.quantidade;
+        receitaAjusteMinimo += r; quantidadeAjusteMinimo += a.quantidade; receitaItemizada += r;
+        const acc = porProduto.get(a.produto_id) || { quantidade:0, custo:0, receita:0 };
+        acc.receita += r; porProduto.set(a.produto_id, acc);
+        const cat = categoriaSimples(a.produto_id);
+        if(cat) porCategoria[cat].receita += r;
+      });
+    });
+  }
+
+  let receita, franquiaInfo = null;
+  if(ct.modelo_faturamento === "franquia"){
+    franquiaInfo = registros > 0 ? receitaFranquia(ct, porProduto) : null;
+    receita = franquiaInfo ? franquiaInfo.total : 0;
+  } else if(ct.modelo_faturamento === "fixo"){
+    receita = registros > 0 ? (ct.valor_fixo_mensal || 0) : 0;
+  } else {
+    receita = receitaItemizada;
+  }
+
+  const cmv = receita > 0 ? custoTotal / receita : null;
+  return { custoTotal, custoTransferido, receita, receitaItemizada, receitaAjusteMinimo, quantidadeAjusteMinimo, cmv, itensSemCusto, itensSemPreco, registros, porProduto, porCategoria, franquia: franquiaInfo };
+}
+
+function apurarEventosDoMes(mesId){
+  return [...eventos.entries()]
+    .filter(([,e]) => e.data && e.data.slice(0,7) === mesId && e.data <= hojeYMD())
+    .map(([id,e]) => {
+      const custo = e.custo_modo === "valor" ? (e.custo_valor || 0) : (e.valor_faturado || 0) * (e.custo_pct || 0);
+      const receita = e.valor_faturado || 0;
+      return { id, nome: `${e.cliente || "Evento"} · evento`, unidade: e.unidade, receita, custo, cmv: receita > 0 ? custo/receita : null };
+    });
+}
+
+let faturamentoMesSel = null;
+
+function renderFaturamento(){
+  document.getElementById("page-title").textContent = "Faturamento apurado";
+  document.getElementById("page-desc").textContent = "Receita e custo realmente apurados a partir do que foi lançado em Vendas e Eventos — recalculado ao vivo (sem fechamento de mês nesta versão)";
+  document.getElementById("topbar-actions").innerHTML = "";
+
+  const meses = MESES_REFERENCIA;
+  if(faturamentoMesSel === null || !meses.some(m => m.id === faturamentoMesSel)){
+    faturamentoMesSel = meses.some(m => m.id === mesAtualId()) ? mesAtualId() : (meses[0] ? meses[0].id : null);
+  }
+
+  const content = document.getElementById("content");
+  if(!faturamentoMesSel){
+    content.innerHTML = `<div class="empty-state">Nenhum mês de referência disponível.</div>`;
+    return;
+  }
+
+  content.innerHTML = `
+    <div class="menu-controls">
+      <select id="ft-mes">${meses.map(m => `<option value="${m.id}" ${m.id===faturamentoMesSel?"selected":""}>${escapeHtml(m.nome)}</option>`).join("")}</select>
+    </div>
+    <div class="panel">
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Cliente</th><th>Modelo</th>
+            <th style="text-align:right;">Receita</th><th style="text-align:right;">Custo</th><th>CMV</th><th style="text-align:right;">Margem</th>
+            <th style="text-align:right;">Lançamentos</th><th></th>
+          </tr></thead>
+          <tbody id="ft-tbody"></tbody>
+          <tfoot id="ft-tfoot"></tfoot>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Eventos do mês</h3></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Cliente</th><th>Unidade</th><th style="text-align:right;">Receita</th><th style="text-align:right;">Custo</th><th>CMV</th></tr></thead>
+          <tbody id="ft-ev-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Refeição x Café/Extras</h3></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Categoria</th><th style="text-align:right;">Receita</th><th style="text-align:right;">Custo</th><th>CMV</th></tr></thead>
+          <tbody id="ft-cat-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  const almocoIdx = indiceCardapioAlmoco();
+  const cafeIdx = indiceCafeSemana();
+  const contratosComDados = [...contratos.entries()].filter(([,c]) => c.ativo || true); // mostra também inativos com dados do mês, se houver
+
+  const linhas = contratosComDados.map(([id,ct]) => ({ id, ct, ap: apurarContrato(id, ct, faturamentoMesSel, almocoIdx, cafeIdx) }))
+    .filter(r => r.ap.registros > 0 || r.ap.receita > 0.005);
+
+  const tbody = document.getElementById("ft-tbody");
+  let totReceita = 0, totCusto = 0, totRegistros = 0;
+  const catAcum = { refeicao: {custo:0, receita:0}, cafeExtras: {custo:0, receita:0} };
+
+  tbody.innerHTML = linhas.sort((a,b) => b.ap.receita - a.ap.receita).map(r => {
+    totReceita += r.ap.receita; totCusto += r.ap.custoTotal; totRegistros += r.ap.registros;
+    ["refeicao","cafeExtras"].forEach(k => { catAcum[k].custo += r.ap.porCategoria[k].custo; catAcum[k].receita += r.ap.porCategoria[k].receita; });
+    const avisos = [];
+    if(r.ap.itensSemCusto) avisos.push(`${r.ap.itensSemCusto} sem custo`);
+    if(r.ap.itensSemPreco) avisos.push(`${r.ap.itensSemPreco} sem preço`);
+    if(r.ap.custoTransferido) avisos.push(`${fmtMoney(r.ap.custoTransferido)} produzido pela Matriz`);
+    return `<tr>
+      <td class="name-cell">${escapeHtml(r.ct.nome_cliente)}${r.ct.ativo?"":' <span class="tag-sheet">inativo</span>'}</td>
+      <td style="font-size:12.5px;">${rotuloModeloFaturamentoSimples(r.ct)}</td>
+      <td class="num-cell">${fmtMoney(r.ap.receita)}</td>
+      <td class="num-cell">${fmtMoney(r.ap.custoTotal)}</td>
+      <td>${r.ap.cmv!=null?fmtPct(r.ap.cmv):"—"}</td>
+      <td class="num-cell">${fmtMoney(r.ap.receita - r.ap.custoTotal)}</td>
+      <td class="num-cell">${r.ap.registros}</td>
+      <td style="font-size:11.5px; color:var(--warn);">${avisos.join(" · ")}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="8" class="empty-state">Nenhum faturamento apurado ainda neste mês — lance quantidades em Vendas.</td></tr>`;
+
+  document.getElementById("ft-tfoot").innerHTML = `<tr class="row-total">
+    <td class="name-cell">Total (contratos)</td><td></td>
+    <td class="num-cell">${fmtMoney(totReceita)}</td>
+    <td class="num-cell">${fmtMoney(totCusto)}</td>
+    <td>${totReceita>0?fmtPct(totCusto/totReceita):"—"}</td>
+    <td class="num-cell">${fmtMoney(totReceita-totCusto)}</td>
+    <td class="num-cell">${totRegistros}</td><td></td>
+  </tr>`;
+
+  const evRows = apurarEventosDoMes(faturamentoMesSel);
+  document.getElementById("ft-ev-tbody").innerHTML = evRows.map(e => `<tr>
+    <td class="name-cell">${escapeHtml(e.nome)}</td>
+    <td>${e.unidade === "filial" ? "Filial" : e.unidade === "matriz" ? "Matriz" : "—"}</td>
+    <td class="num-cell">${fmtMoney(e.receita)}</td>
+    <td class="num-cell">${fmtMoney(e.custo)}</td>
+    <td>${e.cmv!=null?fmtPct(e.cmv):"—"}</td>
+  </tr>`).join("") || `<tr><td colspan="5" class="empty-state">Nenhum evento faturado neste mês.</td></tr>`;
+
+  document.getElementById("ft-cat-tbody").innerHTML = ["refeicao","cafeExtras"].map(k => {
+    const c = catAcum[k];
+    return `<tr>
+      <td class="name-cell">${k === "refeicao" ? "Refeição (almoço/jantar/ceia — transportado e marmita)" : "Café e extras (café, lanches, bebidas, salada, taxas…)"}</td>
+      <td class="num-cell">${fmtMoney(c.receita)}</td>
+      <td class="num-cell">${fmtMoney(c.custo)}</td>
+      <td>${c.receita>0?fmtPct(c.custo/c.receita):"—"}</td>
+    </tr>`;
+  }).join("");
+
+  document.getElementById("ft-mes").addEventListener("change", e => { faturamentoMesSel = e.target.value; renderFaturamento(); });
+}
+function rotuloModeloFaturamentoSimples(ct){
+  if(!ct) return "";
+  if(ct.modelo_faturamento === "fixo") return "fixo mensal";
+  if(ct.modelo_faturamento === "franquia") return "fixo + excedente";
+  return "itemizado";
 }
 
 /* ===================================================================== INIT */
