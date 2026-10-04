@@ -227,6 +227,7 @@ table.cardapio-table .autocomplete{position:relative;}
     <button class="nav-btn" data-view="vendas"><span class="ico">&#9650;</span> Vendas</button>
     <button class="nav-btn" data-view="faturamento"><span class="ico">&#9679;</span> Faturamento apurado</button>
     <button class="nav-btn" data-view="compras"><span class="ico">&#9678;</span> Compras</button>
+    <button class="nav-btn" data-view="orcamento"><span class="ico">&#9881;</span> Orçamento</button>
     <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9881;</span> PCP / Expedição</button>
     <div class="sidebar-foot">
       Cadastro único de custo dos insumos. Os demais módulos do Ficha Viva ainda serão migrados para cá.
@@ -288,6 +289,7 @@ const VIEWS = {
   vendas: renderVendas,
   faturamento: renderFaturamento,
   compras: renderCompras,
+  orcamento: renderOrcamento,
 };
 
 function goToView(view){
@@ -4063,6 +4065,169 @@ function openPedidoDetalhe(id){
       renderCompras();
     }catch(e){ document.getElementById("cf-err").textContent = "Erro ao salvar: " + (e.message||e.code||e); }
   };
+}
+
+/* ===================================================================== ORÇAMENTO (Orçado × Comprado × Saldo) */
+// V1 — só CMV (custo de insumo da demanda), sem "fora do CMV" (teto R$/dia) nem embalagem configurável
+// (esses dois blocos do sistema antigo dependem de parâmetros que ainda não foram definidos). Recorte só
+// Grupo inteiro/Matriz/Filial — sem os recortes menores do sistema antigo (RB, Cardápio 1/2).
+let orcamentoMesSel = null;
+let orcamentoEscopoSel = "todos"; // "todos" | "matriz" | "filial"
+let orcamentoMetricaSel = "orcado"; // "orcado" | "comprado" | "saldo"
+
+function orcadoPorBlocoSemana(mesId, escopo){
+  const mes = MESES_REFERENCIA.find(m => m.id === mesId);
+  if(!mes) return null;
+  const contratosEscopo = [...contratos.entries()].filter(([,c]) => c.ativo && (escopo === "todos" || c.unidade === escopo));
+  const almocoIdx = indiceCardapioAlmoco(), cafeIdx = indiceCafeSemana();
+  const porSemanaBloco = mes.semanas.map(semana => {
+    const insumosSemana = new Map();
+    contratosEscopo.forEach(([id,ct]) => {
+      const itensContrato = itensRefeicaoDoContrato(id);
+      DIAS_ORDEM.forEach(dia => {
+        if(mesDoDia(semana,dia) !== mes.id) return;
+        if(!contratoVigenteNoDia(ct,semana,dia)) return;
+        itensContrato.forEach(item => {
+          const q = quantidadePrevista(id,item.produto_id,dia,semana);
+          if(!q) return;
+          mergeInsumosInto(insumosSemana, insumosUnidadeItemCompra(almocoIdx,cafeIdx,item.produto_id,ct,semana,dia,q));
+        });
+      });
+    });
+    const porBloco = new Map();
+    insumosSemana.forEach((kg,insumoId) => {
+      const ins = insumos.get(insumoId);
+      const grupo = (ins && ins.grupo_compra) || "SEM GRUPO";
+      const custo = ins && ins.custo_kg_l_und != null ? kg*ins.custo_kg_l_und : 0;
+      porBloco.set(grupo, (porBloco.get(grupo)||0) + custo);
+    });
+    return {semana, porBloco};
+  });
+  return {mes, porSemanaBloco};
+}
+function compradoPorBlocoSemana(mesId, escopo){
+  const mes = MESES_REFERENCIA.find(m => m.id === mesId);
+  if(!mes) return null;
+  const porSemanaBloco = mes.semanas.map(semana => {
+    const porBloco = new Map();
+    [...pedidos.values()].forEach(p => {
+      const semUso = p.semana_referencia != null ? p.semana_referencia : p.semana;
+      if(semUso !== semana) return;
+      if(escopo !== "todos" && pedidoUnidade(p) !== escopo) return;
+      (p.itens||[]).forEach(it => {
+        const grupo = blocoDoInsumo(it.insumo_id);
+        porBloco.set(grupo, (porBloco.get(grupo)||0) + (it.quantidade||0)*(it.preco_unitario||0));
+      });
+    });
+    return {semana, porBloco};
+  });
+  return {mes, porSemanaBloco};
+}
+function saldoChip(saldo, orcado){
+  const cls = saldo < 0 ? "critical" : (orcado > 0 && saldo/orcado < 0.15) ? "warn" : "ok";
+  return `<span class="chip ${cls}"><span class="dot"></span>${fmtMoney(saldo)}</span>`;
+}
+
+function renderOrcamento(){
+  document.getElementById("page-title").textContent = "Orçamento";
+  document.getElementById("page-desc").textContent = "Orçado (demanda de insumo) × Comprado (pedidos) × Saldo, por bloco de compra e semana";
+  document.getElementById("topbar-actions").innerHTML = "";
+
+  const meses = MESES_REFERENCIA;
+  if(orcamentoMesSel === null || !meses.some(m => m.id === orcamentoMesSel)) orcamentoMesSel = meses.some(m => m.id === mesAtualId()) ? mesAtualId() : (meses[0] ? meses[0].id : null);
+
+  const content = document.getElementById("content");
+  if(!orcamentoMesSel){ content.innerHTML = `<div class="empty-state">Nenhum mês de referência cadastrado ainda.</div>`; return; }
+
+  const orc = orcadoPorBlocoSemana(orcamentoMesSel, orcamentoEscopoSel);
+  const comp = compradoPorBlocoSemana(orcamentoMesSel, orcamentoEscopoSel);
+  const mes = orc.mes;
+  const blocos = blocosCadastro().concat(["SEM GRUPO"]);
+
+  const totalMesBloco = lista => lista.map(porSB => {
+    const t = new Map(); porSB.porSemanaBloco.forEach(sb => sb.porBloco.forEach((v,g) => t.set(g,(t.get(g)||0)+v))); return t;
+  });
+  const orcMesPorBloco = new Map(); orc.porSemanaBloco.forEach(sb => sb.porBloco.forEach((v,g) => orcMesPorBloco.set(g,(orcMesPorBloco.get(g)||0)+v)));
+  const compMesPorBloco = new Map(); comp.porSemanaBloco.forEach(sb => sb.porBloco.forEach((v,g) => compMesPorBloco.set(g,(compMesPorBloco.get(g)||0)+v)));
+
+  const blocosVisiveis = blocos.filter(g => (orcMesPorBloco.get(g)||0) > 0.004 || (compMesPorBloco.get(g)||0) > 0.004);
+  const totOrcMes = [...orcMesPorBloco.values()].reduce((a,b)=>a+b,0);
+  const totCompMes = [...compMesPorBloco.values()].reduce((a,b)=>a+b,0);
+  const usoMes = totOrcMes > 0 ? totCompMes/totOrcMes : null;
+
+  function celula(o, c){
+    if(orcamentoMetricaSel === "saldo") return (o || c) ? saldoChip(o-c, o) : "—";
+    const v = orcamentoMetricaSel === "orcado" ? o : c;
+    return v ? fmtMoney(v) : "—";
+  }
+
+  content.innerHTML = `
+    <div class="footnote" style="margin-bottom:14px;">V1 só CMV: Orçado é o custo de insumo da demanda (mesmo motor da Lista de compra); Comprado é a soma dos Pedidos cuja semana de uso cai neste mês. Ainda sem "fora do CMV" (serviço, limpeza, consumível, escritório) nem embalagem configurável — e sem os recortes menores do sistema antigo (RB, Cardápio 1/2), só Grupo inteiro/Matriz/Filial.</div>
+    <div class="menu-controls">
+      <select id="or-mes">${meses.map(m => `<option value="${m.id}" ${m.id===orcamentoMesSel?"selected":""}>${escapeHtml(m.nome)}</option>`).join("")}</select>
+      <div class="seg-toggle" id="or-escopo">
+        <button type="button" data-esc="todos" class="${orcamentoEscopoSel==="todos"?"active":""}">Grupo inteiro</button>
+        <button type="button" data-esc="matriz" class="${orcamentoEscopoSel==="matriz"?"active":""}">Matriz</button>
+        <button type="button" data-esc="filial" class="${orcamentoEscopoSel==="filial"?"active":""}">Filial</button>
+      </div>
+    </div>
+    <div class="two-col-num" style="margin-bottom:16px;">
+      <div class="stat-block"><div class="label">Orçado — ${escapeHtml(mes.nome)}</div><div class="val">${fmtMoney(totOrcMes)}</div></div>
+      <div class="stat-block"><div class="label">Comprado (pedidos)</div><div class="val">${fmtMoney(totCompMes)}</div></div>
+      <div class="stat-block"><div class="label">Saldo do mês</div><div>${saldoChip(totOrcMes-totCompMes, totOrcMes)}</div></div>
+      <div class="stat-block"><div class="label">Orçado já consumido</div><div class="val">${usoMes!==null?fmtPct(usoMes):"—"}</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Bloco × semana</h3>
+        <div class="seg-toggle" id="or-metrica">
+          ${[["orcado","Orçado"],["comprado","Comprado"],["saldo","Saldo"]].map(([k,l]) => `<button type="button" data-met="${k}" class="${orcamentoMetricaSel===k?"active":""}">${l}</button>`).join("")}
+        </div>
+      </div>
+      <div class="footnote" style="margin:0 20px 10px;">Saldo em vermelho = comprou mais que o orçado do bloco; amarelo = sobrou menos de 15%.</div>
+      <div class="table-wrap">
+        <table class="cardapio-table">
+          <thead><tr>
+            <th class="cat-col">Bloco</th>
+            ${mes.semanas.map(s => `<th>${escapeHtml(rotuloSemana(s))}</th>`).join("")}
+            <th>Total do mês</th>
+          </tr></thead>
+          <tbody>
+            ${blocosVisiveis.map(g => {
+              const porSem = mes.semanas.map((s,si) => ({o: orc.porSemanaBloco[si].porBloco.get(g)||0, c: comp.porSemanaBloco[si].porBloco.get(g)||0}));
+              const oMes = orcMesPorBloco.get(g)||0, cMes = compMesPorBloco.get(g)||0;
+              return `<tr>
+                <td class="cat-col">${escapeHtml(g)}</td>
+                ${porSem.map(x => `<td class="num-cell">${celula(x.o, x.c)}</td>`).join("")}
+                <td class="num-cell"><b>${celula(oMes, cMes)}</b></td>
+              </tr>`;
+            }).join("") || `<tr><td colspan="${mes.semanas.length+2}" class="empty-state">Sem orçado ou comprado neste mês ainda.</td></tr>`}
+          </tbody>
+          <tfoot>
+            <tr class="row-total">
+              <td class="cat-col">Total</td>
+              ${mes.semanas.map((s,si) => {
+                const o = [...orc.porSemanaBloco[si].porBloco.values()].reduce((a,b)=>a+b,0);
+                const c = [...comp.porSemanaBloco[si].porBloco.values()].reduce((a,b)=>a+b,0);
+                return `<td class="num-cell">${celula(o,c)}</td>`;
+              }).join("")}
+              <td class="num-cell">${celula(totOrcMes, totCompMes)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </div>
+  `;
+
+  document.getElementById("or-mes").addEventListener("change", e => { orcamentoMesSel = e.target.value; renderOrcamento(); });
+  document.getElementById("or-escopo").addEventListener("click", e => {
+    const b = e.target.closest("button[data-esc]"); if(!b) return;
+    orcamentoEscopoSel = b.dataset.esc; renderOrcamento();
+  });
+  document.getElementById("or-metrica").addEventListener("click", e => {
+    const b = e.target.closest("button[data-met]"); if(!b) return;
+    orcamentoMetricaSel = b.dataset.met; renderOrcamento();
+  });
 }
 
 /* ===================================================================== INIT */
