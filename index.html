@@ -223,6 +223,7 @@ table.cardapio-table .autocomplete{position:relative;}
     <button class="nav-btn" data-view="incidencia"><span class="ico">&#9661;</span> Incidência</button>
     <button class="nav-btn" data-view="vendas"><span class="ico">&#9650;</span> Vendas</button>
     <button class="nav-btn" data-view="faturamento"><span class="ico">&#9679;</span> Faturamento apurado</button>
+    <button class="nav-btn" data-view="compras"><span class="ico">&#9678;</span> Compras</button>
     <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9881;</span> PCP / Expedição</button>
     <div class="sidebar-foot">
       Cadastro único de custo dos insumos. Os demais módulos do Ficha Viva ainda serão migrados para cá.
@@ -283,6 +284,7 @@ const VIEWS = {
   incidencia: renderIncidencia,
   vendas: renderVendas,
   faturamento: renderFaturamento,
+  compras: renderCompras,
 };
 
 function goToView(view){
@@ -300,7 +302,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra()]);
   goToView(currentView);
 }
 
@@ -426,6 +428,7 @@ function showAlert(message){
 let insumos = new Map(); // id -> {nome, unidade_medida, unidade_convertida, custo_unitario, custo_kg_l_und, grupo_compra, ...}
 let fichas = new Map(); // id -> {nome, grupo, rendimento_kg, rendimento_und, preco_venda, ingredientes:[{insumo_id|ficha_id, nome, peso_bruto, peso_liquido, fator_correcao}], vendavel, disponivel_como_insumo, servido_por_unidade, modo_preparo}
 let _cacheFicha = new Map();
+let _cachePorKg = new Map(); // cache do motor de demanda de insumo (Compras) — mesmo formato de _cacheFicha
 
 async function loadInsumos(){
   const { data, error } = await sb.from('insumos').select('*').order('nome');
@@ -441,6 +444,7 @@ async function loadFichas(){
   const { data, error } = await sb.from('fichas').select('*').order('nome');
   fichas = new Map();
   _cacheFicha = new Map();
+  _cachePorKg = new Map();
   if (error){ showAlert('Erro ao carregar fichas técnicas: ' + error.message); return; }
   (data || []).forEach(row => {
     const { id, ...rest } = row;
@@ -518,6 +522,16 @@ async function loadAjustesMinimo(){
   ajustesMinimo = new Map();
   if (error){ showAlert('Erro ao carregar ajustes de mínimo: ' + error.message); return; }
   (data || []).forEach(row => ajustesMinimo.set(`${row.contrato_id}|${row.semana}`, row));
+}
+
+/* ---- previsão de compra (ajuste manual por contrato/semana/dia) ---- */
+let previsaoCompra = new Map(); // "contratoId|semana|DIA" -> {id, contrato_id, semana, dia, itens:[{produto_id,quantidade_ajustada}]}
+
+async function loadPrevisaoCompra(){
+  const { data, error } = await sb.from('previsao_compra').select('*');
+  previsaoCompra = new Map();
+  if (error){ showAlert('Erro ao carregar previsão de compra: ' + error.message); return; }
+  (data || []).forEach(row => previsaoCompra.set(`${row.contrato_id}|${row.semana}|${row.dia}`, row));
 }
 
 /* ---- feriados (calendário) ---- */
@@ -2962,6 +2976,412 @@ function rotuloModeloFaturamentoSimples(ct){
   if(ct.modelo_faturamento === "fixo") return "fixo mensal";
   if(ct.modelo_faturamento === "franquia") return "fixo + excedente";
   return "itemizado";
+}
+
+/* ===================================================================== COMPRAS
+   V1 — motor de demanda de insumo (mesma estrutura recursiva do motor de custo: em vez de
+   acumular R$, acumula kg/unidade de cada insumo) + motor de previsão (ajuste manual > lançado
+   em Vendas na própria semana > mediana do mês (≥2 amostras) > ciclo de reposição de 2 meses >
+   mediana com 1 amostra > quantidade contratada por dia do contrato).
+   Fora desta V1 (avisado ao usuário antes de construir): rastreio "em qual prato/cliente cada
+   insumo é usado" e importação de projeção de planilha — a sugestão aqui é sempre calculada ao
+   vivo, nunca lida de um valor importado. */
+
+/* ---- demanda de insumo por ficha (recursivo, mesma proteção de ciclo de computeFicha) ---- */
+function insumosPorKgFicha(f, selfId, visiting){
+  if(selfId && (!visiting || !visiting.size) && fichas.get(selfId) === f){
+    const c = _cachePorKg.get(selfId);
+    if(c) return c;
+    const r = _insumosPorKgFicha(f, selfId, visiting);
+    _cachePorKg.set(selfId, r);
+    return r;
+  }
+  return _insumosPorKgFicha(f, selfId, visiting);
+}
+function _insumosPorKgFicha(f, selfId, visiting){
+  selfId = selfId || null;
+  visiting = visiting ? new Set(visiting) : new Set();
+  if(selfId) visiting.add(selfId);
+  const acc = new Map();
+  (f.ingredientes||[]).forEach(l => {
+    if(l.ficha_id){
+      if(visiting.has(l.ficha_id)) return;
+      const refFicha = fichas.get(l.ficha_id);
+      if(!refFicha) return;
+      const subPorKg = insumosPorKgFicha(refFicha, l.ficha_id, visiting);
+      const kgDeSubPorBatch = (l.peso_bruto||0);
+      subPorKg.forEach((kgPorKg, insumoId) => acc.set(insumoId, (acc.get(insumoId)||0) + kgPorKg * kgDeSubPorBatch));
+    } else if(l.insumo_id){
+      acc.set(l.insumo_id, (acc.get(l.insumo_id)||0) + (l.peso_bruto||0));
+    }
+  });
+  const norm = new Map();
+  if(f.rendimento_kg > 0) acc.forEach((kg, insumoId) => norm.set(insumoId, kg / f.rendimento_kg));
+  return norm;
+}
+function insumosParaKgNecessario(fichaId, kgNecessario){
+  const f = fichas.get(fichaId);
+  const total = new Map();
+  if(!f || !kgNecessario) return total;
+  const porKg = insumosPorKgFicha(f, fichaId, new Set());
+  porKg.forEach((kg, insumoId) => total.set(insumoId, kg * kgNecessario));
+  return total;
+}
+function mergeInsumosInto(target, source){ source.forEach((v,k) => target.set(k, (target.get(k)||0) + v)); }
+
+function insumosItemCardapioCompra(it, numPessoas){
+  const m = new Map();
+  if(!it || !numPessoas) return m;
+  if(it.ficha_id){
+    if(it.gramagem_kg === null || it.gramagem_kg === undefined) return m;
+    return insumosParaKgNecessario(it.ficha_id, it.gramagem_kg * numPessoas);
+  }
+  if(it.insumo_id){
+    if(it.gramagem_kg === null || it.gramagem_kg === undefined) return m;
+    m.set(it.insumo_id, it.gramagem_kg * numPessoas);
+  }
+  return m;
+}
+function insumosEmbalagemDiaCompra(dayDoc, numPessoas){
+  const ids = (dayDoc && dayDoc.embalagem_ids) || [];
+  const m = new Map();
+  ids.forEach(id => { if(id) m.set(id, (m.get(id)||0) + numPessoas); });
+  return m;
+}
+function insumosDoDiaRefeicaoCompra(dayDoc, numPessoas){
+  const total = new Map();
+  if(!dayDoc) return total;
+  (dayDoc.itens||[]).forEach(it => mergeInsumosInto(total, insumosItemCardapioCompra(it, numPessoas)));
+  mergeInsumosInto(total, insumosEmbalagemDiaCompra(dayDoc, numPessoas));
+  return total;
+}
+function insumosDoDiaCafeCompra(cafeRow, diaKey, numPessoas){
+  const total = new Map();
+  const itensDia = (cafeRow && cafeRow.dias && cafeRow.dias[diaKey] && cafeRow.dias[diaKey].itens) || [];
+  itensDia.forEach(it => mergeInsumosInto(total, insumosItemCardapioCompra(it, numPessoas)));
+  return total;
+}
+// espelha custoUnidadeItemVenda, mesmo dispatch por tipo_custo, acumulando insumo em vez de R$
+function insumosUnidadeItemCompra(almocoIdx, cafeIdx, produtoId, contrato, semana, dia, quantidade){
+  const total = new Map();
+  if(!produtoId || !quantidade) return total;
+  const cat = catalogoPorProduto(produtoId);
+  if(!cat) return total;
+  switch(cat.tipo_custo){
+    case "cardapio_refeicao": {
+      const row = contrato.cardapio_refeicao_num!=null ? almocoIdx.get(`${contrato.cardapio_refeicao_num}|${semana}|${dia}`) : null;
+      return row ? insumosDoDiaRefeicaoCompra(row, quantidade) : total;
+    }
+    case "cardapio_marmita": {
+      const row = contrato.cardapio_marmita_num!=null ? almocoIdx.get(`${contrato.cardapio_marmita_num}|${semana}|${dia}`) : null;
+      return row ? insumosDoDiaRefeicaoCompra(row, quantidade) : total;
+    }
+    case "cardapio_marmita_especial": {
+      if(contrato.marmita_especial_ativo && contrato.cardapio_marmita_especial_num){
+        const row = almocoIdx.get(`${contrato.cardapio_marmita_especial_num}|${semana}|${dia}`);
+        if(row) return insumosDoDiaRefeicaoCompra(row, quantidade);
+      }
+      const base = contrato.cardapio_marmita_num!=null ? almocoIdx.get(`${contrato.cardapio_marmita_num}|${semana}|${dia}`) : null;
+      if(!base) return total;
+      return insumosDoDiaRefeicaoCompra(base, quantidade * (cat.multiplicador || 1));
+    }
+    case "cardapio_cafe": {
+      const ehFdsFeriado = dia === "SABADO" || dia === "DOMINGO";
+      const num = (ehFdsFeriado && contrato.cafe_especial_ativo && contrato.cardapio_cafe_especial_num) ? contrato.cardapio_cafe_especial_num : contrato.cardapio_cafe_num;
+      if(num == null) return total;
+      const row = cafeIdx.get(`${num}|${semana}`);
+      return row ? insumosDoDiaCafeCompra(row, DIA_KEY_CAFE[dia], quantidade) : total;
+    }
+    case "ficha": {
+      if(!cat.ficha_id) return total;
+      const f = fichas.get(cat.ficha_id);
+      if(!f) return total;
+      const rendimentoUnd = f.rendimento_und || 1;
+      const kgPorUnidade = (f.rendimento_kg && rendimentoUnd) ? (f.rendimento_kg/rendimentoUnd) : 0;
+      return insumosParaKgNecessario(cat.ficha_id, kgPorUnidade * quantidade);
+    }
+    default:
+      return total; // "fixo"/"zero": sem rastreio de insumo nesta V1, mesma simplificação do motor de custo
+  }
+}
+
+/* ---- motor de previsão ---- */
+const MEDIA_MIN_AMOSTRAS = 2;
+const CICLO_SEMANAS = 9;
+
+function mediaHistoricaInfo(contratoId, produtoId, dia, semanaAlvo){
+  const mesAlvo = mesDoDia(semanaAlvo, dia);
+  const valores = [];
+  vendas.forEach(v => {
+    if(v.contrato_id !== contratoId || v.dia !== dia || v.semana === semanaAlvo) return;
+    if(mesDoDia(v.semana, v.dia) !== mesAlvo) return;
+    if(ehFeriado(v.semana, v.dia)) return; // feriado não representa o dia normal
+    const qtd = (v.itens||[]).filter(it => it.produto_id === produtoId).reduce((s,it)=>s+(it.quantidade||0), 0);
+    if(qtd > 0) valores.push(qtd);
+  });
+  if(!valores.length) return null;
+  valores.sort((a,b) => a-b);
+  const m = valores.length, mid = Math.floor(m/2);
+  const mediana = m % 2 ? valores[mid] : (valores[mid-1] + valores[mid]) / 2;
+  return { valor: Math.round(mediana), n: m };
+}
+function vendaLancadaNoDia(contratoId, produtoId, dia, semana){
+  const v = vendas.get(`${contratoId}|${semana}|${dia}`);
+  if(!v) return null;
+  const linhas = (v.itens||[]).filter(it => it.produto_id === produtoId);
+  if(!linhas.length) return null; // sem linha nesse dia = ainda não lançado (cai na média)
+  return linhas.reduce((s,it) => s + (it.quantidade||0), 0);
+}
+function _qtdLancadaOuGravada(contratoId, produtoId, dia, semana){
+  const lancado = vendaLancadaNoDia(contratoId, produtoId, dia, semana);
+  if(lancado !== null) return lancado;
+  const doc = previsaoCompra.get(`${contratoId}|${semana}|${dia}`);
+  if(doc){
+    const it = (doc.itens||[]).find(x => x.produto_id === produtoId);
+    if(it && it.quantidade_ajustada !== null && it.quantidade_ajustada !== undefined) return it.quantidade_ajustada;
+  }
+  return null;
+}
+function projecaoCiclo(contratoId, produtoId, dia, semana, prof){
+  if(semana <= CICLO_SEMANAS || (prof||0) > 3) return null;
+  const DIAS_UTEIS_SET = new Set(["SEGUNDA","TERCA","QUARTA","QUINTA","SEXTA"]);
+  // dia-alvo feriado em dia útil: usa o padrão do cliente no feriado anterior mais recente com registro
+  if(ehFeriado(semana, dia) && DIAS_UTEIS_SET.has(dia)){
+    const alvo = ymdDia(semana, dia);
+    for(let s = semana - 1; s >= 1; s--){
+      for(const d of DIAS_ORDEM){
+        if(!DIAS_UTEIS_SET.has(d) || !ehFeriado(s, d) || ymdDia(s, d) >= alvo) continue;
+        const q = _qtdLancadaOuGravada(contratoId, produtoId, d, s);
+        if(q !== null) return q;
+      }
+    }
+    return 0;
+  }
+  const fonte = semana - CICLO_SEMANAS;
+  const candidatos = [fonte, fonte + 1, fonte - 1].filter(s => s >= 1 && s < semana);
+  for(const s of candidatos){
+    if(ehFeriado(s, dia) && DIAS_UTEIS_SET.has(dia)) continue; // fonte foi feriado: tenta a semana vizinha
+    if(s !== fonte && mesDoDia(s, dia) !== mesDoDia(fonte, dia)) continue;
+    const q = _qtdLancadaOuGravada(contratoId, produtoId, dia, s);
+    if(q !== null) return q;
+    const rec = projecaoCiclo(contratoId, produtoId, dia, s, (prof||0) + 1);
+    if(rec !== null) return rec;
+  }
+  return null;
+}
+function quantidadeContratadaDia(contratoId, produtoId, dia){
+  const ci = [...contratoItens.values()].find(c => c.contrato_id === contratoId && c.produto_id === produtoId);
+  const q = ci && ci.quantidade_dia ? ci.quantidade_dia[dia] : null;
+  return (q === null || q === undefined || !(q >= 0)) ? null : q;
+}
+// origem única da sugestão: lançado > média (≥2 amostras) > ciclo de 2 meses > média (1 amostra) > contrato
+function origemSugestao(contratoId, produtoId, dia, semana){
+  const lancado = vendaLancadaNoDia(contratoId, produtoId, dia, semana);
+  if(lancado !== null) return { valor: lancado, origem: "lancado" };
+  const mi = mediaHistoricaInfo(contratoId, produtoId, dia, semana);
+  if(mi && mi.n >= MEDIA_MIN_AMOSTRAS) return { valor: mi.valor, origem: "media", n: mi.n };
+  const ciclo = projecaoCiclo(contratoId, produtoId, dia, semana, 0);
+  if(ciclo !== null) return { valor: ciclo, origem: "ciclo" };
+  if(mi) return { valor: mi.valor, origem: "media", n: mi.n };
+  const ct = quantidadeContratadaDia(contratoId, produtoId, dia);
+  return { valor: ct, origem: ct !== null ? "contrato" : null };
+}
+function contratoVigenteNoDia(ct, semana, dia){
+  if(!ct) return false;
+  const d = dataDoDia(semana, dia); if(!d || isNaN(d)) return true;
+  const ymd = d.toISOString().slice(0,10);
+  if(ct.data_fim && ymd > ct.data_fim) return false;
+  if(ct.data_inicio && ymd < ct.data_inicio) return false;
+  return true;
+}
+function quantidadePrevista(contratoId, produtoId, dia, semana){
+  if(!contratoVigenteNoDia(contratos.get(contratoId), semana, dia)) return 0;
+  const doc = previsaoCompra.get(`${contratoId}|${semana}|${dia}`);
+  const item = doc && (doc.itens||[]).find(it => it.produto_id === produtoId);
+  if(item && item.quantidade_ajustada !== null && item.quantidade_ajustada !== undefined) return item.quantidade_ajustada;
+  return origemSugestao(contratoId, produtoId, dia, semana).valor;
+}
+function rotuloOrigemSugestao(origem, n){
+  if(origem === "lancado") return "já lançado em Vendas nesta semana";
+  if(origem === "media") return `mediana do mês (${n} lançamento${n===1?"":"s"})`;
+  if(origem === "ciclo") return "repete o mesmo dia 9 semanas atrás (ciclo de 2 meses)";
+  if(origem === "contrato") return "quantidade contratada por dia (sem histórico ainda)";
+  return "";
+}
+
+/* ---- UI ---- */
+let compraContratoSel = null;
+let compraSemanaSel = null;
+let compraMesSel = null;
+let compraTabSel = "previsao"; // "previsao" | "lista"
+let draftPrevisao = null; // { [DIA]: { [produto_id]: quantidade_ajustada } }
+
+function carregarDraftPrevisao(contratoId, semana){
+  const d = {};
+  DIAS_ORDEM.forEach(dia => {
+    const row = previsaoCompra.get(`${contratoId}|${semana}|${dia}`);
+    d[dia] = {};
+    (row?.itens || []).forEach(it => { if(it.produto_id && it.quantidade_ajustada != null) d[dia][it.produto_id] = it.quantidade_ajustada; });
+  });
+  return d;
+}
+
+function renderCompras(){
+  document.getElementById("page-title").textContent = "Compras";
+  document.getElementById("page-desc").textContent = "Previsão de consumo por contrato/semana e lista de compra de insumos agregada por mês";
+  document.getElementById("topbar-actions").innerHTML = "";
+
+  const contratosAtivos = [...contratos.entries()].filter(([,c]) => c.ativo).sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)));
+  const meses = MESES_REFERENCIA;
+  if(compraMesSel === null || !meses.some(m => m.id === compraMesSel)) compraMesSel = meses.some(m => m.id === mesAtualId()) ? mesAtualId() : (meses[0] ? meses[0].id : null);
+
+  const content = document.getElementById("content");
+  content.innerHTML = `
+    <div class="seg-toggle" id="cp-tabs" style="margin-bottom:14px; width:fit-content;">
+      <button type="button" data-tab="previsao" class="${compraTabSel==="previsao"?"active":""}">Ajustar previsão</button>
+      <button type="button" data-tab="lista" class="${compraTabSel==="lista"?"active":""}">Lista de compra</button>
+    </div>
+    <div id="cp-body"></div>
+  `;
+
+  function renderTabPrevisao(){
+    if(!contratosAtivos.length){ document.getElementById("cp-body").innerHTML = `<div class="empty-state">Nenhum contrato ativo cadastrado ainda.</div>`; return; }
+    if(compraContratoSel === null || !contratosAtivos.some(([id]) => id === compraContratoSel)) compraContratoSel = contratosAtivos[0][0];
+    const semanas = semanasDisponiveisVendas();
+    if(compraSemanaSel === null || !semanas.includes(compraSemanaSel)) compraSemanaSel = semanas[0];
+    draftPrevisao = carregarDraftPrevisao(compraContratoSel, compraSemanaSel);
+
+    const body = document.getElementById("cp-body");
+    body.innerHTML = `
+      <div class="menu-controls">
+        <select id="cp-contrato">${contratosAtivos.map(([id,c]) => `<option value="${id}" ${id===compraContratoSel?"selected":""}>${escapeHtml(c.nome_cliente)}</option>`).join("")}</select>
+        <select id="cp-semana">${semanas.map(s => `<option value="${s}" ${s===compraSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
+        <button class="btn primary" id="cp-salvar" style="margin-left:auto;">Salvar ajustes</button>
+      </div>
+      <div class="footnote" style="margin:10px 0;">Sem ajuste, a célula mostra a <strong>sugestão automática</strong> como placeholder (passe o mouse pra ver a origem): o que já foi lançado em Vendas nesta semana → mediana do mês (mín. 2 lançamentos) → o mesmo dia 9 semanas atrás (ciclo de 2 meses) → quantidade contratada por dia. Digite um número pra sobrepor; apague o campo pra voltar a usar a sugestão.</div>
+      <div class="panel">
+        <div class="table-wrap">
+          <table class="cardapio-table">
+            <thead><tr><th class="cat-col">Item</th>${DIAS_ORDEM.map(dia => `<th>${DIA_LABEL[dia]}</th>`).join("")}</tr></thead>
+            <tbody id="cp-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    `;
+
+    const itens = itensDoContratoVenda(compraContratoSel);
+    function redraw(){
+      const tbody = document.getElementById("cp-tbody");
+      tbody.innerHTML = itens.map(item => `<tr>
+        <td class="cat-col">${escapeHtml(item.nome)}</td>
+        ${DIAS_ORDEM.map(dia => {
+          if(!item.produto_id) return `<td class="cel"><input disabled></td>`;
+          const ajuste = draftPrevisao[dia]?.[item.produto_id];
+          const sug = origemSugestao(compraContratoSel, item.produto_id, dia, compraSemanaSel);
+          const mostrarValor = (ajuste !== undefined && ajuste !== null) ? ajuste : "";
+          const placeholder = sug.valor != null ? sug.valor : "—";
+          const titulo = sug.valor != null ? rotuloOrigemSugestao(sug.origem, sug.n) : "sem sugestão (sem histórico e sem quantidade contratada)";
+          return `<td class="cel"><input type="number" step="1" min="0" class="cel-gram cp-qtd" data-produto="${escapeHtml(item.produto_id)}" data-dia="${dia}" value="${mostrarValor}" placeholder="${placeholder}" title="${escapeHtml(titulo)}"></td>`;
+        }).join("")}
+      </tr>`).join("") || `<tr><td colspan="${1+DIAS_ORDEM.length}" class="empty-state">Este contrato não tem itens cadastrados.</td></tr>`;
+
+      tbody.querySelectorAll(".cp-qtd").forEach(inp => inp.addEventListener("input", () => {
+        const produtoId = inp.dataset.produto, dia = inp.dataset.dia;
+        const val = inp.value === "" ? null : Number(inp.value);
+        if(!draftPrevisao[dia]) draftPrevisao[dia] = {};
+        if(val === null) delete draftPrevisao[dia][produtoId]; else draftPrevisao[dia][produtoId] = val;
+      }));
+    }
+    redraw();
+
+    document.getElementById("cp-contrato").addEventListener("change", e => { compraContratoSel = e.target.value; renderTabPrevisao(); });
+    document.getElementById("cp-semana").addEventListener("change", e => { compraSemanaSel = Number(e.target.value); renderTabPrevisao(); });
+    document.getElementById("cp-salvar").addEventListener("click", async () => {
+      const btn = document.getElementById("cp-salvar");
+      btn.disabled = true; btn.textContent = "Salvando…";
+      try{
+        const linhas = DIAS_ORDEM.map(dia => ({
+          contrato_id: compraContratoSel, semana: compraSemanaSel, dia,
+          itens: Object.entries(draftPrevisao[dia] || {}).map(([produto_id, quantidade_ajustada]) => ({ produto_id, quantidade_ajustada })),
+          ...carimbo(),
+        }));
+        const { error } = await sb.from('previsao_compra').upsert(linhas, { onConflict: 'contrato_id,semana,dia' });
+        if(error) throw error;
+        await loadPrevisaoCompra();
+        showAlert("Ajustes salvos.");
+      }catch(e){ showAlert("Erro ao salvar: " + (e.message || e.code || e)); }
+      finally{ btn.disabled = false; btn.textContent = "Salvar ajustes"; }
+    });
+  }
+
+  function montarLista(){
+    const mes = meses.find(m => m.id === compraMesSel);
+    const totalInsumos = new Map(); // insumo_id -> kg/und
+    if(mes){
+      const almocoIdx = indiceCardapioAlmoco();
+      const cafeIdx = indiceCafeSemana();
+      contratosAtivos.forEach(([id, ct]) => {
+        const itensContrato = itensDoContratoVenda(id).filter(it => it.produto_id);
+        mes.semanas.forEach(semana => {
+          DIAS_ORDEM.forEach(dia => {
+            if(mesDoDia(semana, dia) !== mes.id) return;
+            if(!contratoVigenteNoDia(ct, semana, dia)) return;
+            itensContrato.forEach(item => {
+              const q = quantidadePrevista(id, item.produto_id, dia, semana);
+              if(!q) return;
+              mergeInsumosInto(totalInsumos, insumosUnidadeItemCompra(almocoIdx, cafeIdx, item.produto_id, ct, semana, dia, q));
+            });
+          });
+        });
+      });
+    }
+    const linhas = [...totalInsumos.entries()].map(([insumoId, kg]) => {
+      const ins = insumos.get(insumoId);
+      const custo = ins && ins.custo_kg_l_und != null ? kg * ins.custo_kg_l_und : null;
+      return { nome: ins ? ins.nome : insumoId, grupo: ins?.grupo_compra || "(sem grupo)", kg, unidade: ins ? unidadeCustoInsumo(ins) : "kg", custo };
+    }).sort((a,b) => normalizeText(a.grupo).localeCompare(normalizeText(b.grupo)) || normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
+
+    const tbody = document.getElementById("cp-lista-tbody");
+    let totCusto = 0, semCusto = 0;
+    tbody.innerHTML = linhas.map(l => {
+      if(l.custo != null) totCusto += l.custo; else semCusto++;
+      return `<tr>
+        <td class="name-cell">${escapeHtml(l.nome)}</td>
+        <td style="font-size:12.5px;">${escapeHtml(l.grupo)}</td>
+        <td class="num-cell">${fmtNum(l.kg, 3)}</td>
+        <td>${l.unidade}</td>
+        <td class="num-cell">${l.custo != null ? fmtMoney(l.custo) : "—"}</td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="5" class="empty-state">Nenhuma previsão de consumo neste mês ainda.</td></tr>`;
+    document.getElementById("cp-lista-tfoot").innerHTML = `<tr class="row-total">
+      <td class="name-cell">Total${semCusto ? ` (${semCusto} insumo(s) sem custo cadastrado)` : ""}</td><td></td><td></td><td></td>
+      <td class="num-cell">${fmtMoney(totCusto)}</td>
+    </tr>`;
+  }
+
+  function renderTabLista(){
+    const body = document.getElementById("cp-body");
+    body.innerHTML = `
+      <div class="menu-controls"><select id="cp-mes">${meses.map(m => `<option value="${m.id}" ${m.id===compraMesSel?"selected":""}>${escapeHtml(m.nome)}</option>`).join("")}</select></div>
+      <div class="footnote" style="margin:10px 0;">Soma a previsão (ajuste manual, ou sugestão automática quando não há ajuste) de todos os contratos ativos e vigentes no mês, convertida em kg/unidade de insumo — mesmo motor de cálculo usado no custo de Vendas, só que acumulando insumo em vez de R$.</div>
+      <div class="panel"><div class="table-wrap"><table>
+        <thead><tr><th>Insumo</th><th>Grupo de compra</th><th style="text-align:right;">Quantidade</th><th>Unidade</th><th style="text-align:right;">Custo estimado</th></tr></thead>
+        <tbody id="cp-lista-tbody"></tbody>
+        <tfoot id="cp-lista-tfoot"></tfoot>
+      </table></div></div>
+    `;
+    montarLista();
+    document.getElementById("cp-mes").addEventListener("change", e => { compraMesSel = e.target.value; montarLista(); });
+  }
+
+  document.getElementById("cp-tabs").addEventListener("click", e => {
+    const b = e.target.closest("button[data-tab]"); if(!b) return;
+    compraTabSel = b.dataset.tab;
+    document.querySelectorAll("#cp-tabs button[data-tab]").forEach(x => x.classList.toggle("active", x===b));
+    if(compraTabSel === "previsao") renderTabPrevisao(); else renderTabLista();
+  });
+
+  if(compraTabSel === "previsao") renderTabPrevisao(); else renderTabLista();
 }
 
 /* ===================================================================== INIT */
