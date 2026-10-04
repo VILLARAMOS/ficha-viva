@@ -219,6 +219,7 @@ table.cardapio-table .autocomplete{position:relative;}
     <button class="nav-btn" data-view="fichas"><span class="ico">&#9636;</span> Fichas técnicas</button>
     <button class="nav-btn" data-view="cardapio"><span class="ico">&#9633;</span> Cardápio</button>
     <button class="nav-btn" data-view="contratos"><span class="ico">&#9737;</span> Contratos</button>
+    <button class="nav-btn" data-view="eventos"><span class="ico">&#9671;</span> Eventos</button>
     <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9650;</span> Vendas</button>
     <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9881;</span> PCP / Expedição</button>
     <div class="sidebar-foot">
@@ -276,6 +277,7 @@ const VIEWS = {
   fichas: () => renderFichas(),
   cardapio: renderCardapio,
   contratos: renderContratos,
+  eventos: renderEventos,
 };
 
 function goToView(view){
@@ -293,7 +295,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos()]);
   goToView(currentView);
 }
 
@@ -491,6 +493,16 @@ async function loadContratoItens(){
   contratoItens = new Map();
   if (error){ showAlert('Erro ao carregar itens contratados: ' + error.message); return; }
   (data || []).forEach(row => { const { id, ...rest } = row; contratoItens.set(id, rest); });
+}
+
+/* ---- eventos (produção pontual fora do cardápio padrão, fora do escopo de Contratos) ---- */
+let eventos = new Map();   // id -> {cliente, unidade, data, descricao, origem, custo_modo, custo_pct, custo_valor, valor_faturado, itens, alterado_em, alterado_por}
+
+async function loadEventos(){
+  const { data, error } = await sb.from('eventos').select('*').order('data', {ascending:false});
+  eventos = new Map();
+  if (error){ showAlert('Erro ao carregar eventos: ' + error.message); return; }
+  (data || []).forEach(row => { const { id, ...rest } = row; eventos.set(id, rest); });
 }
 function itensDoContrato(contratoId){
   return [...contratoItens.entries()].filter(([,it]) => it.contrato_id === contratoId);
@@ -1193,6 +1205,7 @@ function montarTabelaCafe(num, semana){
    específicos do cliente fora do padrão). Ainda não inclui Vendas/CMV real,
    Previsão de Compra ou Pedidos — ficam para uma próxima etapa, combinado com o Marcelo. */
 let contratoFilters = { busca: "", status: "ativos" };
+let eventoFilters = { busca: "" };
 
 function fmtDataBr(d){
   if(!d) return "—";
@@ -1550,6 +1563,181 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
       await Promise.all([loadContratos(), loadContratoItens()]);
       root.innerHTML = "";
       renderContratos();
+    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+  };
+}
+
+/* ===================================================================== EVENTOS (produção pontual, fora do cardápio padrão) */
+function custoEvento(e){
+  if(e.custo_modo === "valor") return e.custo_valor ?? 0;
+  const pct = e.custo_pct ?? 0;
+  return (e.valor_faturado||0) * pct;
+}
+function margemEvento(e){
+  return (e.valor_faturado||0) - custoEvento(e);
+}
+
+function renderEventos(){
+  document.getElementById("page-title").textContent = "Eventos";
+  document.getElementById("page-desc").textContent = "Produção pontual faturada fora do cardápio padrão — faixa de custo estimada quando não há apuração item a item";
+  document.getElementById("topbar-actions").innerHTML = `<button class="btn primary" id="btn-novo-evento">+ Novo evento</button>`;
+  document.getElementById("btn-novo-evento").addEventListener("click", () => openEventoModal(null));
+
+  const content = document.getElementById("content");
+  content.innerHTML = `
+    <div class="search-bar">
+      <input type="text" id="ev-busca" placeholder="Buscar cliente…" value="${escapeHtml(eventoFilters.busca)}">
+      <span class="footnote" id="ev-count" style="align-self:center;"></span>
+    </div>
+    <div class="panel">
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Cliente</th><th>Unidade</th><th>Data</th><th>Descrição</th><th style="text-align:right;">Faturado</th><th style="text-align:right;">Custo estimado</th><th style="text-align:right;">Margem estimada</th><th></th>
+          </tr></thead>
+          <tbody id="ev-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+
+  function updateTable(){
+    let rows = [...eventos.entries()];
+    if(eventoFilters.busca){
+      const nb = normalizeText(eventoFilters.busca);
+      rows = rows.filter(([,e]) => normalizeText(e.cliente||"").includes(nb));
+    }
+    rows.sort((a,b) => (b[1].data||"").localeCompare(a[1].data||""));
+
+    document.getElementById("ev-count").textContent = `${rows.length} de ${eventos.size} eventos`;
+    const tbody = document.getElementById("ev-tbody");
+    tbody.innerHTML = rows.map(([id,e]) => {
+      const custoTxt = e.custo_modo === "valor" ? fmtMoney(custoEvento(e)) : `${fmtMoney(custoEvento(e))} (${((e.custo_pct||0)*100).toLocaleString('pt-BR')}%)`;
+      return `
+            <tr>
+              <td class="name-cell">${escapeHtml(e.cliente)}</td>
+              <td class="tag-sheet">${e.unidade === "filial" ? "Filial" : e.unidade === "matriz" ? "Matriz" : '<span style="color:var(--text-faint);">—</span>'}</td>
+              <td style="white-space:nowrap;">${fmtDataBr(e.data)}</td>
+              <td style="font-size:12.5px; max-width:360px;">${escapeHtml(e.descricao||"")}</td>
+              <td class="num-cell">${fmtMoney(e.valor_faturado||0)}</td>
+              <td class="num-cell">${custoTxt}</td>
+              <td class="num-cell">${fmtMoney(margemEvento(e))}</td>
+              <td style="text-align:right; white-space:nowrap;"><button class="btn small ghost" data-open="${id}">abrir</button></td>
+            </tr>`;
+    }).join("") || `<tr><td colspan="8" class="empty-state">Nenhum evento encontrado.</td></tr>`;
+    tbody.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", () => openEventoModal(b.dataset.open)));
+  }
+
+  updateTable();
+  document.getElementById("ev-busca").addEventListener("input", e => { eventoFilters.busca = e.target.value; updateTable(); });
+}
+
+function openEventoModal(id){
+  const existing = id ? eventos.get(id) : null;
+  const draft = existing ? JSON.parse(JSON.stringify(existing)) : {
+    cliente:"", unidade:"matriz", data: hojeYMD(), descricao:"", origem:"",
+    custo_modo:"percentual", custo_pct:0.35, custo_valor:null, valor_faturado:null, itens:[]
+  };
+  renderEventoModal(id, draft);
+}
+
+function renderEventoModal(id, draft){
+  const root = document.getElementById("modal-root");
+  root.innerHTML = `
+    <div class="modal-overlay" id="ov">
+      <div class="modal">
+        <div class="modal-head"><h2>${id? "Editar evento" : "Novo evento"}</h2><button class="close-x" id="close-m">&times;</button></div>
+        <div class="modal-body">
+          <div class="field-row">
+            <div class="field" style="flex:2;"><label>Cliente</label><input type="text" id="ee-cliente" value="${escapeHtml(draft.cliente)}"></div>
+            <div class="field"><label>Unidade</label>
+              <select id="ee-unidade">
+                <option value="" ${!draft.unidade?"selected":""}>— não definida —</option>
+                <option value="matriz" ${draft.unidade==="matriz"?"selected":""}>Matriz</option>
+                <option value="filial" ${draft.unidade==="filial"?"selected":""}>Filial</option>
+              </select>
+            </div>
+            <div class="field"><label>Data</label><input type="date" id="ee-data" value="${draft.data||""}"></div>
+          </div>
+          <div class="field"><label>Descrição</label><textarea id="ee-desc" rows="2">${escapeHtml(draft.descricao||"")}</textarea></div>
+          <div class="field"><label>Origem (opcional)</label><input type="text" id="ee-origem" value="${escapeHtml(draft.origem||"")}" placeholder="Ex.: Fluxo Financeiro set/26"></div>
+          <div class="field-row">
+            <div class="field"><label>Valor faturado (R$)</label><input type="number" step="0.01" id="ee-faturado" value="${draft.valor_faturado??""}"></div>
+            <div class="field"><label>Modo de custo</label>
+              <select id="ee-custo-modo">
+                <option value="percentual" ${draft.custo_modo==="percentual"?"selected":""}>% do valor faturado</option>
+                <option value="valor" ${draft.custo_modo==="valor"?"selected":""}>Valor fixo (R$)</option>
+              </select>
+            </div>
+            <div class="field" id="ee-pct-wrap" style="display:${draft.custo_modo==="valor"?"none":"block"};"><label>Custo (%)</label><input type="number" step="0.01" id="ee-custo-pct" value="${draft.custo_pct!=null?draft.custo_pct*100:""}" placeholder="Ex.: 35"></div>
+            <div class="field" id="ee-valor-wrap" style="display:${draft.custo_modo==="valor"?"block":"none"};"><label>Custo (R$)</label><input type="number" step="0.01" id="ee-custo-valor" value="${draft.custo_valor??""}"></div>
+          </div>
+          <div class="footnote">Sem apuração item a item ainda — o custo aqui é uma estimativa (% do faturado ou valor fixo), igual ao que já era feito no sistema antigo para esses eventos pontuais.</div>
+          <div class="footnote" id="ee-err" style="color:var(--critical); margin-top:10px;"></div>
+        </div>
+        <div class="modal-foot">
+          <div>${id ? `<button class="btn danger" id="del-m">Excluir evento</button>` : ""}</div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn" id="cancel-m">Cancelar</button>
+            <button class="btn primary" id="save-m">Salvar</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+  document.getElementById("close-m").onclick = () => root.innerHTML = "";
+  document.getElementById("cancel-m").onclick = () => root.innerHTML = "";
+  document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
+
+  document.getElementById("ee-custo-modo").addEventListener("change", e => {
+    document.getElementById("ee-pct-wrap").style.display = e.target.value === "valor" ? "none" : "block";
+    document.getElementById("ee-valor-wrap").style.display = e.target.value === "valor" ? "block" : "none";
+  });
+
+  if(id) document.getElementById("del-m").onclick = async () => {
+    if(!(await confirmDialog(`Excluir o evento de "${draft.cliente}" em ${fmtDataBr(draft.data)}?`))) return;
+    try{
+      const { error } = await sb.from('eventos').delete().eq('id', id);
+      if(error) throw error;
+      await loadEventos();
+      root.innerHTML="";
+      renderEventos();
+    }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
+  };
+
+  document.getElementById("save-m").onclick = async () => {
+    const errEl = document.getElementById("ee-err");
+    const cliente = document.getElementById("ee-cliente").value.trim();
+    if(!cliente){ errEl.textContent = "Informe o cliente."; return; }
+    const data = document.getElementById("ee-data").value;
+    if(!data){ errEl.textContent = "Informe a data."; return; }
+    const modo = document.getElementById("ee-custo-modo").value;
+
+    const payload = {
+      cliente,
+      unidade: document.getElementById("ee-unidade").value || null,
+      data,
+      descricao: document.getElementById("ee-desc").value.trim() || null,
+      origem: document.getElementById("ee-origem").value.trim() || null,
+      valor_faturado: document.getElementById("ee-faturado").value === "" ? null : parseFloat(document.getElementById("ee-faturado").value),
+      custo_modo: modo,
+      custo_pct: modo === "percentual" ? (document.getElementById("ee-custo-pct").value === "" ? null : parseFloat(document.getElementById("ee-custo-pct").value)/100) : null,
+      custo_valor: modo === "valor" ? (document.getElementById("ee-custo-valor").value === "" ? null : parseFloat(document.getElementById("ee-custo-valor").value)) : null,
+      itens: draft.itens || [],
+      ...carimbo(),
+    };
+
+    try{
+      if(id){
+        const { error } = await sb.from('eventos').update(payload).eq('id', id);
+        if(error) throw error;
+      } else {
+        const { error } = await sb.from('eventos').insert(payload);
+        if(error) throw error;
+      }
+      await loadEventos();
+      root.innerHTML = "";
+      renderEventos();
     }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
   };
 }
