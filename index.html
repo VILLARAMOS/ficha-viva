@@ -312,7 +312,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadEstoqueContagem()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadEstoqueContagem(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
   goToView(currentView);
 }
 
@@ -533,6 +533,29 @@ async function loadAjustesMinimo(){
   if (error){ showAlert('Erro ao carregar ajustes de mínimo: ' + error.message); return; }
   (data || []).forEach(row => ajustesMinimo.set(`${row.contrato_id}|${row.semana}`, row));
 }
+
+/* ---- fechamento de Vendas: por cliente (só trava edição) e geral (congela custo pra todos) ----
+   preço de venda congela em QUALQUER um dos dois (grava direto no item lançado que ainda não tinha
+   preço próprio) — regra decidida nas v117-v119 do sistema antigo. Concorrência: versão otimista
+   verificada numa função do Postgres (fn_salvar_vendas_semana), não um lease com timeout. */
+let vendasSemanaEstado = new Map(); // "contratoId|semana" -> {versao, fechado_cliente, fechado_cliente_em/por, reaberto_cliente_em/por}
+let semanasFechadas = new Map();    // semana (number) -> {fechado, fechado_em/por, reaberto_em/por, custo_congelado:{"contratoId|dia|produtoId":custo}}
+
+async function loadVendasSemanaEstado(){
+  const { data, error } = await sb.from('vendas_semana_estado').select('*');
+  vendasSemanaEstado = new Map();
+  if (error){ showAlert('Erro ao carregar estado de fechamento de vendas: ' + error.message); return; }
+  (data || []).forEach(row => vendasSemanaEstado.set(`${row.contrato_id}|${row.semana}`, row));
+}
+async function loadSemanasFechadas(){
+  const { data, error } = await sb.from('semanas_fechadas').select('*');
+  semanasFechadas = new Map();
+  if (error){ showAlert('Erro ao carregar fechamento geral de semanas: ' + error.message); return; }
+  (data || []).forEach(row => semanasFechadas.set(row.semana, row));
+}
+function versaoVendasSemana(contratoId, semana){ return vendasSemanaEstado.get(`${contratoId}|${semana}`)?.versao ?? 0; }
+function semanaGeralFechada(semana){ return semanasFechadas.get(semana)?.fechado === true; }
+function clienteFechadoNaSemana(contratoId, semana){ return vendasSemanaEstado.get(`${contratoId}|${semana}`)?.fechado_cliente === true; }
 
 /* ---- previsão de compra (ajuste manual por contrato/semana/dia) ---- */
 let previsaoCompra = new Map(); // "contratoId|semana|DIA" -> {id, contrato_id, semana, dia, itens:[{produto_id,quantidade_ajustada}]}
@@ -2599,8 +2622,59 @@ function renderFichaModal(id, draft){
        por contrato, não por item vendido). */
 let vendaContratoSel = null;
 let vendaSemanaSel = null;
+let vendaTabSel = "lancamento"; // "lancamento" | "fechamento"
 let draftVendas = null; // { [DIA]: { [produto_id]: quantidade } }
 let draftAjusteMinimo = {}; // { [produto_id]: quantidade } — diferença mínimo contratado x enviado, só entra na receita
+
+/* ---- ações de fechamento/reabertura (chamam as funções do Postgres — fn_* em vendas_fechamento_semana) ---- */
+function construirSnapshotCustoSemana(semana){
+  const almocoIdx = indiceCardapioAlmoco(), cafeIdx = indiceCafeSemana();
+  const snap = {};
+  vendas.forEach(row => {
+    if(row.semana !== semana) return;
+    const ct = contratos.get(row.contrato_id);
+    if(!ct) return;
+    (row.itens || []).forEach(it => {
+      if(!it.quantidade || !it.produto_id) return;
+      const custo = custoUnidadeItemVendaVivo(almocoIdx, cafeIdx, it.produto_id, ct, row.semana, row.dia);
+      if(custo !== null && custo !== undefined) snap[`${row.contrato_id}|${row.dia}|${it.produto_id}`] = custo;
+    });
+  });
+  return snap;
+}
+async function fecharSemanaClienteAction(contratoId, semana, depoisRenderizar){
+  const ok = await confirmDialog(`Fechar a semana ${rotuloSemana(semana)} para este cliente? A edição do lançamento fica travada e o preço de venda atual é congelado nos itens já lançados que ainda não tinham preço próprio (eles deixam de acompanhar o preço do contrato a partir de agora). Dá para reabrir depois — a edição libera de novo, mas o preço já congelado continua congelado.`);
+  if(!ok) return;
+  const { error } = await sb.rpc('fn_fechar_semana_cliente', { p_contrato_id: contratoId, p_semana: semana, p_usuario: usuarioId });
+  if(error){ showAlert('Erro ao fechar: ' + (error.message || error.code || error)); return; }
+  await Promise.all([loadVendas(), loadVendasSemanaEstado()]);
+  depoisRenderizar();
+}
+async function reabrirSemanaClienteAction(contratoId, semana, depoisRenderizar){
+  const ok = await confirmDialog(`Reabrir a semana ${rotuloSemana(semana)} para este cliente? A edição do lançamento volta a ficar liberada. O preço já congelado em cada item continua congelado (não volta a acompanhar o contrato).`);
+  if(!ok) return;
+  const { error } = await sb.rpc('fn_reabrir_semana_cliente', { p_contrato_id: contratoId, p_semana: semana, p_usuario: usuarioId });
+  if(error){ showAlert('Erro ao reabrir: ' + (error.message || error.code || error)); return; }
+  await Promise.all([loadVendas(), loadVendasSemanaEstado()]);
+  depoisRenderizar();
+}
+async function fecharSemanaGeralAction(semana, depoisRenderizar){
+  const ok = await confirmDialog(`Fechar a semana ${rotuloSemana(semana)} no FECHAMENTO GERAL? Isso congela o custo de TODOS os clientes nessa semana — deixa de recalcular pelo cardápio/ficha técnica a partir de agora — e também congela o preço dos itens lançados que ainda não tinham preço próprio. Vale para todo mundo ao mesmo tempo, independente do fechamento por cliente.`);
+  if(!ok) return;
+  const snapshot = construirSnapshotCustoSemana(semana);
+  const { error } = await sb.rpc('fn_fechar_semana_geral', { p_semana: semana, p_usuario: usuarioId, p_custo_congelado: snapshot });
+  if(error){ showAlert('Erro ao fechar a semana geral: ' + (error.message || error.code || error)); return; }
+  await Promise.all([loadVendas(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
+  depoisRenderizar();
+}
+async function reabrirSemanaGeralAction(semana, depoisRenderizar){
+  const ok = await confirmDialog(`Reabrir a semana ${rotuloSemana(semana)} no fechamento geral? O custo volta a ser calculado ao vivo a partir de agora (o retrato congelado fica guardado, mas para de valer enquanto a semana estiver reaberta). O preço já congelado em cada item continua congelado.`);
+  if(!ok) return;
+  const { error } = await sb.rpc('fn_reabrir_semana_geral', { p_semana: semana, p_usuario: usuarioId });
+  if(error){ showAlert('Erro ao reabrir: ' + (error.message || error.code || error)); return; }
+  await Promise.all([loadVendas(), loadSemanasFechadas()]);
+  depoisRenderizar();
+}
 
 function indiceCardapioAlmoco(){
   const idx = new Map();
@@ -2625,7 +2699,8 @@ function custoCafeDia(cafeIdx, num, semana, dia){
 function catalogoPorProduto(produtoId){
   return [...catalogoItens.values()].find(c => c.produto_id === produtoId) || null;
 }
-function custoUnidadeItemVenda(almocoIdx, cafeIdx, produtoId, contrato, semana, dia){
+// custo ao vivo, recalculado do cardápio/ficha técnica — sem olhar fechamento de semana
+function custoUnidadeItemVendaVivo(almocoIdx, cafeIdx, produtoId, contrato, semana, dia){
   const cat = catalogoPorProduto(produtoId);
   if(!cat) return null;
   switch(cat.tipo_custo){
@@ -2664,6 +2739,17 @@ function custoUnidadeItemVenda(almocoIdx, cafeIdx, produtoId, contrato, semana, 
       return null;
   }
 }
+// se a semana está fechada no fechamento GERAL, usa o custo congelado no instante do fechamento
+// (snapshot em semanas_fechadas.custo_congelado); senão recalcula ao vivo. Fechamento por cliente
+// NÃO congela custo (custo é do cardápio, compartilhado entre clientes — decisão v117).
+function custoUnidadeItemVenda(almocoIdx, cafeIdx, produtoId, contrato, contratoId, semana, dia){
+  const sf = semanasFechadas.get(semana);
+  if(sf && sf.fechado){
+    const chave = `${contratoId}|${dia}|${produtoId}`;
+    if(Object.prototype.hasOwnProperty.call(sf.custo_congelado || {}, chave)) return sf.custo_congelado[chave];
+  }
+  return custoUnidadeItemVendaVivo(almocoIdx, cafeIdx, produtoId, contrato, semana, dia);
+}
 
 function itensDoContratoVenda(contratoId){
   return [...contratoItens.entries()]
@@ -2692,9 +2778,28 @@ function renderVendas(){
   document.getElementById("page-desc").textContent = "Lançamento de vendas realizadas por contrato/semana — quantidade vendida por item, custo e receita calculados";
   document.getElementById("topbar-actions").innerHTML = "";
 
+  const content = document.getElementById("content");
+  content.innerHTML = `
+    <div class="seg-toggle" id="vd-tabs" style="margin-bottom:14px; width:fit-content;">
+      <button type="button" data-tab="lancamento" class="${vendaTabSel==="lancamento"?"active":""}">Lançamento</button>
+      <button type="button" data-tab="fechamento" class="${vendaTabSel==="fechamento"?"active":""}">Fechamento de semanas</button>
+    </div>
+    <div id="vd-body"></div>
+  `;
+  document.getElementById("vd-tabs").addEventListener("click", e => {
+    const b = e.target.closest("button[data-tab]"); if(!b) return;
+    vendaTabSel = b.dataset.tab; renderVendas();
+  });
+
+  if(vendaTabSel === "fechamento") renderTabFechamentoSemanas();
+  else renderTabLancamento();
+}
+
+function renderTabLancamento(){
+  const body = document.getElementById("vd-body");
   const contratosAtivos = [...contratos.entries()].filter(([,c]) => c.ativo).sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)));
   if(!contratosAtivos.length){
-    document.getElementById("content").innerHTML = `<div class="empty-state">Nenhum contrato ativo cadastrado ainda.</div>`;
+    body.innerHTML = `<div class="empty-state">Nenhum contrato ativo cadastrado ainda.</div>`;
     return;
   }
   if(vendaContratoSel === null || !contratosAtivos.some(([id]) => id === vendaContratoSel)) vendaContratoSel = contratosAtivos[0][0];
@@ -2707,13 +2812,36 @@ function renderVendas(){
   draftAjusteMinimo = {};
   (ajusteExistente?.itens || []).forEach(it => { if(it.produto_id) draftAjusteMinimo[it.produto_id] = it.quantidade; });
 
-  const content = document.getElementById("content");
-  content.innerHTML = `
+  const fechadoCliente = clienteFechadoNaSemana(vendaContratoSel, vendaSemanaSel);
+  const fechadoGeral = semanaGeralFechada(vendaSemanaSel);
+  const travado = fechadoCliente || fechadoGeral;
+  const estado = vendasSemanaEstado.get(`${vendaContratoSel}|${vendaSemanaSel}`);
+  const geral = semanasFechadas.get(vendaSemanaSel);
+
+  function bannerHtml(){
+    if(fechadoGeral){
+      return `<div class="footnote" style="background:var(--critical-soft); color:var(--critical); padding:10px 12px; border-radius:8px; margin-bottom:10px;">
+        🔒 Semana fechada no <strong>fechamento geral</strong> (custo congelado para todos os clientes) por ${escapeHtml(geral?.fechado_por || "—")} em ${geral?.fechado_em ? escapeHtml(new Date(geral.fechado_em).toLocaleString("pt-BR")) : "—"}.
+        <button type="button" class="btn ghost" id="vd-reabrir-geral" style="margin-left:8px;">Reabrir fechamento geral</button>
+      </div>`;
+    }
+    if(fechadoCliente){
+      return `<div class="footnote" style="background:var(--warn-soft); color:var(--warn); padding:10px 12px; border-radius:8px; margin-bottom:10px;">
+        🔒 Fechado para este cliente por ${escapeHtml(estado?.fechado_cliente_por || "—")} em ${estado?.fechado_cliente_em ? escapeHtml(new Date(estado.fechado_cliente_em).toLocaleString("pt-BR")) : "—"}.
+        <button type="button" class="btn ghost" id="vd-reabrir-cliente" style="margin-left:8px;">Reabrir só este cliente</button>
+      </div>`;
+    }
+    return "";
+  }
+
+  body.innerHTML = `
     <div class="menu-controls">
       <select id="vd-contrato">${contratosAtivos.map(([id,c]) => `<option value="${id}" ${id===vendaContratoSel?"selected":""}>${escapeHtml(c.nome_cliente)}</option>`).join("")}</select>
       <select id="vd-semana">${semanas.map(s => `<option value="${s}" ${s===vendaSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
-      <button class="btn primary" id="vd-salvar" style="margin-left:auto;">Salvar semana</button>
+      ${!travado ? `<button type="button" class="btn ghost" id="vd-fechar-cliente">🔒 Fechar só este cliente</button>` : ""}
+      <button class="btn primary" id="vd-salvar" style="margin-left:auto;" ${travado ? "disabled" : ""}>Salvar semana</button>
     </div>
+    ${bannerHtml()}
     <div class="footnote" style="margin:10px 0;">Itens com custo <strong>"—"</strong> ainda não têm base de custo cadastrada (ex.: itens "fixo" do catálogo sem <code>custo_unitario</code> preenchido) — a margem desses itens fica subestimada até o custo ser preenchido.</div>
     <div class="panel">
       <div class="table-wrap">
@@ -2751,29 +2879,41 @@ function renderVendas(){
     const v = draftVendas[dia]?.[produtoId];
     return (v === undefined || v === null) ? null : Number(v);
   }
+  // preço congelado (se esta semana já foi fechada alguma vez e este item já tinha preço gravado) —
+  // sempre prevalece sobre o preço ao vivo do contrato, pra não mudar faturamento já fechado.
+  function precoFixado(produtoId){
+    for(const dia of DIAS_ORDEM){
+      const row = vendas.get(`${vendaContratoSel}|${vendaSemanaSel}|${dia}`);
+      const it = (row?.itens || []).find(x => x.produto_id === produtoId);
+      if(it && it.preco_unitario != null) return it.preco_unitario;
+    }
+    return null;
+  }
 
   function totaisItem(item){
     let receita = 0, custo = 0, temCusto = false;
+    const precoCongelado = item.produto_id ? precoFixado(item.produto_id) : null;
+    const precoEfetivo = precoCongelado ?? item.preco_venda;
     DIAS_ORDEM.forEach(dia => {
       const q = qtd(item.produto_id, dia);
       if(!q) return;
-      if(item.preco_venda != null) receita += q * item.preco_venda;
-      const cu = item.produto_id ? custoUnidadeItemVenda(almocoIdx, cafeIdx, item.produto_id, contrato, vendaSemanaSel, dia) : null;
+      if(precoEfetivo != null) receita += q * precoEfetivo;
+      const cu = item.produto_id ? custoUnidadeItemVenda(almocoIdx, cafeIdx, item.produto_id, contrato, vendaContratoSel, vendaSemanaSel, dia) : null;
       if(cu != null){ custo += q * cu; temCusto = true; }
     });
-    return { receita, custo, temCusto };
+    return { receita, custo, temCusto, precoCongelado, precoEfetivo };
   }
 
   function redraw(){
     const tbody = document.getElementById("vd-tbody");
     let totReceita = 0, totCusto = 0;
     tbody.innerHTML = itens.map(item => {
-      const { receita, custo, temCusto } = totaisItem(item);
+      const { receita, custo, temCusto, precoCongelado, precoEfetivo } = totaisItem(item);
       totReceita += receita; totCusto += custo;
       return `<tr>
         <td class="cat-col">${escapeHtml(item.nome)}</td>
-        <td class="num-cell">${fmtMoney(item.preco_venda)}</td>
-        ${DIAS_ORDEM.map(dia => `<td class="cel"><input type="number" step="1" min="0" class="cel-gram vd-qtd" data-produto="${escapeHtml(item.produto_id||"")}" data-dia="${dia}" value="${qtd(item.produto_id, dia) ?? ""}" ${item.produto_id ? "" : "disabled"}></td>`).join("")}
+        <td class="num-cell">${fmtMoney(precoEfetivo)}${precoCongelado!=null?` <span class="chip neutral" title="preço congelado — não acompanha mais o contrato">🔒</span>`:""}</td>
+        ${DIAS_ORDEM.map(dia => `<td class="cel"><input type="number" step="1" min="0" class="cel-gram vd-qtd" data-produto="${escapeHtml(item.produto_id||"")}" data-dia="${dia}" value="${qtd(item.produto_id, dia) ?? ""}" ${(item.produto_id && !travado) ? "" : "disabled"}></td>`).join("")}
         <td class="num-cell">${fmtMoney(receita)}</td>
         <td class="num-cell">${temCusto || custo ? fmtMoney(custo) : "—"}</td>
         <td class="num-cell">${temCusto || custo ? fmtMoney(receita - custo) : "—"}</td>
@@ -2809,7 +2949,7 @@ function renderVendas(){
       return `<tr>
         <td class="cat-col">${escapeHtml(item.nome)}</td>
         <td class="num-cell">${fmtMoney(item.preco_venda)}</td>
-        <td class="num-cell"><input type="number" step="1" class="vd-ajuste-qtd" data-produto="${escapeHtml(item.produto_id)}" value="${q ?? ""}" style="width:90px; text-align:right;"></td>
+        <td class="num-cell"><input type="number" step="1" class="vd-ajuste-qtd" data-produto="${escapeHtml(item.produto_id)}" value="${q ?? ""}" style="width:90px; text-align:right;" ${travado ? "disabled" : ""}></td>
         <td class="num-cell">${receita ? fmtMoney(receita) : "—"}</td>
       </tr>`;
     }).join("") || `<tr><td colspan="4" class="empty-state">Este contrato não tem itens cadastrados.</td></tr>`;
@@ -2823,35 +2963,115 @@ function renderVendas(){
   }
   redrawAjuste();
 
-  document.getElementById("vd-contrato").addEventListener("change", e => { vendaContratoSel = e.target.value; renderVendas(); });
-  document.getElementById("vd-semana").addEventListener("change", e => { vendaSemanaSel = Number(e.target.value); renderVendas(); });
+  document.getElementById("vd-contrato").addEventListener("change", e => { vendaContratoSel = e.target.value; renderTabLancamento(); });
+  document.getElementById("vd-semana").addEventListener("change", e => { vendaSemanaSel = Number(e.target.value); renderTabLancamento(); });
+  document.getElementById("vd-fechar-cliente")?.addEventListener("click", () => fecharSemanaClienteAction(vendaContratoSel, vendaSemanaSel, renderTabLancamento));
+  document.getElementById("vd-reabrir-cliente")?.addEventListener("click", () => reabrirSemanaClienteAction(vendaContratoSel, vendaSemanaSel, renderTabLancamento));
+  document.getElementById("vd-reabrir-geral")?.addEventListener("click", () => reabrirSemanaGeralAction(vendaSemanaSel, renderTabLancamento));
 
   document.getElementById("vd-salvar").addEventListener("click", async () => {
     const btn = document.getElementById("vd-salvar");
     btn.disabled = true; btn.textContent = "Salvando…";
     try{
-      const linhas = DIAS_ORDEM.map(dia => ({
-        contrato_id: vendaContratoSel,
-        semana: vendaSemanaSel,
-        dia,
-        itens: Object.entries(draftVendas[dia] || {}).map(([produto_id, quantidade]) => ({ produto_id, quantidade })),
-        ajuste_minimo: [],
-        ...carimbo(),
-      }));
-      const { error } = await sb.from('vendas').upsert(linhas, { onConflict: 'contrato_id,semana,dia' });
-      if(error) throw error;
-
-      const ajusteItens = Object.entries(draftAjusteMinimo).map(([produto_id, quantidade]) => ({ produto_id, quantidade }));
-      const { error: errAjuste } = await sb.from('ajustes_minimo').upsert({
-        contrato_id: vendaContratoSel, semana: vendaSemanaSel, itens: ajusteItens, ...carimbo(),
-      }, { onConflict: 'contrato_id,semana' });
-      if(errAjuste) throw errAjuste;
-
-      await Promise.all([loadVendas(), loadAjustesMinimo()]);
+      // preserva o preco_unitario já congelado de uma reabertura anterior — a troca de quantidade
+      // não pode "descongelar" um item sem querer.
+      const montarItensDoDia = dia => {
+        const existentes = new Map((vendas.get(`${vendaContratoSel}|${vendaSemanaSel}|${dia}`)?.itens || []).map(it => [it.produto_id, it]));
+        return Object.entries(draftVendas[dia] || {}).map(([produto_id, quantidade]) => {
+          const ex = existentes.get(produto_id);
+          const item = { produto_id, quantidade };
+          if(ex && ex.preco_unitario != null) item.preco_unitario = ex.preco_unitario;
+          return item;
+        });
+      };
+      const { error } = await sb.rpc('fn_salvar_vendas_semana', {
+        p_contrato_id: vendaContratoSel,
+        p_semana: vendaSemanaSel,
+        p_dias: DIAS_ORDEM.map(dia => ({ dia, itens: montarItensDoDia(dia) })),
+        p_ajuste_itens: Object.entries(draftAjusteMinimo).map(([produto_id, quantidade]) => ({ produto_id, quantidade })),
+        p_versao_esperada: versaoVendasSemana(vendaContratoSel, vendaSemanaSel),
+        p_usuario: usuarioId,
+      });
+      if(error){
+        const msg = String(error.message || "");
+        await Promise.all([loadVendas(), loadAjustesMinimo(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
+        if(msg.includes("VERSAO_CONFLITO")) showAlert("Alguém salvou esta semana enquanto você editava. A tela recarregou com os dados mais recentes — refaça seu lançamento.");
+        else if(msg.includes("SEMANA_FECHADA")) showAlert("Esta semana está fechada — não é possível salvar. Reabra antes de editar.");
+        else showAlert("Erro ao salvar: " + msg);
+        renderTabLancamento();
+        return;
+      }
+      await Promise.all([loadVendas(), loadAjustesMinimo(), loadVendasSemanaEstado()]);
       showAlert("Semana salva.");
+      renderTabLancamento();
     }catch(e){ showAlert("Erro ao salvar: " + (e.message || e.code || e)); }
     finally{ btn.disabled = false; btn.textContent = "Salvar semana"; }
   });
+}
+
+function renderTabFechamentoSemanas(){
+  const body = document.getElementById("vd-body");
+  const semanas = semanasDisponiveisVendas();
+  const contratosAtivos = [...contratos.entries()].filter(([,c]) => c.ativo).sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)));
+
+  body.innerHTML = `
+    <div class="footnote" style="margin-bottom:10px;">Fechamento <strong>por cliente</strong> só trava a edição do lançamento daquele cliente (não muda custo/CMV — o custo vem do cardápio, que é compartilhado entre todos). Fechamento <strong>geral</strong> congela o custo da semana para todo mundo de uma vez. Preço de venda congela em qualquer um dos dois, só nos itens que ainda não tinham preço próprio gravado.</div>
+    <div class="panel">
+      <div class="table-wrap"><table>
+        <thead><tr><th>Semana</th><th>Fechamento geral</th><th></th></tr></thead>
+        <tbody>
+          ${semanas.map(s => {
+            const g = semanasFechadas.get(s);
+            const fechada = g?.fechado === true;
+            const clientesFechados = contratosAtivos.filter(([id]) => clienteFechadoNaSemana(id, s)).length;
+            return `<tr>
+              <td class="name-cell">${escapeHtml(rotuloSemana(s))} <span class="hint">(${intervaloSemana(s)})</span></td>
+              <td>${fechada
+                ? `<span class="chip critical"><span class="dot"></span>fechada por ${escapeHtml(g.fechado_por||"—")} em ${g.fechado_em ? escapeHtml(new Date(g.fechado_em).toLocaleDateString("pt-BR")) : "—"}</span>`
+                : (clientesFechados ? `<span class="chip warn"><span class="dot"></span>aberta · ${clientesFechados} cliente(s) fechado(s)</span>` : `<span class="chip ok"><span class="dot"></span>aberta</span>`)}
+                ${g?.reaberto_em ? `<div class="footnote">última reabertura: ${escapeHtml(g.reaberto_por||"—")} em ${escapeHtml(new Date(g.reaberto_em).toLocaleString("pt-BR"))}</div>` : ""}
+              </td>
+              <td style="text-align:right;">
+                <button type="button" class="btn ghost vd-fs-toggle-geral" data-semana="${s}">${fechada ? "Reabrir geral" : "Fechar geral"}</button>
+                <button type="button" class="btn ghost vd-fs-ver-clientes" data-semana="${s}">ver clientes</button>
+              </td>
+            </tr>
+            <tr class="vd-fs-clientes-row" data-semana="${s}" style="display:none;"><td colspan="3">
+              <div class="table-wrap"><table>
+                <thead><tr><th>Cliente</th><th>Status</th><th></th></tr></thead>
+                <tbody>
+                  ${contratosAtivos.map(([id,c]) => {
+                    const fc = clienteFechadoNaSemana(id, s);
+                    const est = vendasSemanaEstado.get(`${id}|${s}`);
+                    return `<tr>
+                      <td class="name-cell">${escapeHtml(c.nome_cliente)}</td>
+                      <td>${fc ? `<span class="chip warn"><span class="dot"></span>fechado por ${escapeHtml(est?.fechado_cliente_por||"—")} em ${est?.fechado_cliente_em?escapeHtml(new Date(est.fechado_cliente_em).toLocaleDateString("pt-BR")):"—"}</span>` : `<span class="chip ok"><span class="dot"></span>aberto</span>`}</td>
+                      <td style="text-align:right;"><button type="button" class="btn ghost vd-fs-toggle-cliente" data-semana="${s}" data-contrato="${id}">${fc ? "Reabrir" : "Fechar"}</button></td>
+                    </tr>`;
+                  }).join("") || `<tr><td colspan="3" class="empty-state">Nenhum contrato ativo.</td></tr>`}
+                </tbody>
+              </table></div>
+            </td></tr>`;
+          }).join("") || `<tr><td colspan="3" class="empty-state">Nenhuma semana cadastrada ainda.</td></tr>`}
+        </tbody>
+      </table></div>
+    </div>
+  `;
+
+  body.querySelectorAll(".vd-fs-ver-clientes").forEach(btn => btn.addEventListener("click", () => {
+    const row = body.querySelector(`.vd-fs-clientes-row[data-semana="${btn.dataset.semana}"]`);
+    if(row) row.style.display = row.style.display === "none" ? "" : "none";
+  }));
+  body.querySelectorAll(".vd-fs-toggle-geral").forEach(btn => btn.addEventListener("click", () => {
+    const s = Number(btn.dataset.semana);
+    if(semanaGeralFechada(s)) reabrirSemanaGeralAction(s, renderTabFechamentoSemanas);
+    else fecharSemanaGeralAction(s, renderTabFechamentoSemanas);
+  }));
+  body.querySelectorAll(".vd-fs-toggle-cliente").forEach(btn => btn.addEventListener("click", () => {
+    const s = Number(btn.dataset.semana), contratoId = btn.dataset.contrato;
+    if(clienteFechadoNaSemana(contratoId, s)) reabrirSemanaClienteAction(contratoId, s, renderTabFechamentoSemanas);
+    else fecharSemanaClienteAction(contratoId, s, renderTabFechamentoSemanas);
+  }));
 }
 
 /* ===================================================================== FATURAMENTO APURADO
@@ -2869,7 +3089,11 @@ function renderVendas(){
 function vendasDoContrato(contratoId){
   return [...vendas.values()].filter(v => v.contrato_id === contratoId);
 }
-function precoItemVendaApurado(produtoId, contratoId){
+// precoCongelado: se o item já carrega preco_unitario próprio (gravado num fechamento), usa esse
+// valor e NUNCA o preço ao vivo do contrato — é exatamente o que resolve o risco da v118/v119
+// (mudar o preço do contrato não pode mudar faturamento já fechado).
+function precoItemVendaApurado(produtoId, contratoId, precoCongelado){
+  if(precoCongelado !== null && precoCongelado !== undefined) return precoCongelado;
   const ci = [...contratoItens.values()].find(c => c.contrato_id === contratoId && c.produto_id === produtoId);
   return (ci && ci.preco_venda != null) ? ci.preco_venda : null;
 }
@@ -2914,8 +3138,8 @@ function apurarContrato(id, ct, mesId, almocoIdx, cafeIdx){
     (v.itens || []).forEach(it => {
       if(!it.quantidade) return;
       registros++;
-      const custoUnd = custoUnidadeItemVenda(almocoIdx, cafeIdx, it.produto_id, ct, v.semana, v.dia);
-      const preco = precoItemVendaApurado(it.produto_id, id);
+      const custoUnd = custoUnidadeItemVenda(almocoIdx, cafeIdx, it.produto_id, ct, id, v.semana, v.dia);
+      const preco = precoItemVendaApurado(it.produto_id, id, it.preco_unitario);
       if(custoUnd === null || custoUnd === undefined) itensSemCusto++;
       else {
         custoTotal += custoUnd * it.quantidade;
@@ -4300,8 +4524,8 @@ function apurarSemanaContrato(id, ct, semana, mesId, almocoIdx, cafeIdx, apMes){
   docs.forEach(v => {
     (v.itens || []).forEach(it => {
       if(!it.quantidade) return;
-      const custoUnd = custoUnidadeItemVenda(almocoIdx, cafeIdx, it.produto_id, ct, v.semana, v.dia);
-      const preco = precoItemVendaApurado(it.produto_id, id);
+      const custoUnd = custoUnidadeItemVenda(almocoIdx, cafeIdx, it.produto_id, ct, id, v.semana, v.dia);
+      const preco = precoItemVendaApurado(it.produto_id, id, it.preco_unitario);
       if(custoUnd !== null && custoUnd !== undefined) custoTotal += custoUnd * it.quantidade;
       if(preco !== null && preco !== undefined) receitaItemizada += preco * it.quantidade;
     });
