@@ -221,7 +221,7 @@ table.cardapio-table .autocomplete{position:relative;}
     <button class="nav-btn" data-view="contratos"><span class="ico">&#9737;</span> Contratos</button>
     <button class="nav-btn" data-view="eventos"><span class="ico">&#9671;</span> Eventos</button>
     <button class="nav-btn" data-view="incidencia"><span class="ico">&#9661;</span> Incidência</button>
-    <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9650;</span> Vendas</button>
+    <button class="nav-btn" data-view="vendas"><span class="ico">&#9650;</span> Vendas</button>
     <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9881;</span> PCP / Expedição</button>
     <div class="sidebar-foot">
       Cadastro único de custo dos insumos. Os demais módulos do Ficha Viva ainda serão migrados para cá.
@@ -280,6 +280,7 @@ const VIEWS = {
   contratos: renderContratos,
   eventos: renderEventos,
   incidencia: renderIncidencia,
+  vendas: renderVendas,
 };
 
 function goToView(view){
@@ -297,7 +298,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas()]);
   goToView(currentView);
 }
 
@@ -495,6 +496,16 @@ async function loadContratoItens(){
   contratoItens = new Map();
   if (error){ showAlert('Erro ao carregar itens contratados: ' + error.message); return; }
   (data || []).forEach(row => { const { id, ...rest } = row; contratoItens.set(id, rest); });
+}
+
+/* ---- vendas (lançamento realizado por contrato/semana/dia) ---- */
+let vendas = new Map(); // "contratoId|semana|DIA" -> {id, contrato_id, semana, dia, itens:[{produto_id,quantidade}], ajuste_minimo}
+
+async function loadVendas(){
+  const { data, error } = await sb.from('vendas').select('*');
+  vendas = new Map();
+  if (error){ showAlert('Erro ao carregar vendas: ' + error.message); return; }
+  (data || []).forEach(row => vendas.set(`${row.contrato_id}|${row.semana}|${row.dia}`, row));
 }
 
 /* ---- eventos (produção pontual fora do cardápio padrão, fora do escopo de Contratos) ---- */
@@ -2396,6 +2407,231 @@ function renderFichaModal(id, draft){
       renderFichas();
     }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
   };
+}
+
+/* ===================================================================== VENDAS
+   V1 — grade de lançamento de vendas realizadas por contrato/semana/dia.
+   Custo por item resolvido via catalogoItens.tipo_custo (cardapio_refeicao/marmita/
+   marmita_especial/cafe → cardápio planejado do contrato; fixo → custo_unitario
+   cadastrado no catálogo; zero → 0; ficha → não validado, nenhum item do catálogo usa hoje).
+   Simplificações conscientes desta V1 (não implementadas ainda):
+     - sem fechamento/lock de semana (vendas_fechadas / vendas_lock do sistema antigo);
+     - sem override pontual de cardápio por venda (cardapio_override do sistema antigo);
+     - itens de "franquia"/"fixo" mensal do contrato não entram aqui (são faturamento
+       por contrato, não por item vendido). */
+let vendaContratoSel = null;
+let vendaSemanaSel = null;
+let draftVendas = null; // { [DIA]: { [produto_id]: quantidade } }
+
+function indiceCardapioAlmoco(){
+  const idx = new Map();
+  cardapiosAlmoco.forEach(row => idx.set(`${row.cardapio_num}|${row.semana}|${row.dia}`, row));
+  return idx;
+}
+function indiceCafeSemana(){
+  const idx = new Map();
+  cafeSemanas.forEach(row => idx.set(`${row.cardapio_num}|${row.semana}`, row));
+  return idx;
+}
+function custoCafeDia(cafeIdx, num, semana, dia){
+  if(num == null) return null;
+  const row = cafeIdx.get(`${num}|${semana}`);
+  if(!row) return null;
+  const itensDia = (row.dias && row.dias[DIA_KEY_CAFE[dia]] && row.dias[DIA_KEY_CAFE[dia]].itens) || [];
+  return itensDia.reduce((s,l) => {
+    const c = custoFichaOuInsumo(l);
+    return s + (c!=null && l.gramagem_kg!=null ? c*l.gramagem_kg : 0);
+  }, 0);
+}
+function catalogoPorProduto(produtoId){
+  return [...catalogoItens.values()].find(c => c.produto_id === produtoId) || null;
+}
+function custoUnidadeItemVenda(almocoIdx, cafeIdx, produtoId, contrato, semana, dia){
+  const cat = catalogoPorProduto(produtoId);
+  if(!cat) return null;
+  switch(cat.tipo_custo){
+    case "cardapio_refeicao": {
+      const row = contrato.cardapio_refeicao_num!=null ? almocoIdx.get(`${contrato.cardapio_refeicao_num}|${semana}|${dia}`) : null;
+      return row ? (row.custo_planejado ?? null) : null;
+    }
+    case "cardapio_marmita": {
+      const row = contrato.cardapio_marmita_num!=null ? almocoIdx.get(`${contrato.cardapio_marmita_num}|${semana}|${dia}`) : null;
+      return row ? (row.custo_planejado ?? null) : null;
+    }
+    case "cardapio_marmita_especial": {
+      if(contrato.marmita_especial_ativo && contrato.cardapio_marmita_especial_num){
+        const row = almocoIdx.get(`${contrato.cardapio_marmita_especial_num}|${semana}|${dia}`);
+        if(row && row.custo_planejado != null) return row.custo_planejado;
+      }
+      const base = contrato.cardapio_marmita_num!=null ? almocoIdx.get(`${contrato.cardapio_marmita_num}|${semana}|${dia}`) : null;
+      if(!base || base.custo_planejado == null) return null;
+      return base.custo_planejado * (cat.multiplicador || 1);
+    }
+    case "cardapio_cafe": {
+      const ehFdsFeriado = dia === "SABADO" || dia === "DOMINGO";
+      const num = (ehFdsFeriado && contrato.cafe_especial_ativo && contrato.cardapio_cafe_especial_num) ? contrato.cardapio_cafe_especial_num : contrato.cardapio_cafe_num;
+      return custoCafeDia(cafeIdx, num, semana, dia);
+    }
+    case "ficha": {
+      if(!cat.ficha_id) return null;
+      const f = fichas.get(cat.ficha_id);
+      return f ? computeFicha(f, cat.ficha_id).custoKg : null;
+    }
+    case "fixo":
+      return cat.custo_unitario ?? null;
+    case "zero":
+      return 0;
+    default:
+      return null;
+  }
+}
+
+function itensDoContratoVenda(contratoId){
+  return [...contratoItens.entries()]
+    .filter(([,ci]) => ci.contrato_id === contratoId)
+    .sort((a,b) => a[1].ordem - b[1].ordem)
+    .map(([id,ci]) => ({ id, ...ci, nome: ci.nome_customizado || catalogoPorProduto(ci.produto_id)?.nome || ci.produto_id || "(sem nome)" }));
+}
+
+function semanasDisponiveisVendas(){
+  const s = [...new Set([...cardapiosAlmoco.values()].map(r => r.semana))].sort((a,b)=>a-b);
+  return s.length ? s : [1];
+}
+
+function carregarDraftVendas(contratoId, semana){
+  const d = {};
+  DIAS_ORDEM.forEach(dia => {
+    const row = vendas.get(`${contratoId}|${semana}|${dia}`);
+    d[dia] = {};
+    (row?.itens || []).forEach(it => { if(it.produto_id) d[dia][it.produto_id] = it.quantidade; });
+  });
+  return d;
+}
+
+function renderVendas(){
+  document.getElementById("page-title").textContent = "Vendas";
+  document.getElementById("page-desc").textContent = "Lançamento de vendas realizadas por contrato/semana — quantidade vendida por item, custo e receita calculados";
+  document.getElementById("topbar-actions").innerHTML = "";
+
+  const contratosAtivos = [...contratos.entries()].filter(([,c]) => c.ativo).sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)));
+  if(!contratosAtivos.length){
+    document.getElementById("content").innerHTML = `<div class="empty-state">Nenhum contrato ativo cadastrado ainda.</div>`;
+    return;
+  }
+  if(vendaContratoSel === null || !contratosAtivos.some(([id]) => id === vendaContratoSel)) vendaContratoSel = contratosAtivos[0][0];
+
+  const semanas = semanasDisponiveisVendas();
+  if(vendaSemanaSel === null || !semanas.includes(vendaSemanaSel)) vendaSemanaSel = semanas[0];
+
+  draftVendas = carregarDraftVendas(vendaContratoSel, vendaSemanaSel);
+
+  const content = document.getElementById("content");
+  content.innerHTML = `
+    <div class="menu-controls">
+      <select id="vd-contrato">${contratosAtivos.map(([id,c]) => `<option value="${id}" ${id===vendaContratoSel?"selected":""}>${escapeHtml(c.nome_cliente)}</option>`).join("")}</select>
+      <select id="vd-semana">${semanas.map(s => `<option value="${s}" ${s===vendaSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
+      <button class="btn primary" id="vd-salvar" style="margin-left:auto;">Salvar semana</button>
+    </div>
+    <div class="footnote" style="margin:10px 0;">Itens com custo <strong>"—"</strong> ainda não têm base de custo cadastrada (ex.: itens "fixo" do catálogo sem <code>custo_unitario</code> preenchido) — a margem desses itens fica subestimada até o custo ser preenchido.</div>
+    <div class="panel">
+      <div class="table-wrap">
+        <table class="cardapio-table">
+          <thead><tr>
+            <th class="cat-col">Item</th>
+            <th style="text-align:right;">Preço unit.</th>
+            ${DIAS_ORDEM.map(dia => `<th>${DIA_LABEL[dia]}</th>`).join("")}
+            <th style="text-align:right;">Receita sem.</th>
+            <th style="text-align:right;">Custo sem.</th>
+            <th style="text-align:right;">Margem sem.</th>
+          </tr></thead>
+          <tbody id="vd-tbody"></tbody>
+          <tfoot id="vd-tfoot"></tfoot>
+        </table>
+      </div>
+    </div>
+  `;
+
+  const almocoIdx = indiceCardapioAlmoco();
+  const cafeIdx = indiceCafeSemana();
+  const contrato = contratos.get(vendaContratoSel);
+  const itens = itensDoContratoVenda(vendaContratoSel);
+
+  function qtd(produtoId, dia){
+    const v = draftVendas[dia]?.[produtoId];
+    return (v === undefined || v === null) ? null : Number(v);
+  }
+
+  function totaisItem(item){
+    let receita = 0, custo = 0, temCusto = false;
+    DIAS_ORDEM.forEach(dia => {
+      const q = qtd(item.produto_id, dia);
+      if(!q) return;
+      if(item.preco_venda != null) receita += q * item.preco_venda;
+      const cu = item.produto_id ? custoUnidadeItemVenda(almocoIdx, cafeIdx, item.produto_id, contrato, vendaSemanaSel, dia) : null;
+      if(cu != null){ custo += q * cu; temCusto = true; }
+    });
+    return { receita, custo, temCusto };
+  }
+
+  function redraw(){
+    const tbody = document.getElementById("vd-tbody");
+    let totReceita = 0, totCusto = 0;
+    tbody.innerHTML = itens.map(item => {
+      const { receita, custo, temCusto } = totaisItem(item);
+      totReceita += receita; totCusto += custo;
+      return `<tr>
+        <td class="cat-col">${escapeHtml(item.nome)}</td>
+        <td class="num-cell">${fmtMoney(item.preco_venda)}</td>
+        ${DIAS_ORDEM.map(dia => `<td class="cel"><input type="number" step="1" min="0" class="cel-gram vd-qtd" data-produto="${escapeHtml(item.produto_id||"")}" data-dia="${dia}" value="${qtd(item.produto_id, dia) ?? ""}" ${item.produto_id ? "" : "disabled"}></td>`).join("")}
+        <td class="num-cell">${fmtMoney(receita)}</td>
+        <td class="num-cell">${temCusto || custo ? fmtMoney(custo) : "—"}</td>
+        <td class="num-cell">${temCusto || custo ? fmtMoney(receita - custo) : "—"}</td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="${3+DIAS_ORDEM.length}" class="empty-state">Este contrato não tem itens cadastrados.</td></tr>`;
+
+    document.getElementById("vd-tfoot").innerHTML = `<tr class="row-total">
+      <td class="cat-col">Total da semana</td><td></td>
+      ${DIAS_ORDEM.map(()=> `<td></td>`).join("")}
+      <td class="num-cell">${fmtMoney(totReceita)}</td>
+      <td class="num-cell">${fmtMoney(totCusto)}</td>
+      <td class="num-cell">${fmtMoney(totReceita - totCusto)}</td>
+    </tr>`;
+
+    tbody.querySelectorAll(".vd-qtd").forEach(inp => inp.addEventListener("input", () => {
+      const produtoId = inp.dataset.produto, dia = inp.dataset.dia;
+      if(!produtoId) return;
+      const val = inp.value === "" ? null : Number(inp.value);
+      if(!draftVendas[dia]) draftVendas[dia] = {};
+      if(val === null) delete draftVendas[dia][produtoId]; else draftVendas[dia][produtoId] = val;
+      redraw();
+      // mantém o foco no campo editado após o redraw
+      document.querySelector(`.vd-qtd[data-produto="${CSS.escape(produtoId)}"][data-dia="${dia}"]`)?.focus();
+    }));
+  }
+  redraw();
+
+  document.getElementById("vd-contrato").addEventListener("change", e => { vendaContratoSel = e.target.value; renderVendas(); });
+  document.getElementById("vd-semana").addEventListener("change", e => { vendaSemanaSel = Number(e.target.value); renderVendas(); });
+
+  document.getElementById("vd-salvar").addEventListener("click", async () => {
+    const btn = document.getElementById("vd-salvar");
+    btn.disabled = true; btn.textContent = "Salvando…";
+    try{
+      const linhas = DIAS_ORDEM.map(dia => ({
+        contrato_id: vendaContratoSel,
+        semana: vendaSemanaSel,
+        dia,
+        itens: Object.entries(draftVendas[dia] || {}).map(([produto_id, quantidade]) => ({ produto_id, quantidade })),
+        ajuste_minimo: [],
+        ...carimbo(),
+      }));
+      const { error } = await sb.from('vendas').upsert(linhas, { onConflict: 'contrato_id,semana,dia' });
+      if(error) throw error;
+      await loadVendas();
+      showAlert("Semana salva.");
+    }catch(e){ showAlert("Erro ao salvar: " + (e.message || e.code || e)); }
+    finally{ btn.disabled = false; btn.textContent = "Salvar semana"; }
+  });
 }
 
 /* ===================================================================== INIT */
