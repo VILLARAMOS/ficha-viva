@@ -220,6 +220,7 @@ table.cardapio-table .autocomplete{position:relative;}
     <button class="nav-btn" data-view="cardapio"><span class="ico">&#9633;</span> Cardápio</button>
     <button class="nav-btn" data-view="contratos"><span class="ico">&#9737;</span> Contratos</button>
     <button class="nav-btn" data-view="eventos"><span class="ico">&#9671;</span> Eventos</button>
+    <button class="nav-btn" data-view="incidencia"><span class="ico">&#9661;</span> Incidência</button>
     <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9650;</span> Vendas</button>
     <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9881;</span> PCP / Expedição</button>
     <div class="sidebar-foot">
@@ -278,6 +279,7 @@ const VIEWS = {
   cardapio: renderCardapio,
   contratos: renderContratos,
   eventos: renderEventos,
+  incidencia: renderIncidencia,
 };
 
 function goToView(view){
@@ -295,7 +297,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia()]);
   goToView(currentView);
 }
 
@@ -503,6 +505,16 @@ async function loadEventos(){
   eventos = new Map();
   if (error){ showAlert('Erro ao carregar eventos: ' + error.message); return; }
   (data || []).forEach(row => { const { id, ...rest } = row; eventos.set(id, rest); });
+}
+
+/* ---- tabela de incidência de proteínas (mapa de carnes) ---- */
+let perfisIncidencia = new Map();   // id -> {nome, dias:[...], semanas:[{tipo:n}×5], observacoes}
+
+async function loadPerfisIncidencia(){
+  const { data, error } = await sb.from('perfis_incidencia').select('*').order('nome');
+  perfisIncidencia = new Map();
+  if (error){ showAlert('Erro ao carregar perfis de incidência: ' + error.message); return; }
+  (data || []).forEach(row => { const { id, ...rest } = row; perfisIncidencia.set(id, rest); });
 }
 function itensDoContrato(contratoId){
   return [...contratoItens.entries()].filter(([,it]) => it.contrato_id === contratoId);
@@ -788,6 +800,14 @@ function buscarPorNome(entries, texto, limite){
 function fichasComoInsumoOptions(excludeId){
   return [...fichas.entries()].filter(([id,d]) => d.disponivel_como_insumo === true && id !== excludeId);
 }
+
+/* tipos de proteína — usados na classificação de fichas e na tabela de incidência (mapa de carnes) */
+const TIPOS_PROTEINA = [
+  {id:"BOVINA E PEIXE", curto:"Bovina/Peixe", nome:"Bovina e peixe", desc:"bifes, cubos, tiras, iscas ou moída"},
+  {id:"AVE", curto:"Ave", nome:"Ave", desc:"filés, cubos, tiras ou cortes inteiros"},
+  {id:"SUÍNA", curto:"Suína", nome:"Suína", desc:"bifes, cubos, tiras, iscas ou cortes inteiros"},
+  {id:"EMBUTIDA / ELABORADOS", curto:"Embutida/Elab.", nome:"Embutida / elaborados", desc:"linguiças, salsichas, hambúrguer, steak, almôndegas, lasanhas, escondidinhos"}
+];
 
 /* ================================================================= FICHAS TÉCNICAS (portado do Ficha Viva) */
 let fichaFilters = {grupo:"", busca:""};
@@ -1339,7 +1359,12 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
             <div class="field"><label>Fim do contrato</label><input type="date" id="kk-fim" value="${draft.data_fim||""}"></div>
           </div>
           <div class="field-row">
-            <div class="field"><label>Perfil de incidência</label><input type="text" id="kk-perfil-inc" value="${escapeHtml(draft.perfil_incidencia_id||"geral")}" placeholder="geral"></div>
+            <div class="field"><label>Perfil de incidência</label>
+              <select id="kk-perfil-inc">
+                <option value="" ${!draft.perfil_incidencia_id?"selected":""}>— sem perfil —</option>
+                ${[...perfisIncidencia.entries()].sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome))).map(([pid,p]) => `<option value="${escapeHtml(pid)}" ${draft.perfil_incidencia_id===pid?"selected":""}>${escapeHtml(p.nome)}</option>`).join("")}
+              </select>
+            </div>
             <div class="field"><label>Produção em fim de semana/feriado</label>
               <select id="kk-pcp-fds">
                 <option value="" ${!draft.producao_fds_feriado?"selected":""}>— não —</option>
@@ -1507,7 +1532,7 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
       cafe_especial_ativo: document.getElementById("kk-cafe-esp-on").checked,
       cardapio_cafe_especial_num: document.getElementById("kk-cafe-esp-on").checked ? Number(document.getElementById("kk-cafe-esp-num").value) : null,
       observacoes: document.getElementById("kk-obs").value.trim() || null,
-      perfil_incidencia_id: document.getElementById("kk-perfil-inc").value.trim() || "geral",
+      perfil_incidencia_id: document.getElementById("kk-perfil-inc").value || null,
       producao_fds_feriado: document.getElementById("kk-pcp-fds").value || null,
       franquia: document.getElementById("kk-modelo").value === "franquia"
         ? draft.franquia.filter(t => (t.rotulo||"").trim()).map(t => ({ rotulo: t.rotulo.trim(), produtos: t.produtos||[], minimo: t.minimo??null, preco_excedente: t.preco_excedente??null }))
@@ -1742,6 +1767,191 @@ function renderEventoModal(id, draft){
   };
 }
 
+/* ===================================================================== INCIDÊNCIA (mapa de carnes) */
+function nomeUnicoPerfilId(nome){
+  let base = normalizeText(nome).replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "perfil";
+  let candidato = base, i = 2;
+  while(perfisIncidencia.has(candidato)){ candidato = `${base}-${i}`; i++; }
+  return candidato;
+}
+function totalMensalPerfil(perfil, tipoId){
+  return [0,1,2,3,4].reduce((s,w) => s + (Number((perfil.semanas[w]||{})[tipoId]) || 0), 0);
+}
+function contratosDoPerfil(perfilId){
+  return [...contratos.entries()].filter(([,c]) => c.ativo && c.perfil_incidencia_id === perfilId).map(([,c]) => c.nome_cliente).sort((a,b) => normalizeText(a).localeCompare(normalizeText(b)));
+}
+
+function renderIncidencia(){
+  document.getElementById("page-title").textContent = "Tabela de incidência";
+  document.getElementById("page-desc").textContent = "Mapa de carnes: quantos pratos de cada tipo de proteína cada perfil espera por semana do mês — e a classificação de proteína de cada ficha técnica";
+  document.getElementById("topbar-actions").innerHTML = `<button class="btn primary" id="btn-novo-perfil">+ Novo perfil</button>`;
+  document.getElementById("btn-novo-perfil").addEventListener("click", () => openPerfilModal(null));
+
+  const content = document.getElementById("content");
+  const perfisOrdenados = [...perfisIncidencia.entries()].sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+
+  const fichasSemTipo = [...fichas.entries()].filter(([,f]) => !f.tipo_proteina).sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+  const fichasComTipo = [...fichas.entries()].filter(([,f]) => f.tipo_proteina).sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+
+  content.innerHTML = `
+    <div class="footnote" style="margin-bottom:14px;">Cada <strong>perfil</strong> é o mapa de carnes de um grupo de contratos: quantos pratos de cada tipo de proteína entram em cada semana do mês (Semana 1 a 5) e quais dias da semana contam (Geral = seg–sex, RB = seg–sáb, por exemplo). Cada contrato ativo escolhe um perfil (campo "Perfil de incidência", na aba Contratos).</div>
+    <div class="panel">
+      <div class="panel-head"><h3>Perfis</h3></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Perfil</th><th>Dias que contam</th>${TIPOS_PROTEINA.map(t => `<th style="text-align:right;">${escapeHtml(t.curto)}/mês</th>`).join("")}<th>Usado por</th><th></th></tr></thead>
+          <tbody id="inc-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Classificação de proteína das fichas</h3><span class="hint">${fichasSemTipo.length} sem classificar de ${fichas.size}</span></div>
+      <div class="panel-body">
+        <div class="search-bar"><input type="text" id="inc-busca-ficha" placeholder="Buscar ficha…"></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Ficha</th><th>Tipo de proteína</th></tr></thead>
+          <tbody id="inc-ficha-tbody"></tbody>
+        </table></div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById("inc-tbody").innerHTML = perfisOrdenados.map(([id, p]) => {
+    const uso = contratosDoPerfil(id);
+    const usoTxt = uso.length ? `${uso.slice(0,5).map(escapeHtml).join(", ")}${uso.length>5?` +${uso.length-5}`:""}` : '<span style="color:var(--text-faint);">nenhum contrato ativo</span>';
+    return `<tr>
+      <td class="name-cell">${escapeHtml(p.nome)}</td>
+      <td style="font-size:12.5px;">${diasResumoIncidencia(p.dias)}</td>
+      ${TIPOS_PROTEINA.map(t => `<td class="num-cell">${totalMensalPerfil(p, t.id)}</td>`).join("")}
+      <td style="font-size:12.5px;">${usoTxt}</td>
+      <td style="text-align:right; white-space:nowrap;"><button class="btn small ghost" data-open-perfil="${id}">abrir</button></td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="${3+TIPOS_PROTEINA.length}" class="empty-state">Nenhum perfil cadastrado.</td></tr>`;
+  document.getElementById("inc-tbody").querySelectorAll("[data-open-perfil]").forEach(b => b.addEventListener("click", () => openPerfilModal(b.dataset.openPerfil)));
+
+  function renderFichaTbody(busca){
+    const nb = normalizeText(busca||"");
+    const todas = [...fichasSemTipo, ...fichasComTipo].filter(([,f]) => !nb || normalizeText(f.nome).includes(nb));
+    document.getElementById("inc-ficha-tbody").innerHTML = todas.map(([id, f]) => `
+      <tr>
+        <td class="name-cell">${escapeHtml(f.nome)}</td>
+        <td><select class="inc-f-tipo" data-id="${id}" style="max-width:260px;">
+          <option value="">— sem tipo —</option>
+          ${TIPOS_PROTEINA.map(t => `<option value="${escapeHtml(t.id)}" ${f.tipo_proteina===t.id?"selected":""}>${escapeHtml(t.nome)}</option>`).join("")}
+        </select></td>
+      </tr>`).join("") || `<tr><td colspan="2" class="empty-state">Nenhuma ficha encontrada.</td></tr>`;
+    document.getElementById("inc-ficha-tbody").querySelectorAll(".inc-f-tipo").forEach(sel => sel.addEventListener("change", async () => {
+      const { error } = await sb.from('fichas').update({ tipo_proteina: sel.value || null, ...carimbo() }).eq('id', sel.dataset.id);
+      if(error){ showAlert("Erro ao salvar: " + (error.message||error.code||error)); return; }
+      await loadFichas();
+      renderIncidencia();
+    }));
+  }
+  renderFichaTbody("");
+  document.getElementById("inc-busca-ficha").addEventListener("input", e => renderFichaTbody(e.target.value));
+}
+
+function diasResumoIncidencia(dias){
+  const ab = {SEGUNDA:"seg", TERCA:"ter", QUARTA:"qua", QUINTA:"qui", SEXTA:"sex", SABADO:"sáb", DOMINGO:"dom"};
+  const idx = (dias||[]).map(d => DIAS_ORDEM.indexOf(d)).filter(i => i >= 0).sort((a,b) => a-b);
+  if(!idx.length) return "—";
+  const seq = idx.every((v,k) => k===0 || v===idx[k-1]+1);
+  return seq && idx.length > 1 ? `${ab[DIAS_ORDEM[idx[0]]]}–${ab[DIAS_ORDEM[idx[idx.length-1]]]}` : idx.map(i => ab[DIAS_ORDEM[i]]).join(", ");
+}
+
+function openPerfilModal(id){
+  const existing = id ? perfisIncidencia.get(id) : null;
+  const draft = existing ? JSON.parse(JSON.stringify(existing)) : {
+    nome:"", dias:["SEGUNDA","TERCA","QUARTA","QUINTA","SEXTA"], semanas:[{},{},{},{},{}], observacoes:null
+  };
+  if(!Array.isArray(draft.semanas) || draft.semanas.length !== 5) draft.semanas = [{},{},{},{},{}];
+  renderPerfilModal(id, draft);
+}
+
+function renderPerfilModal(id, draft){
+  const root = document.getElementById("modal-root");
+  root.innerHTML = `
+    <div class="modal-overlay" id="ov">
+      <div class="modal modal-wide">
+        <div class="modal-head"><h2>${id? "Editar perfil de incidência" : "Novo perfil de incidência"}</h2><button class="close-x" id="close-m">&times;</button></div>
+        <div class="modal-body">
+          <div class="field"><label>Nome do perfil</label><input type="text" id="pf-nome" value="${escapeHtml(draft.nome)}" placeholder="Ex.: Geral (seg–sex)"></div>
+          <div class="field"><label>Dias da semana que contam</label>
+            <div class="inc-dias">${DIAS_ORDEM.map(d => `<label class="inc-dia"><input type="checkbox" class="pf-dia" value="${d}" ${draft.dias.includes(d)?"checked":""}> ${DIA_LABEL[d]}</label>`).join("")}</div>
+          </div>
+          <h3 style="font-size:14px; margin:18px 0 8px;">Pratos esperados por semana do mês</h3>
+          <div class="table-wrap"><table class="inc-table">
+            <thead><tr><th>Tipo de proteína</th>${[1,2,3,4,5].map(w => `<th style="text-align:right;">Semana ${w}</th>`).join("")}</tr></thead>
+            <tbody>
+              ${TIPOS_PROTEINA.map(t => `<tr>
+                <td class="name-cell">${escapeHtml(t.nome)}</td>
+                ${[0,1,2,3,4].map(w => `<td><input type="number" step="1" min="0" class="pf-cel" data-w="${w}" data-tipo="${escapeHtml(t.id)}" value="${(draft.semanas[w]||{})[t.id] ?? ""}"></td>`).join("")}
+              </tr>`).join("")}
+            </tbody>
+          </table></div>
+          <div class="field" style="margin-top:16px;"><label>Observações</label><textarea id="pf-obs" rows="2">${escapeHtml(draft.observacoes||"")}</textarea></div>
+          <div class="footnote" id="pf-err" style="color:var(--critical); margin-top:10px;"></div>
+        </div>
+        <div class="modal-foot">
+          <div>${id ? `<button class="btn danger" id="del-m">Excluir perfil</button>` : ""}</div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn" id="cancel-m">Cancelar</button>
+            <button class="btn primary" id="save-m">Salvar</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+  document.getElementById("close-m").onclick = () => root.innerHTML = "";
+  document.getElementById("cancel-m").onclick = () => root.innerHTML = "";
+  document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
+
+  if(id) document.getElementById("del-m").onclick = async () => {
+    const uso = contratosDoPerfil(id);
+    if(!(await confirmDialog(`Excluir o perfil "${draft.nome}"?${uso.length ? ` ${uso.length} contrato(s) ativo(s) usam este perfil e ficarão sem perfil.` : ""}`))) return;
+    try{
+      const { error } = await sb.from('perfis_incidencia').delete().eq('id', id);
+      if(error) throw error;
+      await loadPerfisIncidencia();
+      root.innerHTML="";
+      renderIncidencia();
+    }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
+  };
+
+  document.getElementById("save-m").onclick = async () => {
+    const errEl = document.getElementById("pf-err");
+    const nome = document.getElementById("pf-nome").value.trim();
+    if(!nome){ errEl.textContent = "Informe o nome do perfil."; return; }
+    const dias = [...document.querySelectorAll(".pf-dia:checked")].map(c => c.value);
+    if(!dias.length){ errEl.textContent = "Marque ao menos um dia da semana."; return; }
+
+    const semanas = [0,1,2,3,4].map(w => {
+      const row = {};
+      TIPOS_PROTEINA.forEach(t => {
+        const inp = document.querySelector(`.pf-cel[data-w="${w}"][data-tipo="${t.id}"]`);
+        const v = inp.value === "" ? 0 : parseInt(inp.value, 10);
+        if(v) row[t.id] = v;
+      });
+      return row;
+    });
+
+    const payload = { nome, dias, semanas, observacoes: document.getElementById("pf-obs").value.trim() || null, ...carimbo() };
+
+    try{
+      if(id){
+        const { error } = await sb.from('perfis_incidencia').update(payload).eq('id', id);
+        if(error) throw error;
+      } else {
+        const { error } = await sb.from('perfis_incidencia').insert({ id: nomeUnicoPerfilId(nome), ...payload });
+        if(error) throw error;
+      }
+      await loadPerfisIncidencia();
+      root.innerHTML = "";
+      renderIncidencia();
+    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+  };
+}
+
 function renderFichas(){
   document.getElementById("page-title").textContent = "Fichas técnicas";
   document.getElementById("page-desc").textContent = "Cada ficha calcula o custo sozinha a partir do cadastro de insumos";
@@ -1870,6 +2080,12 @@ function renderFichaModal(id, draft){
           <div class="field"><label><input type="checkbox" id="ff-vendavel" style="width:auto; display:inline-block; margin-right:6px;" ${draft.vendavel===true?"checked":""}> Item vendável</label></div>
           <div class="field"><label><input type="checkbox" id="ff-por-unidade" style="width:auto; display:inline-block; margin-right:6px;" ${draft.servido_por_unidade===true?"checked":""}> Servido por unidade (ovo, panqueca, hambúrguer, lanche…) — mostra o "Custo / un" desta ficha</label></div>
           <div class="field"><label><input type="checkbox" id="ff-como-insumo" style="width:auto; display:inline-block; margin-right:6px;" ${draft.disponivel_como_insumo===true?"checked":""}> Disponível como insumo (esta ficha passa a aparecer na busca de ingredientes de OUTRAS fichas, como um preparo/sub-receita pronta)</label></div>
+          <div class="field"><label>Tipo de proteína (para a tabela de incidência — deixe em branco se não for um prato de proteína)</label>
+            <select id="ff-tipo-proteina">
+              <option value="" ${!draft.tipo_proteina?"selected":""}>— sem tipo —</option>
+              ${TIPOS_PROTEINA.map(t => `<option value="${escapeHtml(t.id)}" ${draft.tipo_proteina===t.id?"selected":""}>${escapeHtml(t.nome)}</option>`).join("")}
+            </select>
+          </div>
 
           <div class="field"><label>Modo de preparo (opcional)</label><textarea id="ff-modo" rows="5" placeholder="Passo a passo para a cozinha seguir">${escapeHtml(draft.modo_preparo||"")}</textarea></div>
           ${id && fichas.get(id) ? `<div class="footnote">${ultimaAlteracaoTxt(fichas.get(id))}</div>` : ""}
@@ -2087,6 +2303,7 @@ function renderFichaModal(id, draft){
       rendimento_und: parseFloat(document.getElementById("ff-rund").value)||0,
       preco_venda: document.getElementById("ff-preco").value===""?null:parseFloat(document.getElementById("ff-preco").value),
       modo_preparo: document.getElementById("ff-modo").value.trim() || null,
+      tipo_proteina: document.getElementById("ff-tipo-proteina").value || null,
       ingredientes: ingredientesFinal,
     };
     Object.assign(data, carimbo());
