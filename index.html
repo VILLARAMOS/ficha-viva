@@ -218,6 +218,7 @@ table.cardapio-table .autocomplete{position:relative;}
         <div class="sub">Grupo Villa Ramos</div>
       </div>
     </div>
+    <button class="nav-btn" data-view="painel"><span class="ico">&#9670;</span> Painel</button>
     <button class="nav-btn active" data-view="insumos"><span class="ico">&#9673;</span> Insumos</button>
     <button class="nav-btn" data-view="fichas"><span class="ico">&#9636;</span> Fichas técnicas</button>
     <button class="nav-btn" data-view="cardapio"><span class="ico">&#9633;</span> Cardápio</button>
@@ -280,6 +281,7 @@ let currentUser = null;
 let currentView = "insumos";
 
 const VIEWS = {
+  painel: renderPainel,
   insumos: renderInsumos,
   fichas: () => renderFichas(),
   cardapio: renderCardapio,
@@ -4228,6 +4230,126 @@ function renderOrcamento(){
     const b = e.target.closest("button[data-met]"); if(!b) return;
     orcamentoMetricaSel = b.dataset.met; renderOrcamento();
   });
+}
+
+/* ===================================================================== PAINEL */
+// V1 focado — combinado com o usuário antes de construir, porque o Painel do sistema antigo é o maior
+// módulo de todos (gráficos SVG de evolução, faixas de CMV configuráveis, ranking de pratos mais
+// caros/baratos, checagem de integridade de fichas, filtro por operação RB/Cardápio 1/2, "fechar mês").
+// Esta V1 traz só o que já está pronto nos outros módulos, sem nada disso: faturamento/custo/CMV real do
+// mês (de Vendas/Faturamento apurado), resumo do Orçamento (Orçado × Comprado × Saldo) e alerta de estoque
+// desatualizado. O resto fica para as próximas rodadas.
+let painelMesSel = null;
+let painelEscopoSel = "todos"; // "todos" | "matriz" | "filial"
+
+function totalOrcadoMes(mesId, escopo){
+  const r = orcadoPorBlocoSemana(mesId, escopo); if(!r) return 0;
+  let t = 0; r.porSemanaBloco.forEach(sb => sb.porBloco.forEach(v => t += v)); return t;
+}
+function totalCompradoMes(mesId, escopo){
+  const r = compradoPorBlocoSemana(mesId, escopo); if(!r) return 0;
+  let t = 0; r.porSemanaBloco.forEach(sb => sb.porBloco.forEach(v => t += v)); return t;
+}
+function resumoEstoqueUnidade(unidade){
+  const semanasComContagem = [...new Set([...estoqueContagem.values()].filter(r => r.unidade === unidade).map(r => r.semana))].sort((a,b) => b-a);
+  if(!semanasComContagem.length) return { semana: null };
+  const semana = semanasComContagem[0];
+  const { total, nInsumosContados } = valorEstoqueContadoPorGrupo(semana, unidade);
+  const contagem = contagemPorSemana(semana, unidade);
+  const diasMax = [...contagem.values()].reduce((max,row) => { const d = diasDesdeContagem(row.data_contagem); return d!==null && d>max ? d : max; }, 0);
+  return { semana, total, nInsumosContados, diasMax, desatualizado: diasMax > ESTOQUE_DIAS_ALERTA };
+}
+
+function renderPainel(){
+  document.getElementById("page-title").textContent = "Painel";
+  document.getElementById("page-desc").textContent = "Faturamento, custo e CMV real do mês, e resumo de Orçamento e Estoque";
+  document.getElementById("topbar-actions").innerHTML = "";
+
+  const meses = MESES_REFERENCIA;
+  if(painelMesSel === null || !meses.some(m => m.id === painelMesSel)) painelMesSel = meses.some(m => m.id === mesAtualId()) ? mesAtualId() : (meses[0] ? meses[0].id : null);
+
+  const content = document.getElementById("content");
+  if(!painelMesSel){ content.innerHTML = `<div class="empty-state">Nenhum mês de referência cadastrado ainda.</div>`; return; }
+
+  const almocoIdx = indiceCardapioAlmoco(), cafeIdx = indiceCafeSemana();
+  const contratosEscopo = [...contratos.entries()].filter(([,c]) => painelEscopoSel === "todos" || c.unidade === painelEscopoSel);
+  const linhas = contratosEscopo.map(([id,ct]) => ({ id, ct, ap: apurarContrato(id, ct, painelMesSel, almocoIdx, cafeIdx) }))
+    .filter(r => r.ap.registros > 0 || r.ap.receita > 0.005);
+  const eventosEscopo = apurarEventosDoMes(painelMesSel).filter(e => painelEscopoSel === "todos" || e.unidade === painelEscopoSel);
+
+  let totReceita = 0, totCusto = 0;
+  const catAcum = { refeicao: {custo:0, receita:0}, cafeExtras: {custo:0, receita:0} };
+  linhas.forEach(r => {
+    totReceita += r.ap.receita; totCusto += r.ap.custoTotal;
+    ["refeicao","cafeExtras"].forEach(k => { catAcum[k].custo += r.ap.porCategoria[k].custo; catAcum[k].receita += r.ap.porCategoria[k].receita; });
+  });
+  eventosEscopo.forEach(e => { totReceita += e.receita; totCusto += e.custo; });
+  const cmvReal = totReceita > 0 ? totCusto/totReceita : null;
+  const margem = totReceita - totCusto;
+
+  const orcadoMes = totalOrcadoMes(painelMesSel, painelEscopoSel);
+  const compradoMesVal = totalCompradoMes(painelMesSel, painelEscopoSel);
+
+  const estoqueMatriz = resumoEstoqueUnidade("matriz");
+  const estoqueFilial = resumoEstoqueUnidade("filial");
+  function estoqueLinha(nome, r){
+    if(r.semana === null) return `<div class="stat-block"><div class="label">Estoque · ${nome}</div><div class="val small">sem contagem ainda</div></div>`;
+    return `<div class="stat-block"><div class="label">Estoque · ${nome} (${escapeHtml(rotuloSemana(r.semana))})</div><div class="val">${fmtMoney(r.total)}</div><div class="val small">${r.nInsumosContados} insumo(s)${r.desatualizado ? ` · <span class="chip warn"><span class="dot"></span>há ${r.diasMax}d</span>` : ""}</div></div>`;
+  }
+
+  content.innerHTML = `
+    <div class="footnote" style="margin-bottom:14px;">V1 focada em números já prontos nos outros módulos — faturamento/custo real (Vendas/Faturamento apurado) e resumo de Orçamento/Estoque. Ainda sem gráfico de evolução, faixas de CMV, ranking de pratos, checagem de integridade de fichas, filtro por operação (RB/Cardápio 1/2) nem "fechar mês" — essas peças do sistema antigo dependem de parâmetros e decisões que vamos combinar nas próximas rodadas.</div>
+    <div class="menu-controls">
+      <select id="pn-mes">${meses.map(m => `<option value="${m.id}" ${m.id===painelMesSel?"selected":""}>${escapeHtml(m.nome)}</option>`).join("")}</select>
+      <div class="seg-toggle" id="pn-escopo">
+        <button type="button" data-esc="todos" class="${painelEscopoSel==="todos"?"active":""}">Grupo inteiro</button>
+        <button type="button" data-esc="matriz" class="${painelEscopoSel==="matriz"?"active":""}">Matriz</button>
+        <button type="button" data-esc="filial" class="${painelEscopoSel==="filial"?"active":""}">Filial</button>
+      </div>
+    </div>
+    <div class="two-col-num" style="margin-bottom:16px;">
+      <div class="stat-block"><div class="label">Faturamento do mês</div><div class="val">${fmtMoney(totReceita)}</div></div>
+      <div class="stat-block"><div class="label">Custo real do mês</div><div class="val">${fmtMoney(totCusto)}</div></div>
+      <div class="stat-block"><div class="label">CMV real</div><div class="val">${cmvReal!==null?fmtPct(cmvReal):"—"}</div></div>
+      <div class="stat-block"><div class="label">Margem</div><div class="val">${fmtMoney(margem)}</div></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Refeição × Café/Extras</h3></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Categoria</th><th style="text-align:right;">Receita</th><th style="text-align:right;">Custo</th><th>CMV</th></tr></thead>
+        <tbody>
+          ${[["Refeição","refeicao"],["Café/Extras","cafeExtras"]].map(([label,k]) => {
+            const c = catAcum[k];
+            const cmv = c.receita > 0 ? c.custo/c.receita : null;
+            return `<tr><td class="name-cell">${label}</td><td class="num-cell">${fmtMoney(c.receita)}</td><td class="num-cell">${fmtMoney(c.custo)}</td><td>${cmv!==null?fmtPct(cmv):"—"}</td></tr>`;
+          }).join("")}
+        </tbody>
+      </table></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Orçamento do mês</h3><span class="hint"><a href="#" id="pn-ir-orcamento">ver detalhe por bloco/semana →</a></span></div>
+      <div class="panel-body two-col-num">
+        <div class="stat-block"><div class="label">Orçado (CMV)</div><div class="val">${fmtMoney(orcadoMes)}</div></div>
+        <div class="stat-block"><div class="label">Comprado (pedidos)</div><div class="val">${fmtMoney(compradoMesVal)}</div></div>
+        <div class="stat-block"><div class="label">Saldo</div><div>${saldoChip(orcadoMes-compradoMesVal, orcadoMes)}</div></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Estoque — última contagem</h3><span class="hint"><a href="#" id="pn-ir-estoque">abrir Estoque →</a></span></div>
+      <div class="panel-body two-col-num">
+        ${estoqueLinha("Matriz", estoqueMatriz)}
+        ${estoqueLinha("Filial", estoqueFilial)}
+      </div>
+    </div>
+  `;
+
+  document.getElementById("pn-mes").addEventListener("change", e => { painelMesSel = e.target.value; renderPainel(); });
+  document.getElementById("pn-escopo").addEventListener("click", e => {
+    const b = e.target.closest("button[data-esc]"); if(!b) return;
+    painelEscopoSel = b.dataset.esc; renderPainel();
+  });
+  document.getElementById("pn-ir-orcamento").addEventListener("click", e => { e.preventDefault(); orcamentoMesSel = painelMesSel; orcamentoEscopoSel = painelEscopoSel; goToView("orcamento"); });
+  document.getElementById("pn-ir-estoque").addEventListener("click", e => { e.preventDefault(); compraTabSel = "estoque"; goToView("compras"); });
 }
 
 /* ===================================================================== INIT */
