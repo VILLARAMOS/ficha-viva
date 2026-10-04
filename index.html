@@ -128,6 +128,9 @@ tbody tr:hover{background:var(--surface-alt);}
 .ing-line .ing-ckg{padding:8px 0; color:var(--text-muted); white-space:nowrap;}
 .ing-line .ing-aviso{font-size:10.5px; color:var(--critical); margin-top:3px; grid-column:1 / -1;}
 .ing-line .ing-ficha-tag{font-size:10px; color:var(--text-faint); grid-column:1 / -1; margin-top:-2px;}
+.kk-dias-chips{display:flex; gap:3px; flex-wrap:wrap;}
+.chip-dia{border:1px solid var(--border); background:var(--surface); color:var(--text-faint); border-radius:6px; padding:3px 6px; font-size:10px; cursor:pointer; line-height:1;}
+.chip-dia.on{background:var(--accent); color:#fff; border-color:var(--accent);}
 @media (max-width:720px){ .ing-header{display:none;} }
 .autocomplete{position:relative;}
 .autocomplete .options{position:absolute; top:100%; left:0; right:0; background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow); max-height:180px; overflow-y:auto; z-index:10; margin-top:2px;}
@@ -1249,7 +1252,7 @@ function renderContratos(){
             <tr>
               <td class="name-cell">${escapeHtml(c.nome_cliente)}${!c.ativo ? ' <span class="chip neutral">inativo</span>' : ''}</td>
               <td class="tag-sheet">${c.unidade === "filial" ? "Filial" : c.unidade === "matriz" ? "Matriz" : '<span style="color:var(--text-faint);">não definida</span>'}</td>
-              <td>${c.modelo_faturamento === "fixo" ? `Fixo · ${fmtMoney(c.valor_fixo_mensal||0)}/mês` : "Itemizado"}</td>
+              <td>${c.modelo_faturamento === "fixo" ? `Fixo · ${fmtMoney(c.valor_fixo_mensal||0)}/mês` : c.modelo_faturamento === "franquia" ? `Franquia · ${fmtMoney(c.valor_fixo_mensal||0)}/mês + excedente` : "Itemizado"}</td>
               <td style="font-size:12.5px;">${refTxt}</td>
               <td style="font-size:12.5px; white-space:nowrap;">${vigTxt}</td>
               <td style="text-align:right; white-space:nowrap;"><button class="btn small ghost" data-open="${id}">abrir</button></td>
@@ -1270,10 +1273,13 @@ function openContratoModal(id){
     unidade:"matriz", data_inicio:null, data_fim:null,
     cardapio_refeicao_num: REFEICAO_NUMS[0], cardapio_marmita_num: MARMITA_NUMS[0], marmita_especial_ativo:false, cardapio_marmita_especial_num:null,
     cardapio_cafe_num: CAFE_NUMS[0], cafe_especial_ativo:false, cardapio_cafe_especial_num:null,
-    observacoes:null
+    observacoes:null,
+    perfil_incidencia_id:"geral", producao_fds_feriado:null, franquia:[]
   };
+  if(!Array.isArray(draft.franquia)) draft.franquia = draft.franquia || [];
+  if(!draft.perfil_incidencia_id) draft.perfil_incidencia_id = "geral";
 
-  // grade de itens: as 22 linhas do catálogo padrão (sempre presentes) + itens específicos deste cliente (fora do padrão)
+  // grade de itens: as linhas do catálogo padrão (sempre presentes) + itens específicos deste cliente (fora do padrão)
   const catalogoOrdenado = [...catalogoItens.entries()].sort((a,b) => a[1].ordem - b[1].ordem);
   const existentesPorCatalogo = new Map();
   const customizados = [];
@@ -1283,7 +1289,8 @@ function openContratoModal(id){
   });
   const draftCatalogo = catalogoOrdenado.map(([catId, cat]) => {
     const ex = existentesPorCatalogo.get(catId);
-    return { catalogo_item_id: catId, nome: cat.nome, categoria: cat.categoria, preco_venda: ex?.preco_venda ?? null, quantidade_minima: ex?.quantidade_minima ?? null };
+    const dias = ex?.quantidade_dia ? Object.keys(ex.quantidade_dia).filter(d => ex.quantidade_dia[d] !== null && ex.quantidade_dia[d] !== undefined) : [];
+    return { catalogo_item_id: catId, produto_id: cat.produto_id || null, nome: cat.nome, categoria: cat.categoria, preco_venda: ex?.preco_venda ?? null, quantidade_minima: ex?.quantidade_minima ?? null, dias };
   });
   const draftCustom = customizados.map(c => ({ nome_customizado: c.nome_customizado, preco_venda: c.preco_venda, quantidade_minima: c.quantidade_minima }));
 
@@ -1312,11 +1319,29 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
           </div>
           <div class="field-row">
             <div class="field"><label>Modelo de faturamento</label>
-              <select id="kk-modelo"><option value="itemizado" ${draft.modelo_faturamento==="itemizado"?"selected":""}>Itemizado</option><option value="fixo" ${draft.modelo_faturamento==="fixo"?"selected":""}>Valor fixo mensal</option></select>
+              <select id="kk-modelo"><option value="itemizado" ${draft.modelo_faturamento==="itemizado"?"selected":""}>Itemizado</option><option value="fixo" ${draft.modelo_faturamento==="fixo"?"selected":""}>Valor fixo mensal</option><option value="franquia" ${draft.modelo_faturamento==="franquia"?"selected":""}>Franquia (faixas com excedente)</option></select>
             </div>
-            <div class="field" id="kk-valorfixo-wrap" style="display:${draft.modelo_faturamento==="fixo"?"block":"none"};"><label>Valor fixo mensal (R$)</label><input type="number" step="0.01" id="kk-valorfixo" value="${draft.valor_fixo_mensal??""}"></div>
+            <div class="field" id="kk-valorfixo-wrap" style="display:${draft.modelo_faturamento==="fixo"||draft.modelo_faturamento==="franquia"?"block":"none"};"><label id="kk-valorfixo-label">${draft.modelo_faturamento==="franquia"?"Mensalidade base (R$)":"Valor fixo mensal (R$)"}</label><input type="number" step="0.01" id="kk-valorfixo" value="${draft.valor_fixo_mensal??""}"></div>
             <div class="field"><label>Início do contrato</label><input type="date" id="kk-inicio" value="${draft.data_inicio||""}"></div>
             <div class="field"><label>Fim do contrato</label><input type="date" id="kk-fim" value="${draft.data_fim||""}"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>Perfil de incidência</label><input type="text" id="kk-perfil-inc" value="${escapeHtml(draft.perfil_incidencia_id||"geral")}" placeholder="geral"></div>
+            <div class="field"><label>Produção em fim de semana/feriado</label>
+              <select id="kk-pcp-fds">
+                <option value="" ${!draft.producao_fds_feriado?"selected":""}>— não —</option>
+                <option value="matriz" ${draft.producao_fds_feriado==="matriz"?"selected":""}>Sim, produzida na Matriz</option>
+                <option value="filial" ${draft.producao_fds_feriado==="filial"?"selected":""}>Sim, produzida na Filial</option>
+              </select>
+            </div>
+          </div>
+          <div class="footnote" style="margin:-4px 0 14px;">Perfil de incidência: identifica o perfil de proteína/cardápio deste cliente para a tabela de incidência (módulo ainda não migrado — por ora só o nome do perfil, ex. "geral" ou "rb"). Produção em fim de semana/feriado: quando este cliente é atendido nesses dias, qual unidade produz.</div>
+
+          <div id="kk-franquia-section" style="display:${draft.modelo_faturamento==="franquia"?"block":"none"};">
+            <h3 style="font-size:14px; margin:18px 0 8px;">Faixas de franquia</h3>
+            <div class="footnote" style="margin-bottom:10px;">Cada faixa cobre um grupo de produtos até um mínimo mensal; acima disso, cobra-se o preço de excedente por unidade.</div>
+            <div id="kk-franquia-wrap"></div>
+            <button class="btn small" id="kk-add-franquia" style="margin-top:10px;">+ adicionar faixa</button>
           </div>
 
           <h3 style="font-size:14px; margin:18px 0 8px;">Cardápio de referência</h3>
@@ -1346,12 +1371,13 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
             if(!linhas.length) return "";
             return `
             <div class="ing-table" style="margin-bottom:12px;">
-              <div class="ing-header" style="grid-template-columns:2.4fr 1fr 1fr;"><div>${escapeHtml(catLabel)}</div><div>Preço de venda (R$)</div><div>Qtd. mínima</div></div>
+              <div class="ing-header" style="grid-template-columns:2fr 0.9fr 0.9fr 2.4fr;"><div>${escapeHtml(catLabel)}</div><div>Preço de venda (R$)</div><div>Qtd. mínima</div><div>Dias em que vale a qtd. mínima</div></div>
               ${linhas.map(l => `
-              <div class="ing-line" style="grid-template-columns:2.4fr 1fr 1fr;" data-cat-item="${l.catalogo_item_id}">
+              <div class="ing-line" style="grid-template-columns:2fr 0.9fr 0.9fr 2.4fr;" data-cat-item="${l.catalogo_item_id}" data-produto-id="${l.produto_id||""}">
                 <div>${escapeHtml(l.nome)}</div>
                 <input type="number" step="0.01" class="kk-preco" value="${l.preco_venda??""}">
                 <input type="number" step="0.01" class="kk-min" value="${l.quantidade_minima??""}">
+                <div class="kk-dias-chips">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${l.dias.includes(d)?"on":""}" data-dia="${d}" title="${DIA_LABEL[d]}">${DIA_LABEL[d].slice(0,3)}</button>`).join("")}</div>
               </div>`).join("")}
             </div>`;
           }).join("")}
@@ -1392,8 +1418,38 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
   renderCustomLines();
   document.getElementById("kk-add-custom").addEventListener("click", () => { draftCustom.push({nome_customizado:"", preco_venda:null, quantidade_minima:null}); renderCustomLines(); });
 
+  // chips de dias da semana na grade de itens do catálogo (toggle visual simples; lidos do DOM no salvar)
+  root.querySelectorAll(".kk-dias-chips .chip-dia").forEach(b => b.addEventListener("click", () => b.classList.toggle("on")));
+
+  // faixas de franquia (modelo_faturamento === "franquia")
+  const produtoOptions = [...catalogoItens.entries()].filter(([,c]) => c.produto_id).sort((a,b) => a[1].ordem - b[1].ordem).map(([,c]) => ({ produto_id: c.produto_id, nome: c.nome }));
+  function renderFranquiaLines(){
+    const wrap = document.getElementById("kk-franquia-wrap");
+    wrap.innerHTML = (draft.franquia.length ? "" : `<div class="empty-state" style="padding:12px;">Nenhuma faixa cadastrada.</div>`) +
+      draft.franquia.map((t, i) => `
+      <div class="field-row" data-franquia-i="${i}" style="align-items:flex-start; margin-bottom:10px; padding:10px; border:1px solid var(--border); border-radius:8px;">
+        <div class="field" style="flex:1.4;"><label>Rótulo</label><input type="text" class="kk-fr-rotulo" value="${escapeHtml(t.rotulo||"")}" placeholder="Ex.: Refeição marmita"></div>
+        <div class="field"><label>Mínimo mensal (und)</label><input type="number" step="0.01" class="kk-fr-min" value="${t.minimo??""}"></div>
+        <div class="field"><label>Preço excedente (R$/und)</label><input type="number" step="0.01" class="kk-fr-exc" value="${t.preco_excedente??""}"></div>
+        <div class="field" style="flex:1.6;"><label>Produtos desta faixa</label>
+          <select class="kk-fr-produtos" multiple size="4">${produtoOptions.map(p => `<option value="${p.produto_id}" ${(t.produtos||[]).includes(p.produto_id)?"selected":""}>${escapeHtml(p.nome)}</option>`).join("")}</select>
+        </div>
+        <button class="btn small ghost" data-rm-franquia="${i}" style="color:var(--critical); margin-top:20px;">remover</button>
+      </div>`).join("");
+    wrap.querySelectorAll(".kk-fr-rotulo").forEach((inp,i) => inp.addEventListener("input", () => draft.franquia[i].rotulo = inp.value));
+    wrap.querySelectorAll(".kk-fr-min").forEach((inp,i) => inp.addEventListener("input", () => draft.franquia[i].minimo = inp.value===""?null:parseFloat(inp.value)));
+    wrap.querySelectorAll(".kk-fr-exc").forEach((inp,i) => inp.addEventListener("input", () => draft.franquia[i].preco_excedente = inp.value===""?null:parseFloat(inp.value)));
+    wrap.querySelectorAll(".kk-fr-produtos").forEach((sel,i) => sel.addEventListener("change", () => draft.franquia[i].produtos = [...sel.selectedOptions].map(o => o.value)));
+    wrap.querySelectorAll("[data-rm-franquia]").forEach(b => b.addEventListener("click", () => { draft.franquia.splice(Number(b.dataset.rmFranquia), 1); renderFranquiaLines(); }));
+  }
+  renderFranquiaLines();
+  document.getElementById("kk-add-franquia").addEventListener("click", () => { draft.franquia.push({rotulo:"", produtos:[], minimo:null, preco_excedente:null}); renderFranquiaLines(); });
+
   document.getElementById("kk-modelo").addEventListener("change", e => {
-    document.getElementById("kk-valorfixo-wrap").style.display = e.target.value === "fixo" ? "block" : "none";
+    const mostraValor = e.target.value === "fixo" || e.target.value === "franquia";
+    document.getElementById("kk-valorfixo-wrap").style.display = mostraValor ? "block" : "none";
+    document.getElementById("kk-valorfixo-label").textContent = e.target.value === "franquia" ? "Mensalidade base (R$)" : "Valor fixo mensal (R$)";
+    document.getElementById("kk-franquia-section").style.display = e.target.value === "franquia" ? "block" : "none";
   });
   document.getElementById("kk-marmita-esp-on").addEventListener("change", e => {
     document.getElementById("kk-marmita-esp-num").style.display = e.target.checked ? "block" : "none";
@@ -1438,21 +1494,37 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
       cafe_especial_ativo: document.getElementById("kk-cafe-esp-on").checked,
       cardapio_cafe_especial_num: document.getElementById("kk-cafe-esp-on").checked ? Number(document.getElementById("kk-cafe-esp-num").value) : null,
       observacoes: document.getElementById("kk-obs").value.trim() || null,
+      perfil_incidencia_id: document.getElementById("kk-perfil-inc").value.trim() || "geral",
+      producao_fds_feriado: document.getElementById("kk-pcp-fds").value || null,
+      franquia: document.getElementById("kk-modelo").value === "franquia"
+        ? draft.franquia.filter(t => (t.rotulo||"").trim()).map(t => ({ rotulo: t.rotulo.trim(), produtos: t.produtos||[], minimo: t.minimo??null, preco_excedente: t.preco_excedente??null }))
+        : [],
       ...carimbo(),
     };
 
-    // coleta a grade de itens direto do DOM (preço/mínimo podem ter sido editados)
-    const itensCatalogo = [...document.querySelectorAll("#modal-root [data-cat-item]")].map(row => ({
-      catalogo_item_id: row.dataset.catItem,
-      nome_customizado: null,
-      preco_venda: row.querySelector(".kk-preco").value === "" ? null : parseFloat(row.querySelector(".kk-preco").value),
-      quantidade_minima: row.querySelector(".kk-min").value === "" ? null : parseFloat(row.querySelector(".kk-min").value),
-    }));
+    // coleta a grade de itens direto do DOM (preço/mínimo/dias podem ter sido editados)
+    const itensCatalogo = [...document.querySelectorAll("#modal-root [data-cat-item]")].map(row => {
+      const quantidade_minima = row.querySelector(".kk-min").value === "" ? null : parseFloat(row.querySelector(".kk-min").value);
+      const diasOn = [...row.querySelectorAll(".chip-dia.on")].map(b => b.dataset.dia);
+      const quantidade_dia = (diasOn.length && quantidade_minima !== null)
+        ? Object.fromEntries(diasOn.map(d => [d, quantidade_minima]))
+        : null;
+      return {
+        catalogo_item_id: row.dataset.catItem,
+        produto_id: row.dataset.produtoId || null,
+        nome_customizado: null,
+        preco_venda: row.querySelector(".kk-preco").value === "" ? null : parseFloat(row.querySelector(".kk-preco").value),
+        quantidade_minima,
+        quantidade_dia,
+      };
+    });
     const itensCustom = draftCustom.filter(c => (c.nome_customizado||"").trim()).map(c => ({
       catalogo_item_id: null,
+      produto_id: null,
       nome_customizado: c.nome_customizado.trim(),
       preco_venda: c.preco_venda===""||c.preco_venda===undefined ? null : c.preco_venda,
       quantidade_minima: c.quantidade_minima===""||c.quantidade_minima===undefined ? null : c.quantidade_minima,
+      quantidade_dia: null,
     }));
 
     try{
