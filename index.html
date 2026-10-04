@@ -118,6 +118,9 @@ tbody tr:hover{background:var(--surface-alt);}
 .chip{display:inline-flex; align-items:center; gap:5px; padding:3px 9px; border-radius:100px; font-size:11.5px; font-weight:600; letter-spacing:.02em;}
 .chip.critical{background:var(--critical-soft); color:var(--critical);}
 .chip.neutral{background:var(--surface-alt); color:var(--text-muted);}
+.chip.ok{background:var(--ok-soft); color:var(--ok);}
+.chip.warn{background:var(--warn-soft); color:var(--warn);}
+.chip .dot{width:6px; height:6px; border-radius:50%; background:currentColor; flex:none;}
 .panel-body{padding:16px 20px;}
 .ing-table{border:1px solid var(--border); border-radius:10px; overflow:hidden;}
 .ing-header, .ing-line{display:grid; grid-template-columns:2.4fr .95fr .9fr .9fr .9fr 70px; gap:10px; align-items:center;}
@@ -302,7 +305,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos()]);
   goToView(currentView);
 }
 
@@ -558,6 +561,60 @@ function ehFdsOuFeriado(semana, dia, unidade){
   const d = String(dia).toUpperCase();
   return d === "SABADO" || d === "DOMINGO" || ehFeriado(semana, dia, unidade);
 }
+// inverso de dataDoDia: data (YYYY-MM-DD) -> número da semana, ou null se for anterior à semana 1 (31/08/2026)
+function semanaDaData(ymd){
+  if(!ymd) return null;
+  const partes = String(ymd).slice(0,10).split("-").map(Number);
+  if(partes.length !== 3 || partes.some(n => !n && n !== 0)) return null;
+  const [y, m, d] = partes;
+  const ms = Date.UTC(y, m - 1, d);
+  const diffDias = Math.floor((ms - CALENDARIO_BASE_MS) / 86400000);
+  if(diffDias < 0) return null;
+  return Math.floor(diffDias / 7) + 1;
+}
+
+/* ---- pedidos (compras — fornecedor, itens de insumo, conferência de recebimento) ---- */
+const UNIDADES_COMPRA = [{id:"matriz", nome:"Matriz"}, {id:"filial", nome:"Filial"}];
+let pedidos = new Map(); // id -> {fornecedor, data_pedido, data_entrega_prevista, unidade, destino_rotulo, destino_ids, semana, semana_referencia, itens:[{insumo_id,nome,unidade,quantidade,preco_unitario,quantidade_recebida}], valor_total, observacoes, recebimento:{nota_fiscal,recebido_por,data,obs}}
+
+async function loadPedidos(){
+  const { data, error } = await sb.from('pedidos').select('*').order('data_pedido', {ascending:false});
+  pedidos = new Map();
+  if (error){ showAlert('Erro ao carregar pedidos: ' + error.message); return; }
+  (data || []).forEach(row => { const { id, ...rest } = row; pedidos.set(id, rest); });
+}
+function nomeUnidadeCompra(u){ return u === "filial" ? "Filial" : (u === "matriz" ? "Matriz" : "—"); }
+function pedidoUnidade(p){ return (p && (p.unidade === "matriz" || p.unidade === "filial")) ? p.unidade : "matriz"; }
+function blocoDoInsumo(insumoId){
+  const ins = insumos.get(insumoId);
+  return (ins && ins.grupo_compra) || "SEM GRUPO";
+}
+// nomes de fornecedor já usados nos pedidos, pra autocompletar e não duplicar "Frigorífico X" / "frigorifico x"
+function fornecedoresConhecidos(){
+  const mapa = new Map();
+  [...pedidos.values()].sort((a,b) => (a.data_pedido||"").localeCompare(b.data_pedido||"")).forEach(p => {
+    const nome = (p.fornecedor||"").trim();
+    if(!nome) return;
+    const k = normalizeText(nome);
+    if(!mapa.has(k)) mapa.set(k, nome);
+  });
+  return [...mapa.values()].sort((a,b) => normalizeText(a).localeCompare(normalizeText(b)));
+}
+// situação de recebimento — sempre calculada ao vivo dos itens (quantidade_recebida), nunca gravada à parte
+function pedidoStatus(p){
+  const its = p.itens || [];
+  const conferidos = its.filter(it => it.quantidade_recebida !== undefined && it.quantidade_recebida !== null);
+  if(!its.length || !conferidos.length) return {key:"aguardando", label:"Aguardando entrega", cls:"neutral"};
+  if(conferidos.length < its.length) return {key:"parcial", label:"Conferência parcial", cls:"warn"};
+  const dif = its.some(it => Math.abs((it.quantidade_recebida||0) - (it.quantidade||0)) > 0.001);
+  return dif ? {key:"divergencia", label:"Recebido c/ divergência", cls:"warn"} : {key:"recebido", label:"Recebido", cls:"ok"};
+}
+function statusChip(st){ return `<span class="chip ${st.cls}"><span class="dot"></span>${st.label}</span>`; }
+function pedidoValorRecebido(p){
+  return (p.itens||[]).reduce((s,it) => s + (it.quantidade_recebida != null ? it.quantidade_recebida : 0) * (it.preco_unitario||0), 0);
+}
+function novaLinhaPedido(){ return {insumo_id:null, nome:"", unidade:"", quantidade:null, preco_unitario:null}; }
+function valorTotalItensPedido(itens){ return (itens||[]).reduce((s,l) => s + (l.quantidade||0)*(l.preco_unitario||0), 0); }
 
 /* ---- eventos (produção pontual fora do cardápio padrão, fora do escopo de Contratos) ---- */
 let eventos = new Map();   // id -> {cliente, unidade, data, descricao, origem, custo_modo, custo_pct, custo_valor, valor_faturado, itens, alterado_em, alterado_por}
@@ -3213,9 +3270,14 @@ function rotuloOrigemSugestao(origem, n){
 let compraContratoSel = null;
 let compraSemanaSel = null;
 let compraMesSel = null;
-let compraTabSel = "previsao"; // "previsao" | "lista"
+let compraTabSel = "previsao"; // "previsao" | "lista" | "pedidos"
 let compraClientesSel = null; // Set de contrato_id na Lista de compra — null = todos
 let draftPrevisao = null; // { [DIA]: { [produto_id]: quantidade_ajustada } }
+let pedidosSemanaFiltro = "todas";
+let pedidosFornecedorFiltro = "";
+let pedidosUnidadeFiltro = "todas";
+let pedidosStatusFiltro = "todos";
+let pedidosBusca = "";
 
 // café/extras são terceirizados — fora da lista de compra (igual ao sistema antigo). Previsão
 // continua mostrando só os itens de refeição também, já que é a única coisa que a lista usa.
@@ -3247,6 +3309,7 @@ function renderCompras(){
     <div class="seg-toggle" id="cp-tabs" style="margin-bottom:14px; width:fit-content;">
       <button type="button" data-tab="previsao" class="${compraTabSel==="previsao"?"active":""}">Ajustar previsão</button>
       <button type="button" data-tab="lista" class="${compraTabSel==="lista"?"active":""}">Lista de compra</button>
+      <button type="button" data-tab="pedidos" class="${compraTabSel==="pedidos"?"active":""}">Pedidos</button>
     </div>
     <div id="cp-body"></div>
   `;
@@ -3425,14 +3488,408 @@ function renderCompras(){
     }));
   }
 
+  function renderTabPedidos(){
+    const semanasComPedido = [...new Set([...pedidos.values()].map(p=>p.semana).filter(s=>s!=null))].sort((a,b)=>a-b);
+    const semanaAtual = semanaDaData(hojeYMD()) || 1;
+    const opcoesFiltro = [...new Set([...semanasComPedido, semanaAtual])].sort((a,b)=>a-b);
+    if(pedidosSemanaFiltro !== "todas" && !opcoesFiltro.includes(pedidosSemanaFiltro)) pedidosSemanaFiltro = "todas";
+    const fornecedores = fornecedoresConhecidos();
+    if(pedidosFornecedorFiltro && !fornecedores.some(f => normalizeText(f) === normalizeText(pedidosFornecedorFiltro))) pedidosFornecedorFiltro = "";
+
+    const body = document.getElementById("cp-body");
+    body.innerHTML = `
+      <div class="footnote" style="margin-bottom:14px;">Todo pedido fica salvo com data, fornecedor e itens — é o histórico de compras. Use "duplicar" pra repetir uma compra antiga, e "conferir" pra lançar a quantidade recebida de cada item.</div>
+      <div class="search-bar">
+        <select id="pd-semana-filtro" aria-label="Filtrar por semana">
+          <option value="todas" ${pedidosSemanaFiltro==="todas"?"selected":""}>Todas as semanas</option>
+          ${opcoesFiltro.map(s=>`<option value="${s}" ${s===pedidosSemanaFiltro?"selected":""}>${escapeHtml(rotuloSemana(s))}${s===semanaAtual?" (atual)":""}</option>`).join("")}
+        </select>
+        <select id="pd-forn-filtro" aria-label="Filtrar por fornecedor">
+          <option value="">Todos os fornecedores</option>
+          ${fornecedores.map(f=>`<option value="${escapeHtml(f)}" ${normalizeText(f)===normalizeText(pedidosFornecedorFiltro)?"selected":""}>${escapeHtml(f)}</option>`).join("")}
+        </select>
+        <select id="pd-unidade-filtro" aria-label="Filtrar por unidade">
+          ${[["todas","Matriz e Filial"],["matriz","Só Matriz"],["filial","Só Filial"]].map(([v,l])=>`<option value="${v}" ${pedidosUnidadeFiltro===v?"selected":""}>${l}</option>`).join("")}
+        </select>
+        <select id="pd-status-filtro" aria-label="Filtrar por situação">
+          ${[["todos","Todas as situações"],["aguardando","Aguardando entrega"],["parcial","Conferência parcial"],["recebido","Recebido"],["divergencia","Recebido c/ divergência"]].map(([v,l])=>`<option value="${v}" ${pedidosStatusFiltro===v?"selected":""}>${l}</option>`).join("")}
+        </select>
+        <input type="text" id="pd-busca" placeholder="Buscar fornecedor ou produto…" value="${escapeHtml(pedidosBusca)}">
+        <button class="btn primary" id="pd-novo" style="margin-left:auto;">+ Registrar pedido</button>
+      </div>
+      <div class="two-col-num" id="pd-kpis" style="margin-bottom:16px;"></div>
+      <div class="panel">
+        <div class="table-wrap">
+          <table class="cardapio-table">
+            <thead><tr><th>Data</th><th>Fornecedor</th><th>Unidade</th><th>Semana</th><th style="text-align:right;">Itens</th><th style="text-align:right;">Valor total</th><th>Situação</th><th></th></tr></thead>
+            <tbody id="pd-tbody"></tbody>
+            <tfoot id="pd-tfoot"></tfoot>
+          </table>
+        </div>
+      </div>
+    `;
+
+    function filtrar(){
+      const busca = normalizeText(pedidosBusca.trim());
+      return [...pedidos.entries()]
+        .filter(([id,p]) => {
+          if(pedidosSemanaFiltro !== "todas" && p.semana !== pedidosSemanaFiltro) return false;
+          if(pedidosFornecedorFiltro && normalizeText((p.fornecedor||"").trim()) !== normalizeText(pedidosFornecedorFiltro)) return false;
+          if(pedidosStatusFiltro !== "todos" && pedidoStatus(p).key !== pedidosStatusFiltro) return false;
+          if(pedidosUnidadeFiltro !== "todas" && pedidoUnidade(p) !== pedidosUnidadeFiltro) return false;
+          if(busca){
+            const palheiro = normalizeText(p.fornecedor||"") + " " + (p.itens||[]).map(it => normalizeText(it.nome||"")).join(" ");
+            if(!palheiro.includes(busca)) return false;
+          }
+          return true;
+        })
+        .sort((a,b) => (b[1].data_pedido||"").localeCompare(a[1].data_pedido||""));
+    }
+
+    function updateTable(){
+      const lista = filtrar();
+      const total = lista.reduce((s,[,p]) => s + (p.valor_total||0), 0);
+      const pendentes = lista.filter(([,p]) => ["aguardando","parcial"].includes(pedidoStatus(p).key)).length;
+      const divergentes = lista.filter(([,p]) => pedidoStatus(p).key === "divergencia").length;
+      document.getElementById("pd-kpis").innerHTML = `
+        <div class="stat-block"><div class="label">Pedidos no filtro</div><div class="val">${lista.length}</div></div>
+        <div class="stat-block"><div class="label">Valor pedido</div><div class="val">${fmtMoney(total)}</div><div class="val small">Matriz ${fmtMoney(lista.filter(([,p]) => pedidoUnidade(p)==="matriz").reduce((s,[,p]) => s+(p.valor_total||0),0))} · Filial ${fmtMoney(lista.filter(([,p]) => pedidoUnidade(p)==="filial").reduce((s,[,p]) => s+(p.valor_total||0),0))}</div></div>
+        <div class="stat-block"><div class="label">Aguardando conferência</div><div class="val">${pendentes}</div></div>
+        <div class="stat-block"><div class="label">Com divergência</div><div class="val">${divergentes}</div></div>`;
+      const vazio = pedidos.size === 0 ? "Nenhum pedido registrado ainda — clique em “+ Registrar pedido”." : "Nenhum pedido encontrado com esses filtros.";
+      document.getElementById("pd-tbody").innerHTML = lista.map(([id,p]) => {
+        const st = pedidoStatus(p);
+        return `<tr>
+          <td>${fmtDataYMD(p.data_pedido)||"—"}${p.data_entrega_prevista ? `<div class="footnote" style="margin:2px 0 0;">entrega ${escapeHtml(fmtDataYMD(p.data_entrega_prevista))}</div>` : ""}</td>
+          <td class="name-cell">${escapeHtml(p.fornecedor||"—")}<div class="footnote" style="margin:2px 0 0;">destino: ${escapeHtml(p.destino_rotulo||"Grupo inteiro")}${p.semana_referencia!=null && p.semana_referencia!==p.semana ? ` · uso: ${escapeHtml(rotuloSemana(p.semana_referencia))}` : ""}</div></td>
+          <td class="tag-sheet">${nomeUnidadeCompra(pedidoUnidade(p))}</td>
+          <td class="num-cell">${p.semana!=null ? escapeHtml(rotuloSemana(p.semana)) : "—"}</td>
+          <td class="num-cell">${(p.itens||[]).length}</td>
+          <td class="num-cell">${fmtMoney(p.valor_total)}</td>
+          <td>${statusChip(st)}</td>
+          <td style="text-align:right; white-space:nowrap;">
+            <button class="btn small ghost pd-conferir" data-id="${id}">conferir</button>
+            <button class="btn small ghost pd-dup" data-id="${id}">duplicar</button>
+            <button class="btn small ghost pd-editar" data-id="${id}">editar</button>
+            <button class="btn small ghost pd-excluir" data-id="${id}" style="color:var(--critical);">excluir</button>
+          </td>
+        </tr>`;
+      }).join("") || `<tr><td colspan="8" class="empty-state">${vazio}</td></tr>`;
+      document.getElementById("pd-tfoot").innerHTML = lista.length
+        ? `<tr class="row-total"><td colspan="5" class="name-cell"><b>Total</b></td><td class="num-cell"><b>${fmtMoney(total)}</b></td><td colspan="2"></td></tr>` : "";
+      document.querySelectorAll(".pd-conferir").forEach(b => b.addEventListener("click", () => openPedidoDetalhe(b.dataset.id)));
+      document.querySelectorAll(".pd-dup").forEach(b => b.addEventListener("click", () => openPedidoModal(null, {duplicarDe: b.dataset.id})));
+      document.querySelectorAll(".pd-editar").forEach(b => b.addEventListener("click", () => openPedidoModal(b.dataset.id)));
+      document.querySelectorAll(".pd-excluir").forEach(b => b.addEventListener("click", async () => {
+        if(!(await confirmDialog(`Excluir o pedido de "${pedidos.get(b.dataset.id)?.fornecedor||"—"}"?`))) return;
+        try{
+          const { error } = await sb.from('pedidos').delete().eq('id', b.dataset.id);
+          if(error) throw error;
+          await loadPedidos();
+          updateTable();
+        }catch(e){ showAlert("Erro: " + (e.message||e.code||e)); }
+      }));
+    }
+    updateTable();
+
+    document.getElementById("pd-semana-filtro").addEventListener("change", e => { pedidosSemanaFiltro = e.target.value === "todas" ? "todas" : parseInt(e.target.value,10); updateTable(); });
+    document.getElementById("pd-forn-filtro").addEventListener("change", e => { pedidosFornecedorFiltro = e.target.value; updateTable(); });
+    document.getElementById("pd-status-filtro").addEventListener("change", e => { pedidosStatusFiltro = e.target.value; updateTable(); });
+    document.getElementById("pd-unidade-filtro").addEventListener("change", e => { pedidosUnidadeFiltro = e.target.value; updateTable(); });
+    document.getElementById("pd-busca").addEventListener("input", e => { pedidosBusca = e.target.value; updateTable(); });
+    document.getElementById("pd-novo").addEventListener("click", () => openPedidoModal(null));
+  }
+
+  function dispatchTab(){
+    if(compraTabSel === "previsao") renderTabPrevisao();
+    else if(compraTabSel === "lista") renderTabLista();
+    else renderTabPedidos();
+  }
+
   document.getElementById("cp-tabs").addEventListener("click", e => {
     const b = e.target.closest("button[data-tab]"); if(!b) return;
     compraTabSel = b.dataset.tab;
     document.querySelectorAll("#cp-tabs button[data-tab]").forEach(x => x.classList.toggle("active", x===b));
-    if(compraTabSel === "previsao") renderTabPrevisao(); else renderTabLista();
+    dispatchTab();
   });
 
-  if(compraTabSel === "previsao") renderTabPrevisao(); else renderTabLista();
+  dispatchTab();
+}
+
+/* ---- modal: registrar/editar pedido ---- */
+function linhaDePedidoAnterior(it){
+  return { insumo_id: it.insumo_id||null, nome: it.nome||"", unidade: it.unidade||"", quantidade: it.quantidade!=null?it.quantidade:null, preco_unitario: it.preco_unitario!=null?it.preco_unitario:null };
+}
+function destinoOpcoes(){
+  const ativos = [...contratos.entries()].filter(([,c]) => c.ativo);
+  const idsMatriz = ativos.filter(([,c]) => c.unidade==="matriz").map(([id])=>id);
+  const idsFilial = ativos.filter(([,c]) => c.unidade==="filial").map(([id])=>id);
+  return [
+    {rotulo:"Grupo inteiro", ids:null},
+    {rotulo:"Matriz", ids:idsMatriz},
+    {rotulo:"Filial", ids:idsFilial},
+  ];
+}
+function openPedidoModal(id, opts){
+  opts = opts || {};
+  const existing = id ? pedidos.get(id) : null;
+  const origem = (!existing && opts.duplicarDe) ? pedidos.get(opts.duplicarDe) : null;
+  let draft;
+  if(existing){
+    draft = { fornecedor: existing.fornecedor||"", data_pedido: existing.data_pedido||hojeYMD(), data_entrega_prevista: existing.data_entrega_prevista||"",
+      unidade: pedidoUnidade(existing), destino_rotulo: existing.destino_rotulo||"Grupo inteiro", destino_ids: existing.destino_ids||null,
+      semana_referencia: existing.semana_referencia!=null?existing.semana_referencia:null,
+      observacoes: existing.observacoes||"", itens: (existing.itens||[]).map(it => ({...it})) };
+  } else if(origem){
+    draft = { fornecedor: origem.fornecedor||"", data_pedido: hojeYMD(), data_entrega_prevista: "",
+      unidade: pedidoUnidade(origem), destino_rotulo: origem.destino_rotulo||"Grupo inteiro", destino_ids: origem.destino_ids||null,
+      semana_referencia: null, observacoes: origem.observacoes||"", itens: (origem.itens||[]).map(linhaDePedidoAnterior) };
+  } else {
+    draft = { fornecedor:"", data_pedido: hojeYMD(), data_entrega_prevista:"", unidade:"matriz", destino_rotulo:"Grupo inteiro", destino_ids:null,
+      semana_referencia:null, observacoes:"", itens:[novaLinhaPedido()] };
+  }
+  if(!draft.itens.length) draft.itens.push(novaLinhaPedido());
+
+  const root = document.getElementById("modal-root");
+  const destinos = destinoOpcoes();
+  const insumosOrdenados = [...insumos.entries()].sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+
+  root.innerHTML = `
+    <div class="modal-overlay" id="ov">
+      <div class="modal" style="max-width:920px;">
+        <div class="modal-head"><h2>${existing ? "Editar pedido" : (origem ? "Novo pedido (repetido)" : "Registrar pedido")}</h2><button class="close-x" id="close-m">&times;</button></div>
+        <div class="modal-body">
+          <div class="field-row">
+            <div class="field" style="flex:2;"><label for="pd-fornecedor">Fornecedor</label><input type="text" id="pd-fornecedor" list="pd-forn-list" autocomplete="off" value="${escapeHtml(draft.fornecedor)}" placeholder="Nome do fornecedor"><datalist id="pd-forn-list">${fornecedoresConhecidos().map(f => `<option value="${escapeHtml(f)}"></option>`).join("")}</datalist></div>
+            <div class="field"><label for="pd-data">Data do pedido</label><input type="date" id="pd-data" value="${draft.data_pedido}"></div>
+            <div class="field"><label for="pd-entrega">Entrega prevista (opcional)</label><input type="date" id="pd-entrega" value="${draft.data_entrega_prevista}"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label for="pd-unidade">Unidade da compra (quem recebe e debita o orçamento)</label>
+              <select id="pd-unidade">${UNIDADES_COMPRA.map(u => `<option value="${u.id}" ${u.id===draft.unidade?"selected":""}>${u.nome}</option>`).join("")}</select>
+            </div>
+            <div class="field"><label for="pd-destino">Destino (clientes que motivaram a compra)</label>
+              <select id="pd-destino">${destinos.map((d,i) => `<option value="${i}" ${d.rotulo===draft.destino_rotulo?"selected":""}>${escapeHtml(d.rotulo)}</option>`).join("")}</select>
+            </div>
+            <div class="field"><label for="pd-semref">Semana de uso (opcional — padrão: semana da data do pedido)</label>
+              <select id="pd-semref"><option value="">Mesma da data do pedido</option>${[1,2,3,4,5,6,7,8].map(off => semanaDaData(draft.data_pedido) ? semanaDaData(draft.data_pedido)+off-4 : null).filter(w=>w>=1).map(w => `<option value="${w}" ${draft.semana_referencia===w?"selected":""}>${escapeHtml(rotuloSemana(w))}</option>`).join("")}</select>
+            </div>
+          </div>
+          <div class="footnote" style="margin:-6px 0 10px;">O pedido debita o orçamento da unidade escolhida e conta na lista de compra da semana de uso. Simplificação em relação ao sistema antigo: destino aqui é Grupo inteiro/Matriz/Filial — não há "conjuntos de compra" salvos nem autocomplete com cadastro de produto embutido (cadastre o insumo em Insumos antes, se faltar).</div>
+          <h3 style="font-size:14px; margin:14px 0 6px;">Itens</h3>
+          <datalist id="pd-insumo-list">${insumosOrdenados.map(([iid,ins]) => `<option value="${escapeHtml(ins.nome)}" data-id="${iid}"></option>`).join("")}</datalist>
+          <div id="pd-lines"></div>
+          <button type="button" class="btn small" id="pd-add-line" style="margin-top:6px;">+ adicionar item</button>
+          <div class="panel" style="margin-top:16px; background:var(--surface-alt);">
+            <div class="panel-body" style="display:flex; justify-content:flex-end;">
+              <div class="stat-block"><div class="label">Valor total do pedido</div><div class="val" id="pd-total-val">${fmtMoney(valorTotalItensPedido(draft.itens))}</div></div>
+            </div>
+          </div>
+          <div class="field" style="margin-top:14px;"><label for="pd-obs">Observações (opcional)</label><textarea id="pd-obs" rows="2">${escapeHtml(draft.observacoes)}</textarea></div>
+          <div class="footnote" id="pd-err" style="color:var(--critical); margin-top:6px;"></div>
+        </div>
+        <div class="modal-foot">
+          <div>${existing ? `<button class="btn danger" id="del-m">Excluir pedido</button>` : ""}</div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn" id="cancel-m">Cancelar</button>
+            <button class="btn primary" id="save-m">Salvar pedido</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+  document.getElementById("close-m").onclick = () => root.innerHTML = "";
+  document.getElementById("cancel-m").onclick = () => root.innerHTML = "";
+  document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
+
+  const wrap = document.getElementById("pd-lines");
+  function linhaHtml(l,i){
+    return `
+      <div class="field-row pd-line" data-i="${i}" style="align-items:flex-end;">
+        <div class="field" style="flex:2;"><label>Insumo</label><input type="text" class="pd-nome" list="pd-insumo-list" autocomplete="off" value="${escapeHtml(l.nome||"")}" placeholder="Buscar insumo…"><div class="footnote" style="margin-top:2px;">${l.insumo_id ? escapeHtml(blocoDoInsumo(l.insumo_id)) : (l.nome ? '<span style="color:var(--critical);">insumo não encontrado — escolha da lista</span>' : "")}</div></div>
+        <div class="field"><label>Quantidade</label><input type="number" step="0.001" min="0" class="pd-qtd" value="${l.quantidade!=null?l.quantidade:""}"></div>
+        <div class="field"><label>Un.</label><input type="text" class="pd-un" value="${escapeHtml(l.unidade||"")}" disabled></div>
+        <div class="field"><label>Preço unit. (R$)</label><input type="number" step="0.01" min="0" class="pd-preco" value="${l.preco_unitario!=null?l.preco_unitario:""}"></div>
+        <div class="field"><label>Valor</label><div class="val small" style="padding:9px 0;">${fmtMoney((l.quantidade||0)*(l.preco_unitario||0))}</div></div>
+        <div class="field"><button type="button" class="btn small ghost pd-rm" style="color:var(--critical);">remover</button></div>
+      </div>`;
+  }
+  function renderLines(){ wrap.innerHTML = draft.itens.map(linhaHtml).join(""); wireLines(); }
+  function refreshTotal(){
+    document.getElementById("pd-total-val").textContent = fmtMoney(valorTotalItensPedido(draft.itens));
+  }
+  function wireLines(){
+    wrap.querySelectorAll(".pd-line").forEach(row => {
+      const i = +row.dataset.i, l = draft.itens[i];
+      row.querySelector(".pd-nome").addEventListener("change", e => {
+        const texto = e.target.value;
+        const match = insumosOrdenados.find(([,ins]) => normalizeText(ins.nome) === normalizeText(texto));
+        l.nome = texto;
+        if(match){
+          l.insumo_id = match[0];
+          l.unidade = unidadeCustoInsumo(match[1]);
+          if(l.preco_unitario == null && match[1].custo_unitario != null) l.preco_unitario = match[1].custo_unitario;
+        } else { l.insumo_id = null; l.unidade = ""; }
+        renderLines(); refreshTotal();
+      });
+      row.querySelector(".pd-qtd").addEventListener("input", e => { l.quantidade = e.target.value===""?null:parseFloat(e.target.value); row.querySelector(".val.small").textContent = fmtMoney((l.quantidade||0)*(l.preco_unitario||0)); refreshTotal(); });
+      row.querySelector(".pd-preco").addEventListener("input", e => { l.preco_unitario = e.target.value===""?null:parseFloat(e.target.value); row.querySelector(".val.small").textContent = fmtMoney((l.quantidade||0)*(l.preco_unitario||0)); refreshTotal(); });
+      row.querySelector(".pd-rm").addEventListener("click", () => { draft.itens.splice(i,1); if(!draft.itens.length) draft.itens.push(novaLinhaPedido()); renderLines(); refreshTotal(); });
+    });
+  }
+  renderLines();
+  document.getElementById("pd-add-line").addEventListener("click", () => { draft.itens.push(novaLinhaPedido()); renderLines(); refreshTotal(); });
+
+  if(existing) document.getElementById("del-m").onclick = async () => {
+    if(!(await confirmDialog(`Excluir o pedido de "${draft.fornecedor||"—"}"?`))) return;
+    try{
+      const { error } = await sb.from('pedidos').delete().eq('id', id);
+      if(error) throw error;
+      await loadPedidos();
+      root.innerHTML="";
+      renderCompras();
+    }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
+  };
+
+  document.getElementById("save-m").onclick = async () => {
+    const errEl = document.getElementById("pd-err");
+    const data_pedido = document.getElementById("pd-data").value;
+    if(!data_pedido){ errEl.textContent = "Informe a data do pedido."; return; }
+    const itensValidos = draft.itens.filter(l => l.insumo_id && l.quantidade > 0);
+    if(!itensValidos.length){ errEl.textContent = "Adicione ao menos um item com insumo e quantidade."; return; }
+    const destIdx = +document.getElementById("pd-destino").value;
+    const dest = destinos[destIdx] || destinos[0];
+    const semrefVal = document.getElementById("pd-semref").value;
+    const payload = {
+      fornecedor: document.getElementById("pd-fornecedor").value.trim(),
+      data_pedido,
+      data_entrega_prevista: document.getElementById("pd-entrega").value || null,
+      unidade: document.getElementById("pd-unidade").value,
+      destino_rotulo: dest.rotulo,
+      destino_ids: dest.ids,
+      semana: semanaDaData(data_pedido),
+      semana_referencia: semrefVal === "" ? null : parseInt(semrefVal,10),
+      itens: itensValidos.map(l => ({ insumo_id:l.insumo_id, nome:l.nome, unidade:l.unidade, quantidade:l.quantidade, preco_unitario:l.preco_unitario||0,
+        ...(existing ? (() => { const orig=(existing.itens||[]).find(o=>o.insumo_id===l.insumo_id); return orig && orig.quantidade_recebida!=null ? {quantidade_recebida:orig.quantidade_recebida} : {}; })() : {}) })),
+      valor_total: valorTotalItensPedido(itensValidos),
+      observacoes: document.getElementById("pd-obs").value.trim() || null,
+      ...carimbo(),
+    };
+    try{
+      if(existing){
+        const { error } = await sb.from('pedidos').update(payload).eq('id', id);
+        if(error) throw error;
+      } else {
+        const { error } = await sb.from('pedidos').insert(payload);
+        if(error) throw error;
+      }
+      await loadPedidos();
+      root.innerHTML = "";
+      renderCompras();
+    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+  };
+}
+
+/* ---- modal: conferência de recebimento ---- */
+function openPedidoDetalhe(id){
+  const p = pedidos.get(id);
+  if(!p) return;
+  const root = document.getElementById("modal-root");
+  const itens = (p.itens||[]).map(it => ({...it}));
+  const rec0 = p.recebimento || {};
+  const conf = itens.map(it => ({ rec: (it.quantidade_recebida!==undefined && it.quantidade_recebida!==null) ? it.quantidade_recebida : null }));
+
+  root.innerHTML = `
+    <div class="modal-overlay" id="ov">
+      <div class="modal" style="max-width:860px;">
+        <div class="modal-head"><h2>Conferência — ${escapeHtml(p.fornecedor||"—")}</h2><button class="close-x" id="close-m">&times;</button></div>
+        <div class="modal-body">
+          <div class="two-col-num" style="margin-bottom:16px;">
+            <div class="stat-block"><div class="label">Unidade</div><div class="val small">${nomeUnidadeCompra(pedidoUnidade(p))}</div></div>
+            <div class="stat-block"><div class="label">Data do pedido</div><div class="val small">${fmtDataYMD(p.data_pedido)||"—"}</div></div>
+            <div class="stat-block"><div class="label">Semana de uso</div><div class="val small">${p.semana!=null?escapeHtml(rotuloSemana(p.semana_referencia!=null?p.semana_referencia:p.semana)):"—"}</div></div>
+            <div class="stat-block"><div class="label">Valor do pedido</div><div class="val small">${fmtMoney(p.valor_total)}</div></div>
+            <div class="stat-block"><div class="label">Valor recebido</div><div class="val small" id="cf-valor-rec">—</div></div>
+            <div class="stat-block"><div class="label">Situação</div><div id="cf-status" style="margin-top:4px;"></div></div>
+          </div>
+          ${p.observacoes ? `<div class="footnote" style="margin:-4px 0 12px;">Obs. do pedido: ${escapeHtml(p.observacoes)}</div>` : ""}
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Insumo</th><th style="text-align:right;">Pedido</th><th>Un.</th><th style="text-align:right;">Recebido</th><th>Diferença</th></tr></thead>
+              <tbody id="cf-tbody">
+                ${itens.map((it,i) => `<tr>
+                  <td class="name-cell">${escapeHtml(it.nome)}<div class="tag-sheet">${escapeHtml(blocoDoInsumo(it.insumo_id))}</div></td>
+                  <td class="num-cell">${fmtNum(it.quantidade,3)}</td>
+                  <td>${escapeHtml(it.unidade||"—")}</td>
+                  <td class="num-cell"><input type="number" step="0.001" min="0" class="cf-rec" data-i="${i}" value="${conf[i].rec!==null?conf[i].rec:""}" placeholder="—" style="width:96px; text-align:right;"></td>
+                  <td class="cf-dif"></td>
+                </tr>`).join("")}
+              </tbody>
+            </table>
+          </div>
+          <div class="field-row" style="margin-top:16px;">
+            <div class="field"><label for="cf-nf">Nota fiscal nº</label><input type="text" id="cf-nf" value="${escapeHtml(rec0.nota_fiscal||"")}"></div>
+            <div class="field"><label for="cf-por">Recebido por</label><input type="text" id="cf-por" value="${escapeHtml(rec0.recebido_por||"")}"></div>
+            <div class="field"><label for="cf-data">Data do recebimento</label><input type="date" id="cf-data" value="${rec0.data || hojeYMD()}"></div>
+          </div>
+          <div class="field"><label for="cf-obs">Observações do recebimento (opcional)</label><textarea id="cf-obs" rows="2">${escapeHtml(rec0.obs||"")}</textarea></div>
+          <div class="footnote" id="cf-err" style="color:var(--critical); margin-top:6px;"></div>
+        </div>
+        <div class="modal-foot">
+          <div><button class="btn" id="cf-tudo">Marcar tudo como recebido</button></div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn" id="cancel-m">Cancelar</button>
+            <button class="btn primary" id="cf-salvar">Salvar conferência</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+  document.getElementById("close-m").onclick = () => root.innerHTML = "";
+  document.getElementById("cancel-m").onclick = () => root.innerHTML = "";
+  document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
+
+  const tbody = document.getElementById("cf-tbody");
+  function refreshConf(){
+    itens.forEach((it,i) => {
+      const tr = tbody.children[i], c = conf[i];
+      let difHtml = "—";
+      if(c.rec !== null){
+        const d = c.rec - (it.quantidade||0);
+        difHtml = Math.abs(d) <= 0.001 ? `<span class="chip ok"><span class="dot"></span>ok</span>` : `<span class="chip warn"><span class="dot"></span>${d>0?"+":"−"}${fmtNum(Math.abs(d),3)} ${escapeHtml(it.unidade||"")}</span>`;
+      }
+      tr.querySelector(".cf-dif").innerHTML = difHtml;
+    });
+    const simulado = {itens: itens.map((it,i) => ({...it, quantidade_recebida: conf[i].rec}))};
+    document.getElementById("cf-status").innerHTML = statusChip(pedidoStatus(simulado));
+    const algum = conf.some(c => c.rec !== null);
+    document.getElementById("cf-valor-rec").textContent = algum ? fmtMoney(pedidoValorRecebido(simulado)) : "—";
+  }
+  refreshConf();
+  tbody.querySelectorAll(".cf-rec").forEach(inp => inp.addEventListener("input", () => {
+    const i = +inp.dataset.i;
+    conf[i].rec = inp.value === "" ? null : Math.max(0, parseFloat(inp.value)||0);
+    refreshConf();
+  }));
+  document.getElementById("cf-tudo").addEventListener("click", () => {
+    itens.forEach((it,i) => { conf[i].rec = it.quantidade||0; tbody.children[i].querySelector(".cf-rec").value = conf[i].rec; });
+    refreshConf();
+  });
+
+  document.getElementById("cf-salvar").onclick = async () => {
+    const payload = {
+      itens: itens.map((it,i) => ({...it, quantidade_recebida: conf[i].rec})),
+      recebimento: { nota_fiscal: document.getElementById("cf-nf").value.trim()||null, recebido_por: document.getElementById("cf-por").value.trim()||null, data: document.getElementById("cf-data").value||null, obs: document.getElementById("cf-obs").value.trim()||null },
+      ...carimbo(),
+    };
+    try{
+      const { error } = await sb.from('pedidos').update(payload).eq('id', id);
+      if(error) throw error;
+      await loadPedidos();
+      root.innerHTML = "";
+      renderCompras();
+    }catch(e){ document.getElementById("cf-err").textContent = "Erro ao salvar: " + (e.message||e.code||e); }
+  };
 }
 
 /* ===================================================================== INIT */
