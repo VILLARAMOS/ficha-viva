@@ -825,6 +825,84 @@ const DIAS_ORDEM = ["SEGUNDA","TERCA","QUARTA","QUINTA","SEXTA","SABADO","DOMING
 const DIA_LABEL = {SEGUNDA:"Segunda",TERCA:"Terça",QUARTA:"Quarta",QUINTA:"Quinta",SEXTA:"Sexta",SABADO:"Sábado",DOMINGO:"Domingo"};
 const DIA_KEY_CAFE = {SEGUNDA:"segunda",TERCA:"terca",QUARTA:"quarta",QUINTA:"quinta",SEXTA:"sexta",SABADO:"sabado",DOMINGO:"domingo"};
 
+/* ===================================================================== CALENDÁRIO (semana → mês)
+   Portado do sistema antigo: "semana" (1, 2, 3…) continua sendo a chave de tudo (ids, Cardápio, Contratos,
+   Incidência) — isso aqui só TRADUZ um número de semana pra uma data real e um rótulo de mês ("Setembro 2"),
+   sem exigir tabela nenhuma. Semana 1 = segunda 31/08/2026, mesmo marco do sistema antigo (ASSUNÇÃO: se as
+   semanas já cadastradas aqui não seguem essa mesma contagem, os rótulos de mês saem errados — é só essa
+   constante pra ajustar). O mês é só um filtro por DIA: uma semana que atravessa a virada (ex. 28/09–04/10)
+   aparece nos dois meses, cada um com os dias que são dele. */
+const CALENDARIO_BASE_MS = Date.UTC(2026, 7, 31); // segunda-feira, 31/08/2026 = início da semana 1
+function dataDoDia(semana, dia){
+  const idx = DIAS_ORDEM.indexOf(String(dia).toUpperCase());
+  return new Date(CALENDARIO_BASE_MS + ((semana - 1) * 7 + idx) * 86400000);
+}
+function mesDoDia(semana, dia){
+  const d = dataDoDia(semana, dia);
+  const m = d.getUTCFullYear() + "-" + String(d.getUTCMonth() + 1).padStart(2, "0");
+  return m < "2026-09" ? "2026-09" : m; // 31/08 (início do sistema) conta em Setembro
+}
+function fmtData(date){
+  return String(date.getUTCDate()).padStart(2,"0") + "/" + String(date.getUTCMonth()+1).padStart(2,"0");
+}
+function fmtDataCompleta(date){
+  return fmtData(date) + "/" + date.getUTCFullYear();
+}
+const MESES_NOME = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+const MESES_REFERENCIA = (() => {
+  const out = [];
+  for(let y = 2026, m = 9; y < 2028; m++){ if(m > 12){ m = 1; y++; if(y >= 2028) break; } out.push({id: `${y}-${String(m).padStart(2,"0")}`, nome: `${MESES_NOME[m-1]} ${y}`}); }
+  return out;
+})();
+MESES_REFERENCIA.forEach(m => {
+  m.semanas = [];
+  for(let sem = 1; sem <= 160; sem++){ if(DIAS_ORDEM.some(d => mesDoDia(sem, d) === m.id)) m.semanas.push(sem); }
+});
+const _rotulosSemana = {};   // cache: semana -> {nome, ano, num, mesId, partes:[{nome, ano, num, mesId}]}
+function _infoSemana(semana){
+  const n = Math.floor(Number(semana));
+  if(!(n >= 1)) return null;
+  if(_rotulosSemana[n]) return _rotulosSemana[n];
+  const ids = [];
+  DIAS_ORDEM.forEach(d => { const id = mesDoDia(n, d); if(!ids.includes(id)) ids.push(id); });
+  const partes = ids.map(id => {
+    const mes = MESES_REFERENCIA.find(m => m.id === id);
+    return mes ? {mesId: id, nome: mes.nome.replace(/\s+\d{4}\s*$/, ""), ano: parseInt(id.slice(0,4), 10), num: mes.semanas.indexOf(n) + 1} : null;
+  }).filter(Boolean);
+  let info;
+  if(partes.length){
+    const idQuarta = mesDoDia(n, "QUARTA");
+    const principal = partes.find(p => p.mesId === idQuarta) || partes[0];
+    info = {...principal, partes};
+  } else {
+    const q = dataDoDia(n, "QUARTA");
+    const nome = MESES_NOME[q.getUTCMonth()], ano = q.getUTCFullYear();
+    const ant = n > 1 ? _infoSemana(n - 1) : null;
+    const num = (ant && ant.nome === nome && ant.ano === ano) ? ant.num + 1 : 1;
+    info = {nome, ano, num, mesId: mesDoDia(n, "QUARTA"), partes: [{nome, ano, num, mesId: mesDoDia(n, "QUARTA")}]};
+  }
+  _rotulosSemana[n] = info;
+  return info;
+}
+function rotuloSemana(semana){
+  const r = _infoSemana(semana);
+  if(!r) return "Semana " + semana;
+  const f = p => p.nome + " " + p.num + (p.ano !== 2026 ? "/" + String(p.ano).slice(2) : "");
+  return (r.partes && r.partes.length > 1 ? r.partes : [r]).map(f).join(" · ");
+}
+function rotuloSemanaCurto(semana){
+  const r = _infoSemana(semana);
+  if(!r) return "S" + semana;
+  return r.nome.slice(0,3) + " " + r.num;
+}
+function intervaloSemana(semana){
+  return `${fmtData(dataDoDia(semana,"SEGUNDA"))} a ${fmtData(dataDoDia(semana,"DOMINGO"))}`;
+}
+function mesAtualId(){
+  const hoje = new Date();
+  return hoje.getUTCFullYear() + "-" + String(hoje.getUTCMonth()+1).padStart(2,"0");
+}
+
 let cardapioNumSel = null;
 let cardapioSemanaSel = null;
 let cardapioTabSel = "refeicao"; // "refeicao" | "marmita" | "cafe"
@@ -879,7 +957,7 @@ function renderCardapio(){
   content.innerHTML = `
     <div class="menu-controls">
       <select id="card-num">${numerosPorGrupo.map(n => `<option value="${n}" ${n===cardapioNumSel?"selected":""}>${labelNumeroCardapio(grupo, n)}</option>`).join("")}</select>
-      <select id="card-semana">${semanasDisponiveis.map(s => `<option value="${s}" ${s===cardapioSemanaSel?"selected":""}>Semana ${s}</option>`).join("")}</select>
+      <select id="card-semana">${semanasDisponiveis.map(s => `<option value="${s}" ${s===cardapioSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
       <div class="seg-toggle">
         <button type="button" data-tab="refeicao" class="${cardapioTabSel==="refeicao"?"active":""}">Refeição</button>
         <button type="button" data-tab="marmita" class="${cardapioTabSel==="marmita"?"active":""}">Marmita</button>
