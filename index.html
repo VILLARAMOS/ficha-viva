@@ -305,7 +305,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadEstoqueContagem()]);
   goToView(currentView);
 }
 
@@ -615,6 +615,69 @@ function pedidoValorRecebido(p){
 }
 function novaLinhaPedido(){ return {insumo_id:null, nome:"", unidade:"", quantidade:null, preco_unitario:null}; }
 function valorTotalItensPedido(itens){ return (itens||[]).reduce((s,l) => s + (l.quantidade||0)*(l.preco_unitario||0), 0); }
+
+/* ---- estoque (contagem pontual por semana/unidade/insumo — sem entrada/saída/movimentação) ---- */
+let estoqueContagem = new Map(); // "semana|unidade|insumo_id" -> {id, semana, unidade, insumo_id, quantidade_contada, data_contagem}
+const ESTOQUE_DIAS_ALERTA = 7;
+
+async function loadEstoqueContagem(){
+  const { data, error } = await sb.from('estoque_contagem').select('*');
+  estoqueContagem = new Map();
+  if (error){ showAlert('Erro ao carregar contagem de estoque: ' + error.message); return; }
+  (data || []).forEach(row => estoqueContagem.set(`${row.semana}|${row.unidade}|${row.insumo_id}`, row));
+}
+function diasDesdeContagem(dataContagemYMD){
+  if(!dataContagemYMD) return null;
+  const [y,m,d] = dataContagemYMD.split("-").map(n=>parseInt(n,10));
+  const dataMs = Date.UTC(y, m-1, d);
+  const hojeMs = Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate());
+  return Math.round((hojeMs - dataMs) / 86400000);
+}
+// contagem de UMA semana/unidade — usada na própria tela de Estoque
+function contagemPorSemana(semana, unidade){
+  const mapa = new Map();
+  estoqueContagem.forEach((row, key) => { if(row.semana === semana && row.unidade === unidade) mapa.set(row.insumo_id, row); });
+  return mapa;
+}
+function valorEstoqueContadoPorGrupo(semana, unidade){
+  const contagem = contagemPorSemana(semana, unidade);
+  const porGrupo = new Map();
+  let total = 0;
+  contagem.forEach((row, insumoId) => {
+    const ins = insumos.get(insumoId);
+    const grupo = (ins && ins.grupo_compra) || "SEM GRUPO";
+    const valor = (ins ? (ins.custo_kg_l_und||0) : 0) * (row.quantidade_contada||0);
+    porGrupo.set(grupo, (porGrupo.get(grupo)||0) + valor);
+    total += valor;
+  });
+  return { porGrupo, total, nInsumosContados: contagem.size };
+}
+async function salvarContagemEstoque(semana, unidade, insumoId, valorStr){
+  const valor = valorStr === "" ? null : Math.max(0, parseFloat(String(valorStr).replace(",",".")) || 0);
+  try{
+    if(valor === null){
+      const { error } = await sb.from('estoque_contagem').delete().match({semana, unidade, insumo_id: insumoId});
+      if(error) throw error;
+    } else {
+      const payload = { semana, unidade, insumo_id: insumoId, quantidade_contada: valor, data_contagem: hojeYMD(), ...carimbo() };
+      const { error } = await sb.from('estoque_contagem').upsert(payload, {onConflict: 'semana,unidade,insumo_id'});
+      if(error) throw error;
+    }
+    await loadEstoqueContagem();
+  }catch(e){ showAlert("Erro ao salvar contagem de estoque: "+(e.message||e.code||e)); }
+}
+// contagem mais recente dentro do MÊS (não soma semanas — é uma foto do estoque, não um fluxo). Simplificação
+// consciente: o sistema antigo abate semana a semana; aqui a Lista de compra é mensal, então usa a contagem
+// mais recente registrada dentro das semanas do mês selecionado, por unidade.
+function contagemInsumoNoMes(insumoId, unidade, mes){
+  if(!mes) return 0;
+  let melhor = null;
+  mes.semanas.forEach(semana => {
+    const row = estoqueContagem.get(`${semana}|${unidade}|${insumoId}`);
+    if(row && (melhor === null || semana > melhor.semana)) melhor = row;
+  });
+  return melhor ? (melhor.quantidade_contada||0) : 0;
+}
 
 /* ---- eventos (produção pontual fora do cardápio padrão, fora do escopo de Contratos) ---- */
 let eventos = new Map();   // id -> {cliente, unidade, data, descricao, origem, custo_modo, custo_pct, custo_valor, valor_faturado, itens, alterado_em, alterado_por}
@@ -3270,7 +3333,7 @@ function rotuloOrigemSugestao(origem, n){
 let compraContratoSel = null;
 let compraSemanaSel = null;
 let compraMesSel = null;
-let compraTabSel = "previsao"; // "previsao" | "lista" | "pedidos"
+let compraTabSel = "previsao"; // "previsao" | "lista" | "pedidos" | "estoque"
 let compraClientesSel = null; // Set de contrato_id na Lista de compra — null = todos
 let draftPrevisao = null; // { [DIA]: { [produto_id]: quantidade_ajustada } }
 let pedidosSemanaFiltro = "todas";
@@ -3278,6 +3341,10 @@ let pedidosFornecedorFiltro = "";
 let pedidosUnidadeFiltro = "todas";
 let pedidosStatusFiltro = "todos";
 let pedidosBusca = "";
+let estoqueUnidadeSel = "matriz";
+let estoqueSemanaSel = null;
+let estoqueFilter = "";
+let estoqueGrupoFilter = "";
 
 // café/extras são terceirizados — fora da lista de compra (igual ao sistema antigo). Previsão
 // continua mostrando só os itens de refeição também, já que é a única coisa que a lista usa.
@@ -3310,6 +3377,7 @@ function renderCompras(){
       <button type="button" data-tab="previsao" class="${compraTabSel==="previsao"?"active":""}">Ajustar previsão</button>
       <button type="button" data-tab="lista" class="${compraTabSel==="lista"?"active":""}">Lista de compra</button>
       <button type="button" data-tab="pedidos" class="${compraTabSel==="pedidos"?"active":""}">Pedidos</button>
+      <button type="button" data-tab="estoque" class="${compraTabSel==="estoque"?"active":""}">Estoque</button>
     </div>
     <div id="cp-body"></div>
   `;
@@ -3386,13 +3454,15 @@ function renderCompras(){
 
   function montarLista(){
     const mes = meses.find(m => m.id === compraMesSel);
-    const totalInsumos = new Map(); // insumo_id -> kg/und
+    const totalInsumos = new Map(); // insumo_id -> kg/und (bruto, antes de abater estoque)
+    const porUnidadeInsumo = new Map(); // insumo_id -> {matriz: kg, filial: kg}
     const contratosNaLista = compraClientesSel === null ? contratosAtivos : contratosAtivos.filter(([id]) => compraClientesSel.has(id));
     if(mes){
       const almocoIdx = indiceCardapioAlmoco();
       const cafeIdx = indiceCafeSemana();
       contratosNaLista.forEach(([id, ct]) => {
         const itensContrato = itensRefeicaoDoContrato(id);
+        const un = ct.unidade === "filial" ? "filial" : "matriz";
         mes.semanas.forEach(semana => {
           DIAS_ORDEM.forEach(dia => {
             if(mesDoDia(semana, dia) !== mes.id) return;
@@ -3400,16 +3470,39 @@ function renderCompras(){
             itensContrato.forEach(item => {
               const q = quantidadePrevista(id, item.produto_id, dia, semana);
               if(!q) return;
-              mergeInsumosInto(totalInsumos, insumosUnidadeItemCompra(almocoIdx, cafeIdx, item.produto_id, ct, semana, dia, q));
+              const porItem = insumosUnidadeItemCompra(almocoIdx, cafeIdx, item.produto_id, ct, semana, dia, q);
+              mergeInsumosInto(totalInsumos, porItem);
+              porItem.forEach((kg, insumoId) => {
+                const acc = porUnidadeInsumo.get(insumoId) || {matriz:0, filial:0};
+                acc[un] += kg;
+                porUnidadeInsumo.set(insumoId, acc);
+              });
             });
           });
         });
       });
     }
-    const linhas = [...totalInsumos.entries()].map(([insumoId, kg]) => {
+    // abate a contagem de Estoque mais recente do mês, cada unidade só abatendo a própria (igual sistema antigo)
+    let temContagemNoMes = false;
+    const emEstoquePorInsumo = new Map();
+    porUnidadeInsumo.forEach((porUn, insumoId) => {
+      let emEstoque = 0;
+      ["matriz","filial"].forEach(u => {
+        if(porUn[u] > 0){
+          const contado = contagemInsumoNoMes(insumoId, u, mes);
+          if(contado > 0) temContagemNoMes = true;
+          emEstoque += Math.min(porUn[u], contado);
+        }
+      });
+      if(emEstoque > 0) emEstoquePorInsumo.set(insumoId, emEstoque);
+    });
+
+    const linhas = [...totalInsumos.entries()].map(([insumoId, kgBruto]) => {
       const ins = insumos.get(insumoId);
+      const emEstoque = emEstoquePorInsumo.get(insumoId) || 0;
+      const kg = Math.max(0, kgBruto - emEstoque);
       const custo = ins && ins.custo_kg_l_und != null ? kg * ins.custo_kg_l_und : null;
-      return { nome: ins ? ins.nome : insumoId, grupo: ins?.grupo_compra || "(sem grupo)", kg, unidade: ins ? unidadeCustoInsumo(ins) : "kg", custo };
+      return { nome: ins ? ins.nome : insumoId, grupo: ins?.grupo_compra || "(sem grupo)", kg, kgBruto, emEstoque, unidade: ins ? unidadeCustoInsumo(ins) : "kg", custo };
     }).sort((a,b) => normalizeText(a.grupo).localeCompare(normalizeText(b.grupo)) || normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
 
     const tbody = document.getElementById("cp-lista-tbody");
@@ -3417,7 +3510,7 @@ function renderCompras(){
     tbody.innerHTML = linhas.map(l => {
       if(l.custo != null) totCusto += l.custo; else semCusto++;
       return `<tr>
-        <td class="name-cell">${escapeHtml(l.nome)}</td>
+        <td class="name-cell">${escapeHtml(l.nome)}${l.emEstoque > 0 ? `<div class="footnote" style="margin:2px 0 0;">bruto ${fmtNum(l.kgBruto,3)} − estoque ${fmtNum(l.emEstoque,3)}</div>` : ""}</td>
         <td style="font-size:12.5px;">${escapeHtml(l.grupo)}</td>
         <td class="num-cell">${fmtNum(l.kg, 3)}</td>
         <td>${l.unidade}</td>
@@ -3428,6 +3521,10 @@ function renderCompras(){
       <td class="name-cell">Total${semCusto ? ` (${semCusto} insumo(s) sem custo cadastrado)` : ""}</td><td></td><td></td><td></td>
       <td class="num-cell">${fmtMoney(totCusto)}</td>
     </tr>`;
+    const avisoEstoque = document.getElementById("cp-lista-estoque-aviso");
+    if(avisoEstoque) avisoEstoque.textContent = temContagemNoMes
+      ? "Estoque contado neste mês já abatido (cada unidade só abate a própria contagem)."
+      : "Sem contagem de estoque neste mês — necessidade bruta.";
   }
 
   function renderTabLista(){
@@ -3441,6 +3538,7 @@ function renderCompras(){
     body.innerHTML = `
       <div class="menu-controls"><select id="cp-mes">${meses.map(m => `<option value="${m.id}" ${m.id===compraMesSel?"selected":""}>${escapeHtml(m.nome)}</option>`).join("")}</select></div>
       <div class="footnote" style="margin:10px 0;">Soma a previsão (ajuste manual, ou sugestão automática quando não há ajuste) dos clientes marcados abaixo, vigentes no mês, convertida em kg/unidade de insumo — mesmo motor de cálculo usado no custo de Vendas, só que acumulando insumo em vez de R$. Só itens de <strong>refeição</strong> entram — café e extras são terceirizados.</div>
+      <div class="footnote" id="cp-lista-estoque-aviso" style="margin:0 0 10px;"></div>
       <div class="panel">
         <div class="panel-head">
           <h3>Clientes da lista</h3>
@@ -3600,10 +3698,85 @@ function renderCompras(){
     document.getElementById("pd-novo").addEventListener("click", () => openPedidoModal(null));
   }
 
+  function renderTabEstoque(){
+    const semanasBase = semanasDisponiveisVendas();
+    const semanaSugerida = Math.max(...semanasBase) + 1;
+    const opcoesSemana = [...new Set([...semanasBase, semanaSugerida, semanaSugerida+1])].sort((a,b)=>a-b);
+    if(estoqueSemanaSel === null || !opcoesSemana.includes(estoqueSemanaSel)) estoqueSemanaSel = semanaSugerida;
+
+    const contagem = contagemPorSemana(estoqueSemanaSel, estoqueUnidadeSel);
+    const { total: valorTotal, nInsumosContados } = valorEstoqueContadoPorGrupo(estoqueSemanaSel, estoqueUnidadeSel);
+    const outraUn = estoqueUnidadeSel === "matriz" ? "filial" : "matriz";
+    const resumoOutra = valorEstoqueContadoPorGrupo(estoqueSemanaSel, outraUn);
+    const diasMaisAntigo = [...contagem.values()].reduce((max,row) => { const d = diasDesdeContagem(row.data_contagem); return d!==null && d>max ? d : max; }, 0);
+    const desatualizado = diasMaisAntigo > ESTOQUE_DIAS_ALERTA;
+    const grupos = blocosCadastro();
+
+    const body = document.getElementById("cp-body");
+    body.innerHTML = `
+      <div class="footnote" style="margin-bottom:14px;">Contagem pontual — sem entrada/saída/movimentação. Lance o que tem contado de cada insumo para UMA semana, de UMA unidade; a Lista de compra do mês que contém essa semana, da mesma unidade, desconta automaticamente (a Matriz nunca desconta o estoque da Filial, e vice-versa). Simplificação em relação ao sistema antigo: aqui a Lista é mensal, então ela usa a contagem mais recente dentro do mês — não semana a semana.</div>
+      <div class="menu-controls">
+        <div class="seg-toggle" id="es-un-tabs">${UNIDADES_COMPRA.map(u => `<button type="button" data-esun="${u.id}" class="${estoqueUnidadeSel===u.id?"active":""}">${u.nome}</button>`).join("")}</div>
+        <select id="es-semana">${opcoesSemana.map(s=>`<option value="${s}" ${s===estoqueSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))}${s===semanaSugerida?" (próxima)":""}</option>`).join("")}</select>
+      </div>
+      <div class="two-col-num" style="margin-bottom:10px;">
+        <div class="stat-block"><div class="label">Insumos contados · ${nomeUnidadeCompra(estoqueUnidadeSel)}</div><div class="val">${nInsumosContados}</div></div>
+        <div class="stat-block"><div class="label">Valor contado · ${nomeUnidadeCompra(estoqueUnidadeSel)}</div><div class="val">${fmtMoney(valorTotal)}</div><div class="val small">${nomeUnidadeCompra(outraUn)}: ${resumoOutra.nInsumosContados ? fmtMoney(resumoOutra.total) + " em " + resumoOutra.nInsumosContados + " itens" : "sem contagem nesta semana"}</div></div>
+        <div class="stat-block"><div class="label">Contagem mais antiga</div><div class="val">${nInsumosContados ? diasMaisAntigo+"d" : "—"}</div></div>
+      </div>
+      ${nInsumosContados && desatualizado ? `<div class="footnote" style="margin:0 0 10px; color:var(--critical);">⚠️ pelo menos uma contagem desta semana tem mais de ${ESTOQUE_DIAS_ALERTA} dias — reconte antes de confiar no abatimento da Lista de compra.</div>` : ""}
+      <div class="search-bar">
+        <input type="text" id="es-search" placeholder="Buscar insumo…" value="${escapeHtml(estoqueFilter)}">
+        <select id="es-grupo"><option value="">Todos os grupos de compra</option>${grupos.map(g=>`<option value="${escapeHtml(g)}" ${estoqueGrupoFilter===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}</select>
+        <span class="footnote" id="es-count" style="align-self:center;"></span>
+      </div>
+      <div class="panel"><div class="table-wrap"><table>
+        <thead><tr><th>Insumo</th><th>Grupo de compra</th><th>Unidade</th><th style="text-align:right;">Qtd. contada</th><th>Contado em</th></tr></thead>
+        <tbody id="es-tbody"></tbody>
+      </table></div></div>
+    `;
+    document.getElementById("es-un-tabs").addEventListener("click", e => {
+      const b = e.target.closest("button[data-esun]"); if(!b) return;
+      estoqueUnidadeSel = b.dataset.esun;
+      renderTabEstoque();
+    });
+    document.getElementById("es-semana").addEventListener("change", e => { estoqueSemanaSel = parseInt(e.target.value,10); renderTabEstoque(); });
+
+    function updateTable(){
+      let rows = [...insumos.entries()].map(([id,d]) => ({id, ...d}));
+      if(estoqueFilter.trim()) rows = rows.filter(r => normalizeText(r.nome||"").includes(normalizeText(estoqueFilter.trim())));
+      if(estoqueGrupoFilter) rows = rows.filter(r => r.grupo_compra === estoqueGrupoFilter);
+      rows.sort((a,b) => normalizeText(a.nome||"").localeCompare(normalizeText(b.nome||"")));
+      document.getElementById("es-count").textContent = `${rows.length} insumo${rows.length===1?"":"s"}`;
+      document.getElementById("es-tbody").innerHTML = rows.map(r => {
+        const row = contagem.get(r.id);
+        const dias = row ? diasDesdeContagem(row.data_contagem) : null;
+        const alerta = dias!==null && dias > ESTOQUE_DIAS_ALERTA;
+        return `<tr>
+          <td class="name-cell">${escapeHtml(r.nome)}</td>
+          <td style="font-size:12.5px;">${escapeHtml(r.grupo_compra||"—")}</td>
+          <td>${escapeHtml(r.unidade_medida||"—")}</td>
+          <td class="num-cell"><input type="number" min="0" step="0.001" class="es-qtd-input" data-id="${r.id}" value="${row?row.quantidade_contada:""}" placeholder="—" style="width:90px; text-align:right;"></td>
+          <td>${row ? escapeHtml(fmtDataYMD(row.data_contagem)) : "—"}${alerta?` <span class="chip warn"><span class="dot"></span>há ${dias}d</span>`:""}</td>
+        </tr>`;
+      }).join("") || `<tr><td colspan="5" class="empty-state">Nenhum insumo encontrado com este filtro.</td></tr>`;
+      document.getElementById("es-tbody").querySelectorAll(".es-qtd-input").forEach(inp => {
+        inp.addEventListener("change", async () => {
+          await salvarContagemEstoque(estoqueSemanaSel, estoqueUnidadeSel, inp.dataset.id, inp.value);
+          renderTabEstoque();
+        });
+      });
+    }
+    updateTable();
+    document.getElementById("es-search").addEventListener("input", e => { estoqueFilter = e.target.value; updateTable(); });
+    document.getElementById("es-grupo").addEventListener("change", e => { estoqueGrupoFilter = e.target.value; updateTable(); });
+  }
+
   function dispatchTab(){
     if(compraTabSel === "previsao") renderTabPrevisao();
     else if(compraTabSel === "lista") renderTabLista();
-    else renderTabPedidos();
+    else if(compraTabSel === "pedidos") renderTabPedidos();
+    else renderTabEstoque();
   }
 
   document.getElementById("cp-tabs").addEventListener("click", e => {
