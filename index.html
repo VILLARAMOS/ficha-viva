@@ -15,39 +15,40 @@
 <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
 <style>
 :root{
-  --bg:#f6f4ee; --surface:#ffffff; --surface-alt:#edeade; --border:#ddd7c8;
-  --text:#23241f; --text-muted:#6c6b60; --text-faint:#969383;
-  /* identidade Villa Ramos: maroon do logo como cor institucional — usada com moderação (ações, seleção, destaques), não em áreas grandes */
+  /* identidade Villa Ramos: base areia (claro) / marrom (escuro), vindas do logo e do Instagram oficial */
+  --bg:#f5ecdc; --surface:#fffdf9; --surface-alt:#efe1c4; --border:#e1d3b5;
+  --text:#2a2117; --text-muted:#6e6150; --text-faint:#9c8d74;
+  /* maroon do logo como cor institucional — usada com moderação (ações, seleção, destaques), não em áreas grandes */
   --accent:#7a2328; --accent-strong:#4f1518; --accent-soft:#f4e4e3;
   --ok:#2f8f5b; --ok-soft:#e4f2ea;
   --warn:#b9791b; --warn-soft:#faf0dd;
   --critical:#c23b3b; --critical-soft:#fbe8e6;
-  --shadow: 0 1px 2px rgba(30,30,20,.06), 0 8px 24px -12px rgba(30,30,20,.18);
+  --shadow: 0 1px 2px rgba(42,33,23,.07), 0 8px 24px -12px rgba(42,33,23,.2);
   --radius: 10px;
   --chart-1:#1f5f6b; --chart-2:#c23b3b; --chart-3:#b9791b; --chart-4:#6b4fa0; --chart-5:#2f8f5b;
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
-    --bg:#14171a; --surface:#1b1f22; --surface-alt:#22262a; --border:#333a3f;
-    --text:#e8e6df; --text-muted:#9b9d9c; --text-faint:#6c7274;
+    --bg:#1c1410; --surface:#241b16; --surface-alt:#2e221b; --border:#43332a;
+    --text:#ece3d6; --text-muted:#a89683; --text-faint:#766253;
     --accent:#c17a7e; --accent-strong:#e2a7aa; --accent-soft:#2f1d1e;
     --ok:#49b07a; --ok-soft:#173226;
     --warn:#dba43f; --warn-soft:#332a15;
     --critical:#e2685f; --critical-soft:#3a1e1c;
-    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+    --shadow: 0 1px 2px rgba(10,6,3,.4), 0 8px 24px -12px rgba(10,6,3,.6);
     --chart-1:#5bc0cc; --chart-2:#e2685f; --chart-3:#dba43f; --chart-4:#a995d9; --chart-5:#49b07a;
     color-scheme:dark;
   }
 }
 /* tema escolhido manualmente (botão sol/lua) — vale independente do sistema operacional */
 :root[data-theme="dark"]{
-  --bg:#14171a; --surface:#1b1f22; --surface-alt:#22262a; --border:#333a3f;
-  --text:#e8e6df; --text-muted:#9b9d9c; --text-faint:#6c7274;
+  --bg:#1c1410; --surface:#241b16; --surface-alt:#2e221b; --border:#43332a;
+  --text:#ece3d6; --text-muted:#a89683; --text-faint:#766253;
   --accent:#c17a7e; --accent-strong:#e2a7aa; --accent-soft:#2f1d1e;
   --ok:#49b07a; --ok-soft:#173226;
   --warn:#dba43f; --warn-soft:#332a15;
   --critical:#e2685f; --critical-soft:#3a1e1c;
-  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  --shadow: 0 1px 2px rgba(10,6,3,.4), 0 8px 24px -12px rgba(10,6,3,.6);
   --chart-1:#5bc0cc; --chart-2:#e2685f; --chart-3:#dba43f; --chart-4:#a995d9; --chart-5:#49b07a;
   color-scheme:dark;
 }
