@@ -1245,6 +1245,19 @@ function renderEstoqueContagem(){
   document.getElementById("es-grupo").addEventListener("change", e => { estoqueGrupoFilter = e.target.value; updateTable(); });
 }
 
+// cabeçalho com o logo Villa Ramos, reaproveitado em todas as impressões. URL absoluta (resolvida a
+// partir da própria página) porque a janela de impressão abre em branco (about:blank) e não teria
+// como resolver um caminho relativo.
+const PRINT_LOGO_URL = new URL('assets/logo-print.png', location.href).href;
+function printHeadStyle(){
+  return `.print-head{display:flex; align-items:center; gap:12px; margin-bottom:18px; padding-bottom:14px; border-bottom:2px solid #7a2328;}
+    .print-head img{height:42px; width:auto;}
+    .print-head .org{font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:#7a2328; font-weight:700;}`;
+}
+function printHeadHtml(){
+  return `<div class="print-head"><img src="${PRINT_LOGO_URL}" alt="Villa Ramos"><div class="org">Grupo Villa Ramos</div></div>`;
+}
+
 function imprimirListaContagem(semana, unidade){
   const rows = [...insumos.entries()].map(([id,d]) => ({id, ...d})).sort((a,b) => normalizeText(a.grupo_compra||"").localeCompare(normalizeText(b.grupo_compra||"")) || normalizeText(a.nome||"").localeCompare(normalizeText(b.nome||"")));
   const w = window.open("", "_blank");
@@ -1260,7 +1273,9 @@ function imprimirListaContagem(semana, unidade){
       td.num{text-align:right; width:110px;}
       .assinatura{margin-top:40px; display:flex; gap:40px;}
       .assinatura div{flex:1; border-top:1px solid #333; padding-top:4px; font-size:12px;}
+      ${printHeadStyle()}
     </style></head><body>
+    ${printHeadHtml()}
     <h1>Lista de contagem de estoque — ${escapeHtml(nomeUnidadeCompra(unidade))}</h1>
     <div class="sub">${escapeHtml(rotuloSemana(semana))} · Data da contagem: ____/____/______</div>
     <table>
@@ -2918,7 +2933,9 @@ function imprimirFichaProducao(draft){
     td.vazio{color:#777; font-style:italic;}
     .modo{white-space:pre-wrap; border:1px solid #ccc; padding:10px 12px; border-radius:4px; min-height:60px;}
     @media print{ body{margin:12mm;} }
+    ${printHeadStyle()}
   </style></head><body>
+    ${printHeadHtml()}
     <h1>${escapeHtml(draft.nome||"(sem nome)")}</h1>
     <div class="meta">${draft.grupo ? `Grupo: ${escapeHtml(draft.grupo)}` : ""}${draft.grupo && rendTxt ? " · " : ""}${rendTxt ? `Rendimento: ${rendTxt}` : ""}</div>
     <h2>Ingredientes</h2>
