@@ -1,6 +1,10 @@
 <title>Ficha Viva — Insumos</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<script>
+  // aplica o tema salvo (dia/noite) antes do CSS pintar a tela, pra não piscar o tema errado
+  try{ const t = localStorage.getItem('fv-theme'); if(t==='light'||t==='dark') document.documentElement.setAttribute('data-theme', t); }catch(e){}
+</script>
 <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png">
 <link rel="icon" type="image/png" sizes="512x512" href="assets/favicon-512.png">
 <link rel="apple-touch-icon" href="assets/favicon-180.png">
@@ -35,6 +39,22 @@
     color-scheme:dark;
   }
 }
+/* tema escolhido manualmente (botão sol/lua) — vale independente do sistema operacional */
+:root[data-theme="dark"]{
+  --bg:#14171a; --surface:#1b1f22; --surface-alt:#22262a; --border:#333a3f;
+  --text:#e8e6df; --text-muted:#9b9d9c; --text-faint:#6c7274;
+  --accent:#c17a7e; --accent-strong:#e2a7aa; --accent-soft:#2f1d1e;
+  --ok:#49b07a; --ok-soft:#173226;
+  --warn:#dba43f; --warn-soft:#332a15;
+  --critical:#e2685f; --critical-soft:#3a1e1c;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+  --chart-1:#5bc0cc; --chart-2:#e2685f; --chart-3:#dba43f; --chart-4:#a995d9; --chart-5:#49b07a;
+  color-scheme:dark;
+}
+:root[data-theme="light"]{ color-scheme:light; }
+.theme-toggle{display:flex; align-items:center; justify-content:center; width:30px; height:30px; flex:none; background:none; border:1px solid var(--border); border-radius:8px; color:var(--text-muted); cursor:pointer;}
+.theme-toggle:hover{background:var(--surface-alt); color:var(--text);}
+.theme-toggle .ico{width:16px; height:16px;}
 *{box-sizing:border-box;}
 body{margin:0;background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',system-ui,sans-serif;}
 h1,h2,h3{font-family:'Fraunces',Georgia,serif; text-wrap:balance;}
@@ -353,6 +373,7 @@ table.cardapio-table .autocomplete{position:relative;}
       </div>
       <div class="topbar-right">
         <div id="topbar-actions"></div>
+        <button class="theme-toggle" id="themeToggle" title="Alternar tema claro/escuro"><i class="ico" data-lucide="moon"></i></button>
         <div class="topbar-account">
           <span class="dot"></span>
           <span>Logado como <strong id="meEmail"></strong></span>
@@ -424,6 +445,28 @@ sidebarToggleBtn.addEventListener("click", () => {
   localStorage.setItem("fv-sidebar-collapsed", collapsed ? "1" : "0");
   sidebarToggleBtn.title = collapsed ? "Expandir menu" : "Recolher menu";
 });
+
+// tema claro/escuro — por padrão segue o sistema operacional (sem atributo = o CSS decide pelo prefers-color-scheme);
+// ao clicar, trava num dos dois (salvo em localStorage) até a pessoa escolher o outro.
+const themeToggleBtn = document.getElementById("themeToggle");
+function efeitoTemaAtual(){
+  const explicito = document.documentElement.getAttribute("data-theme");
+  if(explicito === "light" || explicito === "dark") return explicito;
+  return window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+function atualizarIconeTema(){
+  const atual = efeitoTemaAtual();
+  themeToggleBtn.innerHTML = `<i class="ico" data-lucide="${atual === "dark" ? "sun" : "moon"}"></i>`;
+  themeToggleBtn.title = atual === "dark" ? "Mudar para tema claro (Dia)" : "Mudar para tema escuro (Noite)";
+  if(window.lucide) lucide.createIcons();
+}
+themeToggleBtn.addEventListener("click", () => {
+  const novo = efeitoTemaAtual() === "dark" ? "light" : "dark";
+  document.documentElement.setAttribute("data-theme", novo);
+  localStorage.setItem("fv-theme", novo);
+  atualizarIconeTema();
+});
+atualizarIconeTema();
 
 async function showApp(user){
   currentUser = user;
