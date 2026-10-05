@@ -2537,24 +2537,31 @@ function imprimirCardapioCompleto(grupo, num, semana){
 
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(titulo)}</title>
   <style>
-    body{font-family:Arial,Helvetica,sans-serif; color:#111; margin:28px; font-size:12.5px;}
-    h1{font-size:19px; margin:0 0 4px;}
-    .meta{color:#555; font-size:12px; margin-bottom:16px;}
-    table{width:100%; border-collapse:collapse;}
-    td, th{border:1px solid #ccc; padding:5px 6px; text-align:left; vertical-align:top; font-size:11.5px;}
-    th{background:#f3f0ea; font-size:10.5px; text-transform:uppercase; letter-spacing:.03em;}
-    td .sub{color:#666; font-size:10px; margin-top:2px;}
+    @page{ size: landscape; margin: 8mm; }
+    *{ box-sizing:border-box; }
+    html, body{ height:100%; }
+    body{font-family:Arial,Helvetica,sans-serif; color:#111; margin:0; font-size:9px;}
+    h1{font-size:13px; margin:0 0 2px;}
+    .meta{color:#555; font-size:9px; margin-bottom:6px;}
+    table{width:100%; border-collapse:collapse; table-layout:fixed;}
+    table col.col-cat{width:10%;}
+    td, th{border:1px solid #ccc; padding:2px 3px; text-align:left; vertical-align:top; font-size:7.8px; line-height:1.2; overflow:hidden;}
+    th{background:#f3f0ea; font-size:7.2px; text-transform:uppercase; letter-spacing:.02em; padding:3px 3px;}
+    td .sub{color:#666; font-size:6.8px; margin-top:1px;}
     td.vazio{color:#aaa;}
     tr.tot td{background:#f3f0ea; font-weight:700;}
     td.num{text-align:right; font-family:'Courier New',monospace;}
-    .resumo{margin-top:14px; font-size:12.5px;}
-    @media print{ body{margin:10mm;} }
+    .resumo{margin-top:6px; font-size:9px;}
+    table, tr{ page-break-inside:avoid; }
     ${printHeadStyle()}
+    .print-head{margin-bottom:6px; padding-bottom:6px;}
+    .print-head img{height:22px;}
+    .print-head .org{font-size:8px;}
   </style></head><body>
     ${printHeadHtml()}
     <h1>${escapeHtml(titulo)}</h1>
     <div class="meta">${escapeHtml(intervaloSemana(semana))}</div>
-    <table><thead><tr><th>${grupo==="cafe"?"Item":"Categoria"}</th>${DIAS_ORDEM.map(dia => `<th>${DIA_LABEL[dia]}</th>`).join("")}</tr></thead>
+    <table><colgroup><col class="col-cat">${DIAS_ORDEM.map(()=>`<col>`).join("")}</colgroup><thead><tr><th>${grupo==="cafe"?"Item":"Categoria"}</th>${DIAS_ORDEM.map(dia => `<th>${DIA_LABEL[dia]}</th>`).join("")}</tr></thead>
     <tbody>${linhasHtml}${linhaPreco}${linhaTotal}</tbody></table>
     <div class="resumo"><strong>Custo total da semana:</strong> ${fmtMoney(somaSemana)}</div>
   </body></html>`;
