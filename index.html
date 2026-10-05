@@ -236,7 +236,7 @@ tbody tr:hover{background:var(--surface-alt);}
 .ing-line{padding:4px 8px; border-top:1px solid var(--border);}
 .ing-line .microlabel{font-size:10px; color:var(--text-faint); margin-bottom:3px;}
 .ing-line-missing{outline:1.5px solid var(--critical); border-radius:8px;}
-.ing-line input{font-size:12px; padding:6px 7px; width:100%; min-width:0; box-sizing:border-box;}
+.ing-line input{font:inherit; font-size:12px; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:8px; padding:6px 7px; width:100%; min-width:0; box-sizing:border-box;}
 .ing-line .ing-ckg{padding:6px 0; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:11.5px;}
 .ing-line .ing-custo-linha{font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
 .ing-line .ing-qtd-dia{padding:6px 0; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-family:'IBM Plex Mono',ui-monospace,monospace; font-size:11.5px;}
@@ -311,16 +311,17 @@ table.cardapio-table td.cat-col, table.cardapio-table th.cat-col{position:sticky
 table.cardapio-table thead th.cat-col{background:var(--surface-alt); z-index:3;}
 table.cardapio-table td.cel{min-width:118px; max-width:130px;}
 table.cardapio-table .cel-nome-row{display:flex; align-items:center; gap:3px; margin-bottom:2px;}
-table.cardapio-table input.cel-nome{width:100%; font-size:10.5px; padding:3px 4px; min-width:0; box-sizing:border-box;}
+table.cardapio-table input.cel-nome{font:inherit; width:100%; font-size:10px; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:5px; padding:3px 4px; min-width:0; box-sizing:border-box; text-overflow:ellipsis;}
 table.cardapio-table .cel-search-btn{flex:none; width:19px; height:19px; display:flex; align-items:center; justify-content:center; background:var(--surface); border:1px solid var(--border); border-radius:5px; color:var(--text-muted); cursor:pointer; padding:0;}
 table.cardapio-table .cel-search-btn:hover{background:var(--surface-alt); color:var(--text);}
 table.cardapio-table .cel-search-btn .ico{width:11px; height:11px;}
 table.cardapio-table .cel-sub-row{display:flex; align-items:center; gap:3px;}
-table.cardapio-table input.cel-gram, table.cardapio-table input.cel-preco{width:100%; font-size:10px; padding:3px 4px; min-width:0; box-sizing:border-box;}
+table.cardapio-table input.cel-gram, table.cardapio-table input.cel-preco{font:inherit; width:100%; font-size:9.5px; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:5px; padding:3px 4px; min-width:0; box-sizing:border-box;}
 table.cardapio-table .cel-custo{flex:none; font-family:'IBM Plex Mono',ui-monospace,monospace; font-size:9.5px; color:var(--text-faint); white-space:nowrap;}
 table.cardapio-table td.custo-dia{text-align:right; font-weight:600; font-size:11px; white-space:nowrap;}
 table.cardapio-table tr.row-total td{background:var(--surface-alt);}
 .th-dia-head{display:flex; flex-direction:column; gap:2px;}
+.th-dia-head .th-date{font-size:9px; color:var(--text-faint); font-weight:400;}
 .th-dia-head .th-del{background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:9px;text-align:left;padding:0;}
 .th-dia-head .th-del:hover{color:var(--critical);}
 table.cardapio-table .autocomplete{position:relative;}
@@ -500,7 +501,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
   goToView(currentView);
 }
 
@@ -660,6 +661,14 @@ async function loadFichas(){
 let cardapiosAlmoco = new Map(); // doc_id_legado -> {cardapio_num, semana, dia, itens, custo_planejado, preco_venda_planejado, ...}
 let cafeSemanas = new Map();     // doc_id_legado -> {cardapio_num, semana, dias:{segunda:{itens:[...]}, ...}}
 let cafeConfigs = new Map();     // cardapio_num -> {label, num_slots}
+let cardapioNumsExtra = [];      // [{id, grupo, num, label}] números extras criados pelo usuário (refeição/marmita)
+
+async function loadCardapioNumerosExtra(){
+  const { data, error } = await sb.from('cardapio_numeros_extra').select('*');
+  cardapioNumsExtra = [];
+  if (error) return;
+  cardapioNumsExtra = data || [];
+}
 
 async function loadCardapios(){
   const { data, error } = await sb.from('cardapios').select('*');
@@ -1798,6 +1807,7 @@ function mesAtualId(){
 
 let cardapioNumSel = null;
 let cardapioSemanaSel = null;
+let cardapioSemanaNovaPendente = null; // semana recém-criada (sem dados ainda), pra não ser descartada pelo guard do select
 let cardapioTabSel = "refeicao"; // "refeicao" | "marmita" | "cafe"
 
 function custoFichaOuInsumo(item){
@@ -1829,9 +1839,41 @@ const MARMITA_NUMS = [6,7,8];
 const CAFE_NUMS = [1,2,3,4,5];
 
 function labelNumeroCardapio(grupo, n){
-  if(grupo === "marmita") return `Marmita ${n - 5}`;
-  if(grupo === "cafe") return `Café ${n}`;
+  if(grupo === "cafe"){
+    const cfg = cafeConfigs.get(n);
+    return (cfg && cfg.label) ? cfg.label : `Café ${n}`;
+  }
+  const extra = cardapioNumsExtra.find(e => e.grupo === grupo && e.num === n);
+  if(extra && extra.label) return extra.label;
+  if(grupo === "marmita") return MARMITA_NUMS.includes(n) ? `Marmita ${n - 5}` : `Marmita ${n}`;
   return `Cardápio ${n}`;
+}
+// números disponíveis para o grupo, incluindo os extras criados pelo usuário (refeição/marmita) ou configs extras de café
+function numerosPorGrupoAtual(grupo){
+  if(grupo === "cafe"){
+    const extrasCafe = [...cafeConfigs.keys()].filter(n => !CAFE_NUMS.includes(n));
+    return [...CAFE_NUMS, ...extrasCafe.sort((a,b)=>a-b)];
+  }
+  const base = grupo === "marmita" ? MARMITA_NUMS : REFEICAO_NUMS;
+  const extras = cardapioNumsExtra.filter(e => e.grupo === grupo).map(e => e.num).sort((a,b)=>a-b);
+  return [...base, ...extras.filter(n => !base.includes(n))];
+}
+async function criarNovoCardapioNumero(grupo, label){
+  if(grupo === "cafe"){
+    const usados = [...cafeConfigs.keys()];
+    const novo = usados.length ? Math.max(...usados) + 1 : 1;
+    const { error } = await sb.from('cafe_config').insert({ cardapio_num: novo, label: label || `Café ${novo}`, num_slots: 6 });
+    if(error){ showAlert('Erro ao criar novo café: ' + error.message); return null; }
+    await loadCafeConfig();
+    return novo;
+  }
+  const base = grupo === "marmita" ? MARMITA_NUMS : REFEICAO_NUMS;
+  const todos = [...base, ...cardapioNumsExtra.filter(e => e.grupo === grupo).map(e => e.num)];
+  const novo = todos.length ? Math.max(...todos) + 1 : 1;
+  const { error } = await sb.from('cardapio_numeros_extra').insert({ grupo, num: novo, label: label || null });
+  if(error){ showAlert('Erro ao criar novo cardápio: ' + error.message); return null; }
+  await loadCardapioNumerosExtra();
+  return novo;
 }
 
 function renderCardapio(){
@@ -1839,7 +1881,7 @@ function renderCardapio(){
   document.getElementById("page-desc").textContent = "Edição direto na tabela — refeição, marmita e café da manhã";
 
   const grupo = cardapioTabSel; // "refeicao" | "marmita" | "cafe"
-  const numerosPorGrupo = grupo === "marmita" ? MARMITA_NUMS : grupo === "cafe" ? CAFE_NUMS : REFEICAO_NUMS;
+  const numerosPorGrupo = numerosPorGrupoAtual(grupo);
   if (cardapioNumSel === null || !numerosPorGrupo.includes(cardapioNumSel)) cardapioNumSel = numerosPorGrupo[0];
 
   const semanasTodas = [...new Set([...cardapiosAlmoco.values()].map(r => r.semana))].sort((a,b)=>a-b);
@@ -1850,32 +1892,40 @@ function renderCardapio(){
     semanasDisponiveis = [...new Set([...cardapiosAlmoco.values()].filter(r => r.cardapio_num === cardapioNumSel).map(r => r.semana))].sort((a,b)=>a-b);
   }
   if(!semanasDisponiveis.length) semanasDisponiveis = semanasTodas.length ? semanasTodas : [1];
-  if (cardapioSemanaSel === null || !semanasDisponiveis.includes(cardapioSemanaSel)) cardapioSemanaSel = semanasDisponiveis[0];
+  // semana recém-criada (ainda sem nenhum dado salvo) — mantém selecionada em vez de ser descartada pelo guard abaixo
+  if(cardapioSemanaNovaPendente != null && !semanasDisponiveis.includes(cardapioSemanaNovaPendente)){
+    semanasDisponiveis = [...semanasDisponiveis, cardapioSemanaNovaPendente].sort((a,b)=>a-b);
+  }
+  if (cardapioSemanaSel === null || !semanasDisponiveis.includes(cardapioSemanaSel)) { cardapioSemanaSel = semanasDisponiveis[0]; cardapioSemanaNovaPendente = null; }
 
-  document.getElementById("topbar-actions").innerHTML = `
-    <button class="btn small" id="btn-copiar-semana">⧉ Copiar semana</button>
-    <button class="btn small" id="btn-imprimir-cardapio-completo">Imprimir completo</button>
-    <button class="btn small" id="btn-excluir-semana" style="color:var(--critical);">Excluir semana</button>
-  `;
+  document.getElementById("topbar-actions").innerHTML = "";
 
   const content = document.getElementById("content");
   content.innerHTML = `
     <div class="menu-controls">
       <select id="card-num">${numerosPorGrupo.map(n => `<option value="${n}" ${n===cardapioNumSel?"selected":""}>${labelNumeroCardapio(grupo, n)}</option>`).join("")}</select>
+      <button class="btn small" id="btn-novo-cardapio" title="Criar novo número de ${grupo==='cafe'?'café':grupo==='marmita'?'marmita':'cardápio'}">+ Novo cardápio</button>
       <select id="card-semana">${semanasDisponiveis.map(s => `<option value="${s}" ${s===cardapioSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
+      <button class="btn small" id="btn-nova-semana" title="Criar nova semana para este cardápio">+ Nova semana</button>
       <div class="seg-toggle">
         <button type="button" data-tab="refeicao" class="${cardapioTabSel==="refeicao"?"active":""}">Refeição</button>
         <button type="button" data-tab="marmita" class="${cardapioTabSel==="marmita"?"active":""}">Marmita</button>
         <button type="button" data-tab="cafe" class="${cardapioTabSel==="cafe"?"active":""}">Café da manhã</button>
       </div>
+      <span style="flex:1 1 auto;"></span>
+      <button class="btn small" id="btn-copiar-semana">⧉ Copiar semana</button>
+      <button class="btn small" id="btn-imprimir-cardapio-completo">Imprimir completo</button>
+      <button class="btn small" id="btn-excluir-semana" style="color:var(--critical);">Excluir semana</button>
     </div>
     <div id="card-week"></div>
   `;
 
-  document.getElementById("card-num").addEventListener("change", e => { cardapioNumSel = Number(e.target.value); cardapioSemanaSel = null; renderCardapio(); });
+  document.getElementById("card-num").addEventListener("change", e => { cardapioNumSel = Number(e.target.value); cardapioSemanaSel = null; cardapioSemanaNovaPendente = null; renderCardapio(); });
   document.getElementById("card-semana").addEventListener("change", e => { cardapioSemanaSel = Number(e.target.value); renderCardapio(); });
-  content.querySelectorAll(".seg-toggle button").forEach(b => b.addEventListener("click", () => { cardapioTabSel = b.dataset.tab; cardapioNumSel = null; cardapioSemanaSel = null; renderCardapio(); }));
+  content.querySelectorAll(".seg-toggle button").forEach(b => b.addEventListener("click", () => { cardapioTabSel = b.dataset.tab; cardapioNumSel = null; cardapioSemanaSel = null; cardapioSemanaNovaPendente = null; renderCardapio(); }));
 
+  document.getElementById("btn-novo-cardapio").addEventListener("click", () => fluxoNovoCardapio(grupo));
+  document.getElementById("btn-nova-semana").addEventListener("click", () => fluxoNovaSemana(grupo, cardapioNumSel));
   document.getElementById("btn-copiar-semana").addEventListener("click", () => abrirCopiarSemanaModal(grupo, cardapioNumSel, cardapioSemanaSel));
   document.getElementById("btn-excluir-semana").addEventListener("click", () => excluirSemanaCompleta(grupo, cardapioNumSel, cardapioSemanaSel));
   document.getElementById("btn-imprimir-cardapio-completo").addEventListener("click", () => imprimirCardapioCompleto(grupo, cardapioNumSel, cardapioSemanaSel));
@@ -1916,7 +1966,7 @@ function montarTabelaAlmoco(num, semana){
       <table class="cardapio-table">
         <thead><tr>
           <th class="cat-col">Categoria</th>
-          ${DIAS_ORDEM.map(dia => `<th><div class="th-dia-head"><span>${DIA_LABEL[dia]}</span><button type="button" class="th-del" data-del-dia="${dia}">limpar dia</button></div></th>`).join("")}
+          ${DIAS_ORDEM.map(dia => `<th><div class="th-dia-head"><span>${DIA_LABEL[dia]}</span><span class="th-date">${fmtData(dataDoDia(semana,dia))}</span><button type="button" class="th-del" data-del-dia="${dia}">limpar dia</button></div></th>`).join("")}
         </tr></thead>
         <tbody>
           ${CATEGORIAS_CARDAPIO.map((cat,ci) => `
@@ -1926,7 +1976,7 @@ function montarTabelaAlmoco(num, semana){
                 <td class="cel">
                   <div class="cel-nome-row">
                     <div class="autocomplete">
-                      <input type="text" class="cel-nome search-input" data-dia="${dia}" data-ci="${ci}" value="${escapeHtml(draftAlmoco[dia].itens[ci].nome||"")}" placeholder="—" autocomplete="off">
+                      <input type="text" class="cel-nome search-input" data-dia="${dia}" data-ci="${ci}" value="${escapeHtml(draftAlmoco[dia].itens[ci].nome||"")}" title="${escapeHtml(draftAlmoco[dia].itens[ci].nome||"")}" placeholder="—" autocomplete="off">
                     </div>
                     <button type="button" class="cel-search-btn" data-search-dia="${dia}" data-search-ci="${ci}" title="Buscar na lista de fichas/insumos"><i class="ico" data-lucide="search"></i></button>
                   </div>
@@ -1972,7 +2022,7 @@ function montarTabelaAlmoco(num, semana){
       if(tipo === "insumo"){ l.insumo_id = refId; l.ficha_id = null; l.nome = insumos.get(refId).nome; }
       else { l.ficha_id = refId; l.insumo_id = null; l.nome = fichas.get(refId).nome; }
       const campoNome = host.querySelector(`.cel-nome[data-dia="${dia}"][data-ci="${ci}"]`);
-      if(campoNome) campoNome.value = l.nome;
+      if(campoNome){ campoNome.value = l.nome; campoNome.title = l.nome; }
       recomputarCustoDia(dia); recomputarCustoCelula(dia, ci);
     });
   }));
@@ -1986,14 +2036,14 @@ function montarTabelaAlmoco(num, semana){
       const l = draftAlmoco[dia].itens[ci];
       if(t === "insumo"){ l.insumo_id = refId; l.ficha_id = null; l.nome = insumos.get(refId).nome; }
       else { l.ficha_id = refId; l.insumo_id = null; l.nome = fichas.get(refId).nome; }
-      inp.value = l.nome;
+      inp.value = l.nome; inp.title = l.nome;
       recomputarCustoDia(dia); recomputarCustoCelula(dia, ci);
       const prox = host.querySelector(`.cel-gram[data-dia="${dia}"][data-ci="${ci}"]`);
       if(prox){ prox.focus(); prox.select(); }
     };
     inp.addEventListener("input", () => {
       const l = draftAlmoco[dia].itens[ci];
-      l.nome = inp.value; l.insumo_id = null; l.ficha_id = null;
+      l.nome = inp.value; l.insumo_id = null; l.ficha_id = null; inp.title = inp.value;
       const matchesFicha = inp.value ? buscarPorNome(todasFichas, inp.value, 8) : [];
       const matchesInsumo = inp.value ? buscarPorNome(todosInsumos, inp.value, 8) : [];
       fecharOpts();
@@ -2092,7 +2142,7 @@ function montarTabelaCafe(num, semana){
       <table class="cardapio-table">
         <thead><tr>
           <th class="cat-col">Item</th>
-          ${DIAS_ORDEM.map(dia => `<th><div class="th-dia-head"><span>${DIA_LABEL[dia]}</span><button type="button" class="th-del" data-del-dia="${dia}">limpar dia</button></div></th>`).join("")}
+          ${DIAS_ORDEM.map(dia => `<th><div class="th-dia-head"><span>${DIA_LABEL[dia]}</span><span class="th-date">${fmtData(dataDoDia(semana,dia))}</span><button type="button" class="th-del" data-del-dia="${dia}">limpar dia</button></div></th>`).join("")}
         </tr></thead>
         <tbody id="cafe-tbody">
           ${Array.from({length: maxLinhas}).map((_,ri) => `
@@ -2102,7 +2152,7 @@ function montarTabelaCafe(num, semana){
                 <td class="cel">
                   <div class="cel-nome-row">
                     <div class="autocomplete">
-                      <input type="text" class="cel-nome search-input" data-dia="${dia}" data-ci="${ri}" value="${escapeHtml(draftCafe.itens[dia][ri].nome||"")}" placeholder="—" autocomplete="off">
+                      <input type="text" class="cel-nome search-input" data-dia="${dia}" data-ci="${ri}" value="${escapeHtml(draftCafe.itens[dia][ri].nome||"")}" title="${escapeHtml(draftCafe.itens[dia][ri].nome||"")}" placeholder="—" autocomplete="off">
                     </div>
                     <button type="button" class="cel-search-btn" data-search-dia="${dia}" data-search-ci="${ri}" title="Buscar na lista de fichas/insumos"><i class="ico" data-lucide="search"></i></button>
                   </div>
@@ -2141,7 +2191,7 @@ function montarTabelaCafe(num, semana){
         if(tipo === "insumo"){ l.insumo_id = refId; l.ficha_id = null; l.nome = insumos.get(refId).nome; }
         else { l.ficha_id = refId; l.insumo_id = null; l.nome = fichas.get(refId).nome; }
         const campoNome = host.querySelector(`.cel-nome[data-dia="${dia}"][data-ci="${ci}"]`);
-        if(campoNome) campoNome.value = l.nome;
+        if(campoNome){ campoNome.value = l.nome; campoNome.title = l.nome; }
         recomputarCustoCelulaCafe(dia, ci);
       });
     }));
@@ -2154,14 +2204,14 @@ function montarTabelaCafe(num, semana){
         const l = draftCafe.itens[dia][ci];
         if(t === "insumo"){ l.insumo_id = refId; l.ficha_id = null; l.nome = insumos.get(refId).nome; }
         else { l.ficha_id = refId; l.insumo_id = null; l.nome = fichas.get(refId).nome; }
-        inp.value = l.nome;
+        inp.value = l.nome; inp.title = l.nome;
         recomputarCustoCelulaCafe(dia, ci);
         const prox = host.querySelector(`.cel-gram[data-dia="${dia}"][data-ci="${ci}"]`);
         if(prox){ prox.focus(); prox.select(); }
       };
       inp.addEventListener("input", () => {
         const l = draftCafe.itens[dia][ci];
-        l.nome = inp.value; l.insumo_id = null; l.ficha_id = null;
+        l.nome = inp.value; l.insumo_id = null; l.ficha_id = null; inp.title = inp.value;
         const matchesFicha = inp.value ? buscarPorNome(todasFichas, inp.value, 8) : [];
         const matchesInsumo = inp.value ? buscarPorNome(todosInsumos, inp.value, 8) : [];
         fecharOpts();
@@ -2324,8 +2374,69 @@ async function copiarSemanaCardapio(grupo, srcNum, srcSemana, destNum, destSeman
   await loadCardapios();
 }
 
+// Modal simples de 2 opções usado depois de criar um cardápio/semana novo: replicar de um já existente, ou começar em branco.
+function abrirEscolhaInicioModal({titulo, mensagem, onReplicar, onBranco}){
+  const root = document.getElementById("modal-root");
+  root.innerHTML = `
+    <div class="modal-overlay" id="ei-ov">
+      <div class="modal">
+        <div class="modal-head"><h2>${escapeHtml(titulo)}</h2><button class="close-x" id="ei-close">&times;</button></div>
+        <div class="modal-body">
+          <p class="footnote" style="margin:0;">${escapeHtml(mensagem)}</p>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" id="ei-branco">Começar em branco</button>
+          <button class="btn primary" id="ei-replicar">Replicar de um já existente</button>
+        </div>
+      </div>
+    </div>`;
+  const cleanup = () => root.innerHTML = "";
+  document.getElementById("ei-close").onclick = cleanup;
+  document.getElementById("ei-ov").addEventListener("click", e => { if(e.target.id==="ei-ov") cleanup(); });
+  document.getElementById("ei-branco").onclick = () => { cleanup(); onBranco && onBranco(); };
+  document.getElementById("ei-replicar").onclick = () => { cleanup(); onReplicar && onReplicar(); };
+}
+
+async function fluxoNovoCardapio(grupo){
+  const novo = await criarNovoCardapioNumero(grupo);
+  if(novo == null) return;
+  cardapioNumSel = novo; cardapioSemanaSel = null;
+  renderCardapio();
+  abrirEscolhaInicioModal({
+    titulo: "Novo " + (grupo==="cafe" ? "café" : grupo==="marmita" ? "cardápio de marmita" : "cardápio") + " criado",
+    mensagem: `${labelNumeroCardapio(grupo, novo)} foi criado. Quer replicar o conteúdo de um cardápio já existente para começar, ou prefere montar do zero?`,
+    onReplicar: () => abrirCopiarSemanaModal(grupo, novo, cardapioSemanaSel),
+    onBranco: () => {}
+  });
+}
+
+function proximaSemanaLivre(grupo, num){
+  const usadas = grupo === "cafe"
+    ? [...new Set([...cafeSemanas.values()].filter(r => r.cardapio_num === num).map(r => r.semana))]
+    : [...new Set([...cardapiosAlmoco.values()].filter(r => r.cardapio_num === num).map(r => r.semana))];
+  const todasSemanasAlmoco = [...cardapiosAlmoco.values()].map(r => r.semana);
+  const todasSemanasCafe = [...cafeSemanas.values()].map(r => r.semana);
+  const todas = [...new Set([...todasSemanasAlmoco, ...todasSemanasCafe])];
+  const maxGeral = todas.length ? Math.max(...todas) : 0;
+  const maxLocal = usadas.length ? Math.max(...usadas) : 0;
+  return Math.max(maxGeral, maxLocal) + 1;
+}
+
+function fluxoNovaSemana(grupo, num){
+  const nova = proximaSemanaLivre(grupo, num);
+  cardapioSemanaNovaPendente = nova;
+  cardapioSemanaSel = nova;
+  renderCardapio();
+  abrirEscolhaInicioModal({
+    titulo: "Nova semana criada",
+    mensagem: `${escapeHtml(rotuloSemana(nova))} (${intervaloSemana(nova)}) foi adicionada para ${labelNumeroCardapio(grupo, num)}. Quer replicar o conteúdo de uma semana já existente, ou prefere montar do zero?`,
+    onReplicar: () => abrirCopiarSemanaModal(grupo, num, nova),
+    onBranco: () => {}
+  });
+}
+
 function abrirCopiarSemanaModal(grupo, destNum, destSemana){
-  const numerosPorGrupo = grupo === "marmita" ? MARMITA_NUMS : grupo === "cafe" ? CAFE_NUMS : REFEICAO_NUMS;
+  const numerosPorGrupo = numerosPorGrupoAtual(grupo);
   const root = document.getElementById("modal-root");
   function semanasDoNum(n){
     if(grupo === "cafe") return [...new Set([...cafeSemanas.values()].filter(r => r.cardapio_num === n).map(r => r.semana))].sort((a,b)=>a-b);
@@ -2393,25 +2504,31 @@ function imprimirCardapioCompleto(grupo, num, semana){
     let maxLinhas = 1;
     DIAS_ORDEM.forEach(dia => { const n=(diasSrc[DIA_KEY_CAFE[dia]]?.itens||[]).length; if(n>maxLinhas) maxLinhas=n; });
     for(let ri=0; ri<maxLinhas; ri++){
-      linhasHtml += `<tr><td>Item ${ri+1}</td>${DIAS_ORDEM.map(dia => {
+      let algumPreenchido = false;
+      const celulas = DIAS_ORDEM.map(dia => {
         const it = (diasSrc[DIA_KEY_CAFE[dia]]?.itens||[])[ri];
+        if(it && it.nome) algumPreenchido = true;
         const r = celTxt(it);
         if(typeof r === "string") return r;
         totais[dia] += r.custo;
         return r.html;
-      }).join("")}</tr>`;
+      }).join("");
+      if(algumPreenchido) linhasHtml += `<tr><td>Item ${ri+1}</td>${celulas}</tr>`;
     }
   } else {
     const porDia = new Map([...cardapiosAlmoco.values()].filter(r => r.cardapio_num === num && r.semana === semana).map(r => [r.dia, r]));
     CATEGORIAS_CARDAPIO.forEach(cat => {
-      linhasHtml += `<tr><td>${escapeHtml(cat)}</td>${DIAS_ORDEM.map(dia => {
+      let algumPreenchido = false;
+      const celulas = DIAS_ORDEM.map(dia => {
         const row = porDia.get(dia);
         const it = (row?.itens||[]).find(i => i.categoria === cat);
+        if(it && it.nome) algumPreenchido = true;
         const r = celTxt(it);
         if(typeof r === "string") return r;
         totais[dia] += r.custo;
         return r.html;
-      }).join("")}</tr>`;
+      }).join("");
+      if(algumPreenchido) linhasHtml += `<tr><td>${escapeHtml(cat)}</td>${celulas}</tr>`;
     });
   }
   const linhaPreco = grupo !== "cafe" ? (() => {
