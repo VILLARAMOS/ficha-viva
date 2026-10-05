@@ -177,6 +177,17 @@ tbody tr:hover{background:var(--surface-alt);}
 .painel-notas summary{cursor:pointer; font-size:12px; color:var(--text-faint); user-select:none;}
 .painel-notas[open] summary{margin-bottom:8px;}
 .painel-notas .footnote{margin:0;}
+/* ---------- v129: Insumos — tabela compacta com scroll duplo/arrastar + Estoque (kardex) ---------- */
+.insumo-table-wrap{max-width:900px; overflow-x:auto; cursor:grab;}
+.insumo-table-wrap.dragging{cursor:grabbing; user-select:none;}
+.insumo-table-wrap table{font-size:12.5px;}
+.insumo-table-wrap th, .insumo-table-wrap td{padding:7px 9px;}
+.scroll-mirror{max-width:900px; overflow-x:auto; overflow-y:hidden; height:14px; margin-bottom:-2px;}
+.scroll-mirror-inner{height:1px;}
+.estoque-subtabs{margin:16px 0 14px;}
+.pend-entrada-row{display:grid; grid-template-columns:1.6fr .8fr .8fr .9fr 1.4fr auto; gap:10px; align-items:center; padding:10px 0; border-bottom:1px solid var(--border);}
+.pend-entrada-row:last-child{border-bottom:none;}
+.pend-entrada-row input{width:100%;}
 .ing-table{border:1px solid var(--border); border-radius:10px; overflow:hidden;}
 .ing-header, .ing-line{display:grid; grid-template-columns:2.4fr .95fr .9fr .9fr .9fr 70px; gap:10px; align-items:center;}
 .ing-header{padding:7px 10px; background:var(--surface-alt); font-size:10.5px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.03em;}
@@ -364,7 +375,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadEstoqueContagem(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
   goToView(currentView);
 }
 
@@ -748,6 +759,138 @@ async function salvarContagemEstoque(semana, unidade, insumoId, valorStr){
     await loadEstoqueContagem();
   }catch(e){ showAlert("Erro ao salvar contagem de estoque: "+(e.message||e.code||e)); }
 }
+
+/* ---- estoque: kardex (entrada/baixa/movimentação) — saldo real, contagem só audita/ajusta ---- */
+let estoqueMovimentos = new Map(); // id -> {unidade, insumo_id, tipo, quantidade(sinal), custo_unitario, status, data, pedido_id, grupo_movimentacao, contagem_semana, observacao, criado_em, criado_por, aprovado_em, aprovado_por}
+async function loadEstoqueMovimentos(){
+  const { data, error } = await sb.from('estoque_movimentos').select('*').order('criado_em', {ascending:false});
+  estoqueMovimentos = new Map();
+  if (error){ showAlert('Erro ao carregar movimentos de estoque: ' + error.message); return; }
+  (data || []).forEach(row => { const { id, ...rest } = row; estoqueMovimentos.set(id, rest); });
+}
+function saldoEstoque(unidade, insumoId){
+  let s = 0;
+  estoqueMovimentos.forEach(m => { if(m.status==="aprovado" && m.unidade===unidade && m.insumo_id===insumoId) s += (m.quantidade||0); });
+  return s;
+}
+function saldosPorUnidade(unidade){
+  const mapa = new Map();
+  estoqueMovimentos.forEach(m => { if(m.status==="aprovado" && m.unidade===unidade) mapa.set(m.insumo_id, (mapa.get(m.insumo_id)||0) + (m.quantidade||0)); });
+  return mapa;
+}
+function valorEstoqueKardex(unidade){
+  const saldos = saldosPorUnidade(unidade);
+  let total = 0, nInsumos = 0; const porGrupo = new Map();
+  saldos.forEach((qtd, insumoId) => {
+    if(Math.abs(qtd) < 0.0005) return;
+    nInsumos++;
+    const ins = insumos.get(insumoId);
+    const valor = (ins ? (ins.custo_kg_l_und||0) : 0) * qtd;
+    total += valor;
+    const grupo = (ins && ins.grupo_compra) || "SEM GRUPO";
+    porGrupo.set(grupo, (porGrupo.get(grupo)||0) + valor);
+  });
+  return { total, porGrupo, nInsumos };
+}
+function entradasPendentes(unidade){
+  return [...estoqueMovimentos.entries()]
+    .filter(([,m]) => m.status==="pendente" && (!unidade || m.unidade===unidade))
+    .sort((a,b) => (b[1].criado_em||"").localeCompare(a[1].criado_em||""));
+}
+// gera (ou atualiza) as entradas pendentes de um pedido a partir da conferência de recebimento — nunca duplica o que já foi aprovado/rejeitado
+async function sincronizarEntradaPendenteDoPedido(pedidoId, unidade, itens){
+  const existentesDoPedido = [...estoqueMovimentos.entries()].filter(([,m]) => m.pedido_id === pedidoId && m.tipo === "entrada_pedido");
+  const decididos = new Set(existentesDoPedido.filter(([,m]) => m.status !== "pendente").map(([,m]) => m.insumo_id));
+  const pendentesPorInsumo = new Map(existentesDoPedido.filter(([,m]) => m.status === "pendente").map(([id,m]) => [m.insumo_id, id]));
+  const aInserir = [], aAtualizar = [];
+  (itens||[]).forEach(it => {
+    if(it.quantidade_recebida === null || it.quantidade_recebida === undefined) return;
+    if(!it.insumo_id || decididos.has(it.insumo_id)) return; // já aprovado/rejeitado — não reabrir sozinho
+    const existenteId = pendentesPorInsumo.get(it.insumo_id);
+    if(existenteId){ aAtualizar.push({id: existenteId, quantidade: it.quantidade_recebida, custo_unitario: it.preco_unitario}); }
+    else { aInserir.push({ unidade, insumo_id: it.insumo_id, tipo:"entrada_pedido", quantidade: it.quantidade_recebida, custo_unitario: it.preco_unitario, status:"pendente", data: hojeYMD(), pedido_id: pedidoId, criado_por: usuarioId||null }); }
+  });
+  try{
+    for(const a of aAtualizar){ const { error } = await sb.from('estoque_movimentos').update({quantidade:a.quantidade, custo_unitario:a.custo_unitario}).eq('id', a.id); if(error) throw error; }
+    if(aInserir.length){ const { error } = await sb.from('estoque_movimentos').insert(aInserir); if(error) throw error; }
+    await loadEstoqueMovimentos();
+  }catch(e){ showAlert("Pedido salvo, mas houve erro ao preparar a entrada pendente em estoque: "+(e.message||e.code||e)); }
+}
+async function aprovarEntradaEstoque(movId, quantidade, custoUnitario){
+  try{
+    const { error } = await sb.from('estoque_movimentos').update({ quantidade, custo_unitario: custoUnitario, status:"aprovado", aprovado_em: new Date().toISOString(), aprovado_por: usuarioId||null }).eq('id', movId);
+    if(error) throw error;
+    await loadEstoqueMovimentos();
+    return true;
+  }catch(e){ showAlert("Erro ao aprovar entrada em estoque: "+(e.message||e.code||e)); return false; }
+}
+async function rejeitarEntradaEstoque(movId){
+  try{
+    const { error } = await sb.from('estoque_movimentos').update({ status:"rejeitado", aprovado_em: new Date().toISOString(), aprovado_por: usuarioId||null }).eq('id', movId);
+    if(error) throw error;
+    await loadEstoqueMovimentos();
+    return true;
+  }catch(e){ showAlert("Erro ao rejeitar entrada em estoque: "+(e.message||e.code||e)); return false; }
+}
+async function registrarBaixaManual(unidade, insumoId, quantidade, observacao){
+  if(!(quantidade > 0)) return false;
+  const ins = insumos.get(insumoId);
+  try{
+    const { error } = await sb.from('estoque_movimentos').insert({ unidade, insumo_id: insumoId, tipo:"baixa_manual", quantidade: -Math.abs(quantidade), custo_unitario: ins?ins.custo_kg_l_und:null, status:"aprovado", data: hojeYMD(), observacao: observacao||null, criado_por: usuarioId||null });
+    if(error) throw error;
+    await loadEstoqueMovimentos();
+    return true;
+  }catch(e){ showAlert("Erro ao registrar baixa de estoque: "+(e.message||e.code||e)); return false; }
+}
+async function registrarMovimentacaoInterna(origemUnidade, destinoUnidade, insumoId, quantidade, observacao){
+  if(!(quantidade > 0) || origemUnidade === destinoUnidade) return false;
+  const ins = insumos.get(insumoId);
+  const custo = ins ? ins.custo_kg_l_und : null;
+  const grupoMov = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : (Date.now()+"-"+Math.random().toString(16).slice(2));
+  const base = { insumo_id: insumoId, custo_unitario: custo, status:"aprovado", data: hojeYMD(), observacao: observacao||null, grupo_movimentacao: grupoMov, criado_por: usuarioId||null };
+  try{
+    const { error } = await sb.from('estoque_movimentos').insert([
+      { ...base, unidade: origemUnidade, tipo:"movimentacao_saida", quantidade: -Math.abs(quantidade) },
+      { ...base, unidade: destinoUnidade, tipo:"movimentacao_entrada", quantidade: Math.abs(quantidade) },
+    ]);
+    if(error) throw error;
+    await loadEstoqueMovimentos();
+    return true;
+  }catch(e){ showAlert("Erro ao registrar movimentação interna: "+(e.message||e.code||e)); return false; }
+}
+// baixa manual "em lote" a partir de uma lista (ex.: geração futura de lista de PCP) — pronta pra ser chamada quando o módulo de PCP existir
+async function registrarBaixaLote(unidade, tipo, itens, observacao){
+  const linhas = (itens||[]).filter(it => it.insumo_id && it.quantidade > 0).map(it => {
+    const ins = insumos.get(it.insumo_id);
+    return { unidade, insumo_id: it.insumo_id, tipo: tipo||"baixa_manual", quantidade: -Math.abs(it.quantidade), custo_unitario: ins?ins.custo_kg_l_und:null, status:"aprovado", data: hojeYMD(), observacao: observacao||null, criado_por: usuarioId||null };
+  });
+  if(!linhas.length) return 0;
+  try{
+    const { error } = await sb.from('estoque_movimentos').insert(linhas);
+    if(error) throw error;
+    await loadEstoqueMovimentos();
+    return linhas.length;
+  }catch(e){ showAlert("Erro ao registrar baixa em lote: "+(e.message||e.code||e)); return -1; }
+}
+async function gerarAjustesContagem(semana, unidade){
+  const contagem = contagemPorSemana(semana, unidade);
+  const ajustes = [];
+  contagem.forEach((row, insumoId) => {
+    const saldoAtual = saldoEstoque(unidade, insumoId);
+    const diff = (row.quantidade_contada||0) - saldoAtual;
+    if(Math.abs(diff) > 0.0005){
+      const ins = insumos.get(insumoId);
+      ajustes.push({ unidade, insumo_id: insumoId, tipo:"ajuste_contagem", quantidade: diff, custo_unitario: ins?ins.custo_kg_l_und:null, status:"aprovado", data: row.data_contagem || hojeYMD(), contagem_semana: semana, observacao: `Ajuste pela contagem de ${rotuloSemana(semana)}`, criado_por: usuarioId||null });
+    }
+  });
+  if(!ajustes.length) return 0;
+  try{
+    const { error } = await sb.from('estoque_movimentos').insert(ajustes);
+    if(error) throw error;
+    await loadEstoqueMovimentos();
+    return ajustes.length;
+  }catch(e){ showAlert("Erro ao gerar ajustes de contagem: "+(e.message||e.code||e)); return -1; }
+}
 // contagem mais recente dentro do MÊS (não soma semanas — é uma foto do estoque, não um fluxo). Simplificação
 // consciente: o sistema antigo abate semana a semana; aqui a Lista de compra é mensal, então usa a contagem
 // mais recente registrada dentro das semanas do mês selecionado, por unidade.
@@ -788,27 +931,69 @@ function itensDoContrato(contratoId){
 let insumoFilter = "";
 let insumoGrupoFilter = "";
 let insumoSort = {field:"nome", dir:"asc"};
+let insumoTabSel = "cadastro"; // "cadastro" | "estoque"
+let estoqueSubTab = "contagem"; // "contagem" | "entradas" | "movimentar" | "baixa"
+
+// liga um .table-wrap a uma barra de rolagem espelhada em cima + permite segurar e arrastar com o mouse
+function habilitarScrollDuplo(wrapEl, mirrorEl){
+  if(!wrapEl) return;
+  if(mirrorEl){
+    const inner = mirrorEl.querySelector(".scroll-mirror-inner");
+    const table = wrapEl.querySelector("table");
+    if(inner && table) inner.style.width = table.scrollWidth + "px";
+    let syncing = false;
+    mirrorEl.addEventListener("scroll", () => { if(syncing) return; syncing = true; wrapEl.scrollLeft = mirrorEl.scrollLeft; syncing = false; });
+    wrapEl.addEventListener("scroll", () => { if(syncing) return; syncing = true; mirrorEl.scrollLeft = wrapEl.scrollLeft; syncing = false; });
+  }
+  let down = false, startX = 0, startScroll = 0;
+  wrapEl.addEventListener("mousedown", e => { down = true; startX = e.pageX; startScroll = wrapEl.scrollLeft; wrapEl.classList.add("dragging"); });
+  window.addEventListener("mouseup", () => { down = false; wrapEl.classList.remove("dragging"); });
+  wrapEl.addEventListener("mouseleave", () => { down = false; wrapEl.classList.remove("dragging"); });
+  wrapEl.addEventListener("mousemove", e => { if(!down) return; e.preventDefault(); wrapEl.scrollLeft = startScroll - (e.pageX - startX); });
+}
 
 function renderInsumos(){
   document.getElementById("page-title").textContent = "Insumos";
-  document.getElementById("page-desc").textContent = "Cadastro único de custo — toda ficha vai ler daqui, ninguém digita custo na ficha";
-  document.getElementById("topbar-actions").innerHTML = `<button class="btn primary" id="btn-novo-insumo">+ Novo insumo</button>`;
-  document.getElementById("btn-novo-insumo").addEventListener("click", () => openInsumoModal(null));
+  document.getElementById("page-desc").textContent = insumoTabSel === "estoque"
+    ? "Controle de estoque (entrada por pedido, movimentação, baixa e contagem) — alimenta o cálculo do CMV real"
+    : "Cadastro único de custo — toda ficha vai ler daqui, ninguém digita custo na ficha";
+  document.getElementById("topbar-actions").innerHTML = insumoTabSel === "cadastro" ? `<button class="btn primary" id="btn-novo-insumo">+ Novo insumo</button>` : "";
+  if(insumoTabSel === "cadastro") document.getElementById("btn-novo-insumo").addEventListener("click", () => openInsumoModal(null));
 
+  const content = document.getElementById("content");
+  content.innerHTML = `
+    <div class="seg-toggle" id="ins-tabs" style="margin-bottom:14px; width:fit-content;">
+      <button type="button" data-tab="cadastro" class="${insumoTabSel==="cadastro"?"active":""}">Cadastro</button>
+      <button type="button" data-tab="estoque" class="${insumoTabSel==="estoque"?"active":""}">Estoque</button>
+    </div>
+    <div id="ins-body"></div>
+  `;
+  document.getElementById("ins-tabs").addEventListener("click", e => {
+    const b = e.target.closest("button[data-tab]"); if(!b) return;
+    insumoTabSel = b.dataset.tab;
+    renderInsumos();
+  });
+
+  if(insumoTabSel === "estoque"){ renderTabInsumoEstoque(); return; }
+  renderTabInsumoCadastro();
+}
+
+function renderTabInsumoCadastro(){
   const usage = new Map();
   fichas.forEach(f => (f.ingredientes||[]).forEach(l => { if(l.insumo_id) usage.set(l.insumo_id, (usage.get(l.insumo_id)||0)+1); }));
 
   const grupos = [...new Set([...insumos.values()].map(d=>d.grupo_compra).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
 
-  const content = document.getElementById("content");
-  content.innerHTML = `
+  const body = document.getElementById("ins-body");
+  body.innerHTML = `
     <div class="search-bar">
       <input type="text" id="insumo-search" placeholder="Buscar insumo…" value="${escapeHtml(insumoFilter)}">
       <select id="insumo-grupo"><option value="">Todos os grupos de compra</option>${grupos.map(g=>`<option value="${escapeHtml(g)}" ${insumoGrupoFilter===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}</select>
       <span class="footnote" id="insumo-count" style="align-self:center;"></span>
     </div>
     <div class="panel">
-      <div class="table-wrap">
+      <div class="scroll-mirror" id="insumo-scroll-top"><div class="scroll-mirror-inner"></div></div>
+      <div class="table-wrap insumo-table-wrap" id="insumo-table-wrap">
         <table>
           <thead><tr id="insumo-thead-row">
             <th class="sortable" data-field="nome" style="cursor:pointer;">Ingrediente</th>
@@ -824,6 +1009,8 @@ function renderInsumos(){
       </div>
     </div>
   `;
+  habilitarScrollDuplo(document.getElementById("insumo-table-wrap"), document.getElementById("insumo-scroll-top"));
+  const content = body;
 
   function updateInsumoTable(){
     let rows = [...insumos.entries()].map(([id,d]) => ({id, ...d}));
@@ -862,6 +1049,9 @@ function renderInsumos(){
     content.querySelectorAll("#insumo-thead-row th.sortable").forEach(th => {
       th.textContent = th.textContent.replace(/ [↑↓]$/, "") + (insumoSort.field===th.dataset.field ? (insumoSort.dir==="asc"?" ↑":" ↓") : "");
     });
+    const mirrorInner = document.querySelector("#insumo-scroll-top .scroll-mirror-inner");
+    const table = document.querySelector("#insumo-table-wrap table");
+    if(mirrorInner && table) mirrorInner.style.width = table.scrollWidth + "px";
   }
 
   updateInsumoTable();
@@ -873,6 +1063,293 @@ function renderInsumos(){
     else insumoSort = {field:f, dir:"asc"};
     updateInsumoTable();
   }));
+}
+
+/* ================= Estoque (dentro de Insumos) — painel + contagem + entradas pendentes + movimentação + baixa ================= */
+function renderTabInsumoEstoque(){
+  const body = document.getElementById("ins-body");
+  const valorMatriz = valorEstoqueKardex("matriz");
+  const valorFilial = valorEstoqueKardex("filial");
+  const semanasBase = semanasDisponiveisVendas();
+  const semanaRecente = Math.max(...semanasBase);
+  const ultimaContMatriz = valorEstoqueContadoPorGrupo(semanaRecente, "matriz");
+  const ultimaContFilial = valorEstoqueContadoPorGrupo(semanaRecente, "filial");
+  const pendentes = entradasPendentes();
+
+  body.innerHTML = `
+    <div class="two-col-num" style="margin-bottom:16px;">
+      <div class="stat-block"><div class="label">Valor do estoque atual · Matriz</div><div class="val">${fmtMoney(valorMatriz.total)}</div><div class="val small">${valorMatriz.nInsumos} insumo(s) com saldo</div></div>
+      <div class="stat-block"><div class="label">Valor do estoque atual · Filial</div><div class="val">${fmtMoney(valorFilial.total)}</div><div class="val small">${valorFilial.nInsumos} insumo(s) com saldo</div></div>
+      <div class="stat-block"><div class="label">Última contagem (${escapeHtml(rotuloSemana(semanaRecente))})</div><div class="val small">Matriz: <strong>${ultimaContMatriz.nInsumosContados?fmtMoney(ultimaContMatriz.total):"—"}</strong> · Filial: <strong>${ultimaContFilial.nInsumosContados?fmtMoney(ultimaContFilial.total):"—"}</strong></div><div class="val small">${pendentes.length ? pendentes.length+" entrada(s) pendente(s) de aprovação" : "sem entradas pendentes"}</div></div>
+    </div>
+    <div class="footnote" style="margin-bottom:14px;">Saldo por kardex: toda entrada (de pedido aprovado, movimentação ou ajuste) soma e toda baixa (manual, movimentação de saída ou PCP) subtrai o saldo em tempo real. A contagem física continua existindo para <strong>auditar</strong> esse saldo — ao gerar ajustes, a diferença entre contado e calculado é lançada como um movimento de ajuste.</div>
+    <div class="seg-toggle estoque-subtabs" id="es-subtabs">
+      <button type="button" data-sub="contagem" class="${estoqueSubTab==="contagem"?"active":""}">Contagem</button>
+      <button type="button" data-sub="entradas" class="${estoqueSubTab==="entradas"?"active":""}">Entradas pendentes${pendentes.length?` (${pendentes.length})`:""}</button>
+      <button type="button" data-sub="movimentar" class="${estoqueSubTab==="movimentar"?"active":""}">Movimentação interna</button>
+      <button type="button" data-sub="baixa" class="${estoqueSubTab==="baixa"?"active":""}">Baixa manual</button>
+    </div>
+    <div id="es-sub-body"></div>
+  `;
+  document.getElementById("es-subtabs").addEventListener("click", e => {
+    const b = e.target.closest("button[data-sub]"); if(!b) return;
+    estoqueSubTab = b.dataset.sub;
+    renderTabInsumoEstoque();
+  });
+
+  if(estoqueSubTab === "contagem") renderEstoqueContagem();
+  else if(estoqueSubTab === "entradas") renderEstoqueEntradasPendentes();
+  else if(estoqueSubTab === "movimentar") renderEstoqueMovimentar();
+  else renderEstoqueBaixaManual();
+}
+
+function renderEstoqueContagem(){
+  const semanasBase = semanasDisponiveisVendas();
+  const semanaSugerida = Math.max(...semanasBase) + 1;
+  const opcoesSemana = [...new Set([...semanasBase, semanaSugerida, semanaSugerida+1])].sort((a,b)=>a-b);
+  if(estoqueSemanaSel === null || !opcoesSemana.includes(estoqueSemanaSel)) estoqueSemanaSel = semanaSugerida;
+
+  const contagem = contagemPorSemana(estoqueSemanaSel, estoqueUnidadeSel);
+  const { total: valorTotal, nInsumosContados } = valorEstoqueContadoPorGrupo(estoqueSemanaSel, estoqueUnidadeSel);
+  const saldoCalc = saldosPorUnidade(estoqueUnidadeSel);
+  const outraUn = estoqueUnidadeSel === "matriz" ? "filial" : "matriz";
+  const resumoOutra = valorEstoqueContadoPorGrupo(estoqueSemanaSel, outraUn);
+  const diasMaisAntigo = [...contagem.values()].reduce((max,row) => { const d = diasDesdeContagem(row.data_contagem); return d!==null && d>max ? d : max; }, 0);
+  const desatualizado = diasMaisAntigo > ESTOQUE_DIAS_ALERTA;
+  const grupos = blocosCadastro();
+
+  const sub = document.getElementById("es-sub-body");
+  sub.innerHTML = `
+    <div class="footnote" style="margin-bottom:14px;">Lance o que tem contado de cada insumo para UMA semana, de UMA unidade. Isso só audita o saldo — use "Gerar ajustes" para corrigir o saldo de estoque pela contagem (a Lista de compra do mês continua descontando automaticamente pela contagem mais recente, como antes).</div>
+    <div class="menu-controls">
+      <div class="seg-toggle" id="es-un-tabs">${UNIDADES_COMPRA.map(u => `<button type="button" data-esun="${u.id}" class="${estoqueUnidadeSel===u.id?"active":""}">${u.nome}</button>`).join("")}</div>
+      <select id="es-semana">${opcoesSemana.map(s=>`<option value="${s}" ${s===estoqueSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))}${s===semanaSugerida?" (próxima)":""}</option>`).join("")}</select>
+      <button class="btn" id="es-imprimir" style="margin-left:auto;">Imprimir lista</button>
+      <button class="btn primary" id="es-gerar-ajustes">Gerar ajustes desta contagem</button>
+    </div>
+    <div class="two-col-num" style="margin:10px 0;">
+      <div class="stat-block"><div class="label">Insumos contados · ${nomeUnidadeCompra(estoqueUnidadeSel)}</div><div class="val">${nInsumosContados}</div></div>
+      <div class="stat-block"><div class="label">Valor contado · ${nomeUnidadeCompra(estoqueUnidadeSel)}</div><div class="val">${fmtMoney(valorTotal)}</div><div class="val small">${nomeUnidadeCompra(outraUn)}: ${resumoOutra.nInsumosContados ? fmtMoney(resumoOutra.total) + " em " + resumoOutra.nInsumosContados + " itens" : "sem contagem nesta semana"}</div></div>
+      <div class="stat-block"><div class="label">Contagem mais antiga</div><div class="val">${nInsumosContados ? diasMaisAntigo+"d" : "—"}</div></div>
+    </div>
+    ${nInsumosContados && desatualizado ? `<div class="footnote" style="margin:0 0 10px; color:var(--critical);">⚠️ pelo menos uma contagem desta semana tem mais de ${ESTOQUE_DIAS_ALERTA} dias — reconte antes de confiar no abatimento da Lista de compra.</div>` : ""}
+    <div class="search-bar">
+      <input type="text" id="es-search" placeholder="Buscar insumo…" value="${escapeHtml(estoqueFilter)}">
+      <select id="es-grupo"><option value="">Todos os grupos de compra</option>${grupos.map(g=>`<option value="${escapeHtml(g)}" ${estoqueGrupoFilter===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}</select>
+      <span class="footnote" id="es-count" style="align-self:center;"></span>
+    </div>
+    <div class="panel"><div class="table-wrap"><table>
+      <thead><tr><th>Insumo</th><th>Grupo de compra</th><th>Unidade</th><th style="text-align:right;">Saldo (kardex)</th><th style="text-align:right;">Qtd. contada</th><th>Contado em</th></tr></thead>
+      <tbody id="es-tbody"></tbody>
+    </table></div></div>
+  `;
+  document.getElementById("es-un-tabs").addEventListener("click", e => {
+    const b = e.target.closest("button[data-esun]"); if(!b) return;
+    estoqueUnidadeSel = b.dataset.esun;
+    renderEstoqueContagem();
+  });
+  document.getElementById("es-semana").addEventListener("change", e => { estoqueSemanaSel = parseInt(e.target.value,10); renderEstoqueContagem(); });
+  document.getElementById("es-gerar-ajustes").addEventListener("click", async () => {
+    const n = await gerarAjustesContagem(estoqueSemanaSel, estoqueUnidadeSel);
+    if(n > 0) showAlert(`${n} ajuste(s) de saldo gerado(s) a partir desta contagem.`);
+    else if(n === 0) showAlert("Nenhuma diferença entre a contagem e o saldo calculado — nada para ajustar.");
+    renderEstoqueContagem();
+  });
+  document.getElementById("es-imprimir").addEventListener("click", () => imprimirListaContagem(estoqueSemanaSel, estoqueUnidadeSel));
+
+  function updateTable(){
+    let rows = [...insumos.entries()].map(([id,d]) => ({id, ...d}));
+    if(estoqueFilter.trim()) rows = rows.filter(r => normalizeText(r.nome||"").includes(normalizeText(estoqueFilter.trim())));
+    if(estoqueGrupoFilter) rows = rows.filter(r => r.grupo_compra === estoqueGrupoFilter);
+    rows.sort((a,b) => normalizeText(a.nome||"").localeCompare(normalizeText(b.nome||"")));
+    document.getElementById("es-count").textContent = `${rows.length} insumo${rows.length===1?"":"s"}`;
+    document.getElementById("es-tbody").innerHTML = rows.map(r => {
+      const row = contagem.get(r.id);
+      const dias = row ? diasDesdeContagem(row.data_contagem) : null;
+      const alerta = dias!==null && dias > ESTOQUE_DIAS_ALERTA;
+      const saldo = saldoCalc.get(r.id) || 0;
+      return `<tr>
+        <td class="name-cell">${escapeHtml(r.nome)}</td>
+        <td style="font-size:12.5px;">${escapeHtml(r.grupo_compra||"—")}</td>
+        <td>${escapeHtml(r.unidade_medida||"—")}</td>
+        <td class="num-cell">${fmtNum(saldo,3)}</td>
+        <td class="num-cell"><input type="number" min="0" step="0.001" class="es-qtd-input" data-id="${r.id}" value="${row?row.quantidade_contada:""}" placeholder="—" style="width:90px; text-align:right;"></td>
+        <td>${row ? escapeHtml(fmtDataYMD(row.data_contagem)) : "—"}${alerta?` <span class="chip warn"><span class="dot"></span>há ${dias}d</span>`:""}</td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="6" class="empty-state">Nenhum insumo encontrado com este filtro.</td></tr>`;
+    document.getElementById("es-tbody").querySelectorAll(".es-qtd-input").forEach(inp => {
+      inp.addEventListener("change", async () => {
+        await salvarContagemEstoque(estoqueSemanaSel, estoqueUnidadeSel, inp.dataset.id, inp.value);
+        renderEstoqueContagem();
+      });
+    });
+  }
+  updateTable();
+  document.getElementById("es-search").addEventListener("input", e => { estoqueFilter = e.target.value; updateTable(); });
+  document.getElementById("es-grupo").addEventListener("change", e => { estoqueGrupoFilter = e.target.value; updateTable(); });
+}
+
+function imprimirListaContagem(semana, unidade){
+  const rows = [...insumos.entries()].map(([id,d]) => ({id, ...d})).sort((a,b) => normalizeText(a.grupo_compra||"").localeCompare(normalizeText(b.grupo_compra||"")) || normalizeText(a.nome||"").localeCompare(normalizeText(b.nome||"")));
+  const w = window.open("", "_blank");
+  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Lista de contagem — ${escapeHtml(nomeUnidadeCompra(unidade))} — ${escapeHtml(rotuloSemana(semana))}</title>
+    <style>
+      body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;}
+      h1{font-size:18px; margin:0 0 4px;}
+      .sub{font-size:12px; color:#555; margin-bottom:16px;}
+      table{width:100%; border-collapse:collapse; font-size:12.5px;}
+      th,td{border:1px solid #ccc; padding:6px 8px; text-align:left;}
+      th{background:#f0f0f0;}
+      td.num{text-align:right; width:110px;}
+      .assinatura{margin-top:40px; display:flex; gap:40px;}
+      .assinatura div{flex:1; border-top:1px solid #333; padding-top:4px; font-size:12px;}
+    </style></head><body>
+    <h1>Lista de contagem de estoque — ${escapeHtml(nomeUnidadeCompra(unidade))}</h1>
+    <div class="sub">${escapeHtml(rotuloSemana(semana))} · Data da contagem: ____/____/______</div>
+    <table>
+      <thead><tr><th>Insumo</th><th>Grupo de compra</th><th>Unid.</th><th class="num">Qtd. contada</th></tr></thead>
+      <tbody>${rows.map(r => `<tr><td>${escapeHtml(r.nome)}</td><td>${escapeHtml(r.grupo_compra||"—")}</td><td>${escapeHtml(r.unidade_medida||"—")}</td><td class="num"></td></tr>`).join("")}</tbody>
+    </table>
+    <div class="assinatura"><div>Contado por</div><div>Conferido por</div></div>
+    <script>window.onload = () => window.print();</script>
+    </body></html>`);
+  w.document.close();
+}
+
+function renderEstoqueEntradasPendentes(){
+  const sub = document.getElementById("es-sub-body");
+  const pendentes = entradasPendentes();
+  sub.innerHTML = `
+    <div class="footnote" style="margin-bottom:14px;">Toda conferência de recebimento de um pedido (aba Compras → Pedidos) entra aqui como pendente. Ajuste quantidade/custo se precisar e aprove para que o saldo de estoque seja atualizado — ou rejeite se o recebimento foi lançado por engano.</div>
+    <div class="panel" id="pend-panel">
+      ${pendentes.length ? "" : `<div class="empty-state">Nenhuma entrada pendente de aprovação.</div>`}
+    </div>
+  `;
+  const panel = document.getElementById("pend-panel");
+  if(!pendentes.length) return;
+  panel.innerHTML = `
+    <div class="pend-entrada-row" style="font-weight:600; font-size:12px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.04em;">
+      <div>Insumo</div><div>Unidade</div><div>Quantidade</div><div>Custo unit.</div><div>Origem</div><div></div>
+    </div>
+    ${pendentes.map(([id,m]) => {
+      const ins = insumos.get(m.insumo_id);
+      const p = m.pedido_id ? pedidos.get(m.pedido_id) : null;
+      const origem = p ? `${escapeHtml(p.fornecedor||"—")} · ${fmtDataYMD(p.data_pedido)||"—"}` : "lançamento manual";
+      return `<div class="pend-entrada-row" data-row="${id}">
+        <div class="name-cell">${escapeHtml(ins?ins.nome:"(insumo removido)")}</div>
+        <div>${escapeHtml(nomeUnidadeCompra(m.unidade))}</div>
+        <div><input type="number" step="0.001" min="0" class="pend-qtd" value="${m.quantidade}"></div>
+        <div><input type="number" step="0.0001" min="0" class="pend-custo" value="${m.custo_unitario!=null?m.custo_unitario:""}"></div>
+        <div class="footnote">${origem}</div>
+        <div style="display:flex; gap:6px; white-space:nowrap;">
+          <button class="btn small primary" data-aprovar="${id}">Aprovar</button>
+          <button class="btn small ghost" data-rejeitar="${id}" style="color:var(--critical);">Rejeitar</button>
+        </div>
+      </div>`;
+    }).join("")}
+  `;
+  panel.querySelectorAll("[data-aprovar]").forEach(btn => btn.addEventListener("click", async () => {
+    const id = btn.dataset.aprovar;
+    const row = panel.querySelector(`[data-row="${id}"]`);
+    const qtd = Math.max(0, parseFloat(row.querySelector(".pend-qtd").value) || 0);
+    const custo = row.querySelector(".pend-custo").value === "" ? null : Math.max(0, parseFloat(row.querySelector(".pend-custo").value) || 0);
+    if(qtd <= 0){ showAlert("Informe uma quantidade maior que zero para aprovar a entrada."); return; }
+    const ok = await aprovarEntradaEstoque(id, qtd, custo);
+    if(ok) renderTabInsumoEstoque();
+  }));
+  panel.querySelectorAll("[data-rejeitar]").forEach(btn => btn.addEventListener("click", async () => {
+    if(!confirm("Rejeitar esta entrada? Ela não vai afetar o saldo de estoque.")) return;
+    const ok = await rejeitarEntradaEstoque(btn.dataset.rejeitar);
+    if(ok) renderTabInsumoEstoque();
+  }));
+}
+
+function renderEstoqueMovimentar(){
+  const sub = document.getElementById("es-sub-body");
+  const rows = [...insumos.entries()].map(([id,d]) => ({id, ...d})).sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
+  const recentes = [...estoqueMovimentos.entries()].filter(([,m]) => m.tipo === "movimentacao_saida").sort((a,b)=>(b[1].criado_em||"").localeCompare(a[1].criado_em||"")).slice(0,10);
+  sub.innerHTML = `
+    <div class="footnote" style="margin-bottom:14px;">Transfere um insumo de uma unidade para outra — gera uma baixa na origem e uma entrada no destino, já aprovadas.</div>
+    <div class="panel" style="margin-bottom:20px;">
+      <div class="field-row">
+        <div class="field"><label>Insumo</label><select id="mv-insumo">${rows.map(r=>`<option value="${r.id}">${escapeHtml(r.nome)}</option>`).join("")}</select></div>
+        <div class="field"><label>De</label><select id="mv-origem">${UNIDADES_COMPRA.map(u=>`<option value="${u.id}">${u.nome}</option>`).join("")}</select></div>
+        <div class="field"><label>Para</label><select id="mv-destino">${UNIDADES_COMPRA.map(u=>`<option value="${u.id}" ${u.id!=="matriz"?"selected":""}>${u.nome}</option>`).join("")}</select></div>
+      </div>
+      <div class="field-row">
+        <div class="field"><label>Quantidade</label><input type="number" step="0.001" min="0" id="mv-qtd"></div>
+        <div class="field" style="flex:2;"><label>Observação (opcional)</label><input type="text" id="mv-obs" placeholder="Ex.: transferência para evento tal"></div>
+      </div>
+      <div class="footnote" id="mv-err" style="color:var(--critical); margin-bottom:8px;"></div>
+      <button class="btn primary" id="mv-salvar">Registrar movimentação</button>
+    </div>
+    <div class="footnote" style="margin-bottom:8px;">Últimas movimentações</div>
+    <div class="panel"><div class="table-wrap"><table>
+      <thead><tr><th>Data</th><th>Insumo</th><th>De → Para</th><th style="text-align:right;">Quantidade</th><th>Obs.</th></tr></thead>
+      <tbody>${recentes.map(([id,m]) => {
+        const destino = [...estoqueMovimentos.values()].find(d => d.grupo_movimentacao === m.grupo_movimentacao && d.tipo === "movimentacao_entrada");
+        const ins = insumos.get(m.insumo_id);
+        return `<tr><td>${fmtDataYMD(m.data)}</td><td class="name-cell">${escapeHtml(ins?ins.nome:"—")}</td><td>${escapeHtml(nomeUnidadeCompra(m.unidade))} → ${escapeHtml(nomeUnidadeCompra(destino?destino.unidade:""))}</td><td class="num-cell">${fmtNum(Math.abs(m.quantidade),3)}</td><td class="footnote">${escapeHtml(m.observacao||"—")}</td></tr>`;
+      }).join("") || `<tr><td colspan="5" class="empty-state">Nenhuma movimentação registrada ainda.</td></tr>`}</tbody>
+    </table></div></div>
+  `;
+  document.getElementById("mv-origem").addEventListener("change", () => {
+    const o = document.getElementById("mv-origem").value;
+    document.getElementById("mv-destino").value = o === "matriz" ? "filial" : "matriz";
+  });
+  document.getElementById("mv-salvar").addEventListener("click", async () => {
+    const errEl = document.getElementById("mv-err");
+    const insumoId = document.getElementById("mv-insumo").value;
+    const origem = document.getElementById("mv-origem").value;
+    const destino = document.getElementById("mv-destino").value;
+    const qtd = parseFloat(document.getElementById("mv-qtd").value);
+    const obs = document.getElementById("mv-obs").value.trim();
+    if(origem === destino){ errEl.textContent = "Origem e destino precisam ser diferentes."; return; }
+    if(!(qtd > 0)){ errEl.textContent = "Informe uma quantidade maior que zero."; return; }
+    const ok = await registrarMovimentacaoInterna(origem, destino, insumoId, qtd, obs || null);
+    if(ok) renderTabInsumoEstoque();
+    else errEl.textContent = "Erro ao registrar — veja o alerta acima.";
+  });
+}
+
+function renderEstoqueBaixaManual(){
+  const sub = document.getElementById("es-sub-body");
+  const rows = [...insumos.entries()].map(([id,d]) => ({id, ...d})).sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
+  const recentes = [...estoqueMovimentos.entries()].filter(([,m]) => m.tipo === "baixa_manual" || m.tipo === "baixa_pcp").sort((a,b)=>(b[1].criado_em||"").localeCompare(a[1].criado_em||"")).slice(0,10);
+  sub.innerHTML = `
+    <div class="footnote" style="margin-bottom:14px;">Dá baixa manual no estoque (perda, quebra, consumo não previsto, etc.). A baixa por lista de PCP vai usar o mesmo lançamento quando o módulo de PCP existir — por enquanto, use a baixa manual.</div>
+    <div class="panel" style="margin-bottom:20px;">
+      <div class="field-row">
+        <div class="field"><label>Insumo</label><select id="bx-insumo">${rows.map(r=>`<option value="${r.id}">${escapeHtml(r.nome)}</option>`).join("")}</select></div>
+        <div class="field"><label>Unidade</label><select id="bx-unidade">${UNIDADES_COMPRA.map(u=>`<option value="${u.id}">${u.nome}</option>`).join("")}</select></div>
+        <div class="field"><label>Quantidade</label><input type="number" step="0.001" min="0" id="bx-qtd"></div>
+      </div>
+      <div class="field"><label>Motivo</label><input type="text" id="bx-obs" placeholder="Ex.: produto vencido, quebra na câmara fria…"></div>
+      <div class="footnote" id="bx-err" style="color:var(--critical); margin-bottom:8px;"></div>
+      <button class="btn primary" id="bx-salvar">Registrar baixa</button>
+    </div>
+    <div class="footnote" style="margin-bottom:8px;">Últimas baixas manuais</div>
+    <div class="panel"><div class="table-wrap"><table>
+      <thead><tr><th>Data</th><th>Insumo</th><th>Unidade</th><th style="text-align:right;">Quantidade</th><th>Motivo</th></tr></thead>
+      <tbody>${recentes.map(([id,m]) => {
+        const ins = insumos.get(m.insumo_id);
+        return `<tr><td>${fmtDataYMD(m.data)}</td><td class="name-cell">${escapeHtml(ins?ins.nome:"—")}</td><td>${escapeHtml(nomeUnidadeCompra(m.unidade))}</td><td class="num-cell">${fmtNum(Math.abs(m.quantidade),3)}</td><td class="footnote">${escapeHtml(m.observacao||"—")}</td></tr>`;
+      }).join("") || `<tr><td colspan="5" class="empty-state">Nenhuma baixa manual registrada ainda.</td></tr>`}</tbody>
+    </table></div></div>
+  `;
+  document.getElementById("bx-salvar").addEventListener("click", async () => {
+    const errEl = document.getElementById("bx-err");
+    const insumoId = document.getElementById("bx-insumo").value;
+    const unidade = document.getElementById("bx-unidade").value;
+    const qtd = parseFloat(document.getElementById("bx-qtd").value);
+    const obs = document.getElementById("bx-obs").value.trim();
+    if(!(qtd > 0)){ errEl.textContent = "Informe uma quantidade maior que zero."; return; }
+    if(!obs){ errEl.textContent = "Descreva o motivo da baixa."; return; }
+    const ok = await registrarBaixaManual(unidade, insumoId, qtd, obs);
+    if(ok) renderTabInsumoEstoque();
+    else errEl.textContent = "Erro ao registrar — veja o alerta acima.";
+  });
 }
 
 function openInsumoModal(id){
@@ -3654,13 +4131,13 @@ function renderCompras(){
   const meses = MESES_REFERENCIA;
   if(compraMesSel === null || !meses.some(m => m.id === compraMesSel)) compraMesSel = meses.some(m => m.id === mesAtualId()) ? mesAtualId() : (meses[0] ? meses[0].id : null);
 
+  if(compraTabSel === "estoque") compraTabSel = "previsao"; // Estoque foi incorporado à aba Insumos
   const content = document.getElementById("content");
   content.innerHTML = `
     <div class="seg-toggle" id="cp-tabs" style="margin-bottom:14px; width:fit-content;">
       <button type="button" data-tab="previsao" class="${compraTabSel==="previsao"?"active":""}">Ajustar previsão</button>
       <button type="button" data-tab="lista" class="${compraTabSel==="lista"?"active":""}">Lista de compra</button>
       <button type="button" data-tab="pedidos" class="${compraTabSel==="pedidos"?"active":""}">Pedidos</button>
-      <button type="button" data-tab="estoque" class="${compraTabSel==="estoque"?"active":""}">Estoque</button>
     </div>
     <div id="cp-body"></div>
   `;
@@ -3981,85 +4458,12 @@ function renderCompras(){
     document.getElementById("pd-novo").addEventListener("click", () => openPedidoModal(null));
   }
 
-  function renderTabEstoque(){
-    const semanasBase = semanasDisponiveisVendas();
-    const semanaSugerida = Math.max(...semanasBase) + 1;
-    const opcoesSemana = [...new Set([...semanasBase, semanaSugerida, semanaSugerida+1])].sort((a,b)=>a-b);
-    if(estoqueSemanaSel === null || !opcoesSemana.includes(estoqueSemanaSel)) estoqueSemanaSel = semanaSugerida;
-
-    const contagem = contagemPorSemana(estoqueSemanaSel, estoqueUnidadeSel);
-    const { total: valorTotal, nInsumosContados } = valorEstoqueContadoPorGrupo(estoqueSemanaSel, estoqueUnidadeSel);
-    const outraUn = estoqueUnidadeSel === "matriz" ? "filial" : "matriz";
-    const resumoOutra = valorEstoqueContadoPorGrupo(estoqueSemanaSel, outraUn);
-    const diasMaisAntigo = [...contagem.values()].reduce((max,row) => { const d = diasDesdeContagem(row.data_contagem); return d!==null && d>max ? d : max; }, 0);
-    const desatualizado = diasMaisAntigo > ESTOQUE_DIAS_ALERTA;
-    const grupos = blocosCadastro();
-
-    const body = document.getElementById("cp-body");
-    body.innerHTML = `
-      <div class="footnote" style="margin-bottom:14px;">Contagem pontual — sem entrada/saída/movimentação. Lance o que tem contado de cada insumo para UMA semana, de UMA unidade; a Lista de compra do mês que contém essa semana, da mesma unidade, desconta automaticamente (a Matriz nunca desconta o estoque da Filial, e vice-versa). Simplificação em relação ao sistema antigo: aqui a Lista é mensal, então ela usa a contagem mais recente dentro do mês — não semana a semana.</div>
-      <div class="menu-controls">
-        <div class="seg-toggle" id="es-un-tabs">${UNIDADES_COMPRA.map(u => `<button type="button" data-esun="${u.id}" class="${estoqueUnidadeSel===u.id?"active":""}">${u.nome}</button>`).join("")}</div>
-        <select id="es-semana">${opcoesSemana.map(s=>`<option value="${s}" ${s===estoqueSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))}${s===semanaSugerida?" (próxima)":""}</option>`).join("")}</select>
-      </div>
-      <div class="two-col-num" style="margin-bottom:10px;">
-        <div class="stat-block"><div class="label">Insumos contados · ${nomeUnidadeCompra(estoqueUnidadeSel)}</div><div class="val">${nInsumosContados}</div></div>
-        <div class="stat-block"><div class="label">Valor contado · ${nomeUnidadeCompra(estoqueUnidadeSel)}</div><div class="val">${fmtMoney(valorTotal)}</div><div class="val small">${nomeUnidadeCompra(outraUn)}: ${resumoOutra.nInsumosContados ? fmtMoney(resumoOutra.total) + " em " + resumoOutra.nInsumosContados + " itens" : "sem contagem nesta semana"}</div></div>
-        <div class="stat-block"><div class="label">Contagem mais antiga</div><div class="val">${nInsumosContados ? diasMaisAntigo+"d" : "—"}</div></div>
-      </div>
-      ${nInsumosContados && desatualizado ? `<div class="footnote" style="margin:0 0 10px; color:var(--critical);">⚠️ pelo menos uma contagem desta semana tem mais de ${ESTOQUE_DIAS_ALERTA} dias — reconte antes de confiar no abatimento da Lista de compra.</div>` : ""}
-      <div class="search-bar">
-        <input type="text" id="es-search" placeholder="Buscar insumo…" value="${escapeHtml(estoqueFilter)}">
-        <select id="es-grupo"><option value="">Todos os grupos de compra</option>${grupos.map(g=>`<option value="${escapeHtml(g)}" ${estoqueGrupoFilter===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}</select>
-        <span class="footnote" id="es-count" style="align-self:center;"></span>
-      </div>
-      <div class="panel"><div class="table-wrap"><table>
-        <thead><tr><th>Insumo</th><th>Grupo de compra</th><th>Unidade</th><th style="text-align:right;">Qtd. contada</th><th>Contado em</th></tr></thead>
-        <tbody id="es-tbody"></tbody>
-      </table></div></div>
-    `;
-    document.getElementById("es-un-tabs").addEventListener("click", e => {
-      const b = e.target.closest("button[data-esun]"); if(!b) return;
-      estoqueUnidadeSel = b.dataset.esun;
-      renderTabEstoque();
-    });
-    document.getElementById("es-semana").addEventListener("change", e => { estoqueSemanaSel = parseInt(e.target.value,10); renderTabEstoque(); });
-
-    function updateTable(){
-      let rows = [...insumos.entries()].map(([id,d]) => ({id, ...d}));
-      if(estoqueFilter.trim()) rows = rows.filter(r => normalizeText(r.nome||"").includes(normalizeText(estoqueFilter.trim())));
-      if(estoqueGrupoFilter) rows = rows.filter(r => r.grupo_compra === estoqueGrupoFilter);
-      rows.sort((a,b) => normalizeText(a.nome||"").localeCompare(normalizeText(b.nome||"")));
-      document.getElementById("es-count").textContent = `${rows.length} insumo${rows.length===1?"":"s"}`;
-      document.getElementById("es-tbody").innerHTML = rows.map(r => {
-        const row = contagem.get(r.id);
-        const dias = row ? diasDesdeContagem(row.data_contagem) : null;
-        const alerta = dias!==null && dias > ESTOQUE_DIAS_ALERTA;
-        return `<tr>
-          <td class="name-cell">${escapeHtml(r.nome)}</td>
-          <td style="font-size:12.5px;">${escapeHtml(r.grupo_compra||"—")}</td>
-          <td>${escapeHtml(r.unidade_medida||"—")}</td>
-          <td class="num-cell"><input type="number" min="0" step="0.001" class="es-qtd-input" data-id="${r.id}" value="${row?row.quantidade_contada:""}" placeholder="—" style="width:90px; text-align:right;"></td>
-          <td>${row ? escapeHtml(fmtDataYMD(row.data_contagem)) : "—"}${alerta?` <span class="chip warn"><span class="dot"></span>há ${dias}d</span>`:""}</td>
-        </tr>`;
-      }).join("") || `<tr><td colspan="5" class="empty-state">Nenhum insumo encontrado com este filtro.</td></tr>`;
-      document.getElementById("es-tbody").querySelectorAll(".es-qtd-input").forEach(inp => {
-        inp.addEventListener("change", async () => {
-          await salvarContagemEstoque(estoqueSemanaSel, estoqueUnidadeSel, inp.dataset.id, inp.value);
-          renderTabEstoque();
-        });
-      });
-    }
-    updateTable();
-    document.getElementById("es-search").addEventListener("input", e => { estoqueFilter = e.target.value; updateTable(); });
-    document.getElementById("es-grupo").addEventListener("change", e => { estoqueGrupoFilter = e.target.value; updateTable(); });
-  }
+  // Estoque foi incorporado à aba Insumos (ver renderTabInsumoEstoque) — este bloco não existe mais aqui.
 
   function dispatchTab(){
     if(compraTabSel === "previsao") renderTabPrevisao();
     else if(compraTabSel === "lista") renderTabLista();
-    else if(compraTabSel === "pedidos") renderTabPedidos();
-    else renderTabEstoque();
+    else renderTabPedidos();
   }
 
   document.getElementById("cp-tabs").addEventListener("click", e => {
@@ -4333,8 +4737,9 @@ function openPedidoDetalhe(id){
   });
 
   document.getElementById("cf-salvar").onclick = async () => {
+    const itensFinal = itens.map((it,i) => ({...it, quantidade_recebida: conf[i].rec}));
     const payload = {
-      itens: itens.map((it,i) => ({...it, quantidade_recebida: conf[i].rec})),
+      itens: itensFinal,
       recebimento: { nota_fiscal: document.getElementById("cf-nf").value.trim()||null, recebido_por: document.getElementById("cf-por").value.trim()||null, data: document.getElementById("cf-data").value||null, obs: document.getElementById("cf-obs").value.trim()||null },
       ...carimbo(),
     };
@@ -4342,6 +4747,8 @@ function openPedidoDetalhe(id){
       const { error } = await sb.from('pedidos').update(payload).eq('id', id);
       if(error) throw error;
       await loadPedidos();
+      // conferência de recebimento gera (ou atualiza) a entrada pendente em estoque — aprovação é um passo separado na aba Insumos
+      await sincronizarEntradaPendenteDoPedido(id, pedidoUnidade(p), itensFinal);
       root.innerHTML = "";
       renderCompras();
     }catch(e){ document.getElementById("cf-err").textContent = "Erro ao salvar: " + (e.message||e.code||e); }
@@ -5259,7 +5666,7 @@ function renderPainel(){
     painelEscopoSel = b.dataset.esc; renderPainel();
   });
   document.getElementById("pn-ir-orcamento").addEventListener("click", e => { e.preventDefault(); orcamentoMesSel = painelMesSel; orcamentoEscopoSel = painelEscopoSel; goToView("orcamento"); });
-  document.getElementById("pn-ir-estoque").addEventListener("click", e => { e.preventDefault(); compraTabSel = "estoque"; goToView("compras"); });
+  document.getElementById("pn-ir-estoque").addEventListener("click", e => { e.preventDefault(); insumoTabSel = "estoque"; estoqueSubTab = "contagem"; goToView("insumos"); });
 }
 
 /* ===================================================================== INIT */
