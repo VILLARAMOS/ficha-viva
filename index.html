@@ -1913,6 +1913,7 @@ function renderCardapio(){
         <button type="button" data-tab="cafe" class="${cardapioTabSel==="cafe"?"active":""}">Café da manhã</button>
       </div>
       <span style="flex:1 1 auto;"></span>
+      <button class="btn primary" id="btn-salvar-semana">Salvar semana</button>
       <button class="btn small" id="btn-copiar-semana">⧉ Copiar semana</button>
       <button class="btn small" id="btn-imprimir-cardapio-completo">Imprimir completo</button>
       <button class="btn small" id="btn-excluir-semana" style="color:var(--critical);">Excluir semana</button>
@@ -1999,7 +2000,6 @@ function montarTabelaAlmoco(num, semana){
     </div>
     <div class="cardapio-toolbar">
       <div class="footnote" id="almoco-err" style="color:var(--critical);"></div>
-      <button class="btn primary" id="btn-salvar-almoco">Salvar semana</button>
     </div>
   `;
   if(window.lucide) lucide.createIcons();
@@ -2094,7 +2094,7 @@ function montarTabelaAlmoco(num, semana){
     }catch(e){ showAlert("Erro ao excluir: " + (e.message || e.code || e)); }
   }));
 
-  document.getElementById("btn-salvar-almoco").onclick = async () => {
+  document.getElementById("btn-salvar-semana").onclick = async () => {
     const errEl = document.getElementById("almoco-err");
     errEl.textContent = "Salvando…";
     try{
@@ -2167,10 +2167,7 @@ function montarTabelaCafe(num, semana){
     </div>
     <div class="cardapio-toolbar">
       <button class="btn small" id="btn-add-linha-cafe">+ adicionar linha</button>
-      <div style="display:flex; align-items:center; gap:12px;">
-        <div class="footnote" id="cafe-err" style="color:var(--critical);"></div>
-        <button class="btn primary" id="btn-salvar-cafe">Salvar semana</button>
-      </div>
+      <div class="footnote" id="cafe-err" style="color:var(--critical);"></div>
     </div>
   `;
   if(window.lucide) lucide.createIcons();
@@ -2281,7 +2278,7 @@ function montarTabelaCafe(num, semana){
     }catch(e){ showAlert("Erro ao excluir: " + (e.message || e.code || e)); }
   }));
 
-  document.getElementById("btn-salvar-cafe").onclick = async () => {
+  document.getElementById("btn-salvar-semana").onclick = async () => {
     const errEl = document.getElementById("cafe-err");
     errEl.textContent = "Salvando…";
     try{
