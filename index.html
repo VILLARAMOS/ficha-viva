@@ -2150,17 +2150,38 @@ function montarTabelaAlmoco(num, semana){
         </tbody>
       </table>
     </div>
+    <div class="cardapio-cmv-panel" style="margin-top:14px; margin-bottom:0;" id="card-resumo-semana-almoco"></div>
     <div class="cardapio-toolbar">
       <div class="footnote" id="almoco-err" style="color:var(--critical);"></div>
     </div>
   `;
   if(window.lucide) lucide.createIcons();
 
+  // Resumo recalcula a partir do rascunho em edição (draftAlmoco), não só do que já foi salvo —
+  // assim reflete na hora o que está sendo digitado, antes de clicar em "Salvar semana".
+  function atualizarResumoSemana(){
+    let custoTotal=0, custoComPreco=0, precoTotal=0, dias=0, diasComPreco=0;
+    DIAS_ORDEM.forEach(dia => {
+      const c = custoDia(dia);
+      if(draftAlmoco[dia].itens.some(l=>l.nome)){ dias++; custoTotal += c; }
+      const pv = draftAlmoco[dia].precoVenda;
+      if(pv!=null && pv>0){ diasComPreco++; custoComPreco += c; precoTotal += pv; }
+    });
+    const custoMedioDia = dias ? custoTotal/dias : null;
+    const cmv = precoTotal>0 ? custoComPreco/precoTotal : null;
+    document.getElementById("card-resumo-semana-almoco").innerHTML = `
+      <div class="stat-block"><div class="label">Custo médio da refeição — semana</div><div class="val">${custoMedioDia!=null?fmtMoney(custoMedioDia):"—"}</div></div>
+      <div class="stat-block"><div class="label">CMV médio — semana</div><div class="val">${cmv!=null?fmtPct(cmv):"—"}</div><div class="val small">${diasComPreco?`${diasComPreco} de ${dias} dia(s) com preço de venda`:"sem preço de venda preenchido"}</div></div>
+    `;
+  }
+  atualizarResumoSemana();
+
   const todosInsumos = [...insumos.entries()];
   const todasFichas = [...fichas.entries()];
 
   function recomputarCustoDia(dia){
     host.querySelector(`[data-custo-dia="${dia}"]`).textContent = fmtMoney(custoDia(dia));
+    atualizarResumoSemana();
   }
   function recomputarCustoCelula(dia, ci){
     const el = host.querySelector(`[data-custo-cel="${dia}|${ci}"]`);
@@ -2230,7 +2251,7 @@ function montarTabelaAlmoco(num, semana){
 
   host.querySelectorAll(".cel-preco").forEach(inp => {
     const dia = inp.dataset.dia;
-    inp.addEventListener("input", () => { draftAlmoco[dia].precoVenda = inp.value===""?null:parseFloat(inp.value); });
+    inp.addEventListener("input", () => { draftAlmoco[dia].precoVenda = inp.value===""?null:parseFloat(inp.value); atualizarResumoSemana(); });
   });
 
   host.querySelectorAll("[data-del-dia]").forEach(b => b.addEventListener("click", async () => {
@@ -2317,6 +2338,7 @@ function montarTabelaCafe(num, semana){
         </tbody>
       </table>
     </div>
+    <div class="cardapio-cmv-panel" style="margin-top:14px; margin-bottom:0;" id="card-resumo-semana-cafe"></div>
     <div class="cardapio-toolbar">
       <button class="btn small" id="btn-add-linha-cafe">+ adicionar linha</button>
       <div class="footnote" id="cafe-err" style="color:var(--critical);"></div>
@@ -2327,9 +2349,26 @@ function montarTabelaCafe(num, semana){
   const todosInsumos = [...insumos.entries()];
   const todasFichas = [...fichas.entries()];
 
+  // Café não tem preço de venda planejado, então o resumo mostra só o custo médio/dia
+  // (CMV não existe pra esse grupo — a aba de CMV real do café, no topo, continua sendo a referência de %).
+  function atualizarResumoSemanaCafe(){
+    let custoTotal = 0, dias = 0;
+    DIAS_ORDEM.forEach(dia => {
+      const itens = draftCafe.itens[dia];
+      if(!itens.some(l=>l.nome)) return;
+      dias++;
+      custoTotal += itens.reduce((s,l) => { const c = custoFichaOuInsumo(l); return s + (c!=null && l.gramagem_kg!=null ? c*l.gramagem_kg : 0); }, 0);
+    });
+    const custoMedioDia = dias ? custoTotal/dias : null;
+    document.getElementById("card-resumo-semana-cafe").innerHTML =
+      `<div class="stat-block"><div class="label">Custo médio do café — semana</div><div class="val">${custoMedioDia!=null?fmtMoney(custoMedioDia):"—"}</div></div>`;
+  }
+  atualizarResumoSemanaCafe();
+
   function recomputarCustoCelulaCafe(dia, ci){
     const el = host.querySelector(`[data-custo-cel="${dia}|${ci}"]`);
     if(el) el.textContent = custoItemTxt(draftCafe.itens[dia][ci]);
+    atualizarResumoSemanaCafe();
   }
 
   function wireLinhas(){
@@ -2686,6 +2725,10 @@ function imprimirCardapioCompleto(grupo, num, semana){
   })() : "";
   const linhaTotal = `<tr class="tot"><td>Custo total do dia</td>${DIAS_ORDEM.map(dia => `<td class="num">${fmtMoney(totais[dia])}</td>`).join("")}</tr>`;
   const somaSemana = Object.values(totais).reduce((a,b)=>a+b,0);
+  const resumoSemana = grupo === "cafe" ? custoPlanejadoCafeSemana(num, semana) : cmvPlanejadoSemana(num, semana);
+  const resumoSemanaHtml = grupo === "cafe"
+    ? `<strong>Custo médio do café/dia:</strong> ${resumoSemana.custoMedioDia!=null?fmtMoney(resumoSemana.custoMedioDia):"—"}`
+    : `<strong>Custo médio da refeição/dia:</strong> ${resumoSemana.custoMedioDia!=null?fmtMoney(resumoSemana.custoMedioDia):"—"} &nbsp;·&nbsp; <strong>CMV médio da semana:</strong> ${resumoSemana.cmv!=null?fmtPct(resumoSemana.cmv):"—"}`;
 
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(titulo)}</title>
   <style>
@@ -2715,7 +2758,7 @@ function imprimirCardapioCompleto(grupo, num, semana){
     <div class="meta">${escapeHtml(intervaloSemana(semana))}</div>
     <table><colgroup><col class="col-cat">${DIAS_ORDEM.map(()=>`<col>`).join("")}</colgroup><thead><tr><th>${grupo==="cafe"?"Item":"Categoria"}</th>${DIAS_ORDEM.map(dia => `<th>${DIA_LABEL[dia]}</th>`).join("")}</tr></thead>
     <tbody>${linhasHtml}${linhaPreco}${linhaTotal}</tbody></table>
-    <div class="resumo"><strong>Custo total da semana:</strong> ${fmtMoney(somaSemana)}</div>
+    <div class="resumo"><strong>Custo total da semana:</strong> ${fmtMoney(somaSemana)} &nbsp;·&nbsp; ${resumoSemanaHtml}</div>
     <script>
       // encolhe a página inteira (zoom) se o conteúdo não couber na altura útil de uma folha A4 paisagem
       // (210mm - 2×6mm de margem ≈ 748px a 96dpi), pra garantir impressão numa folha só mesmo com semanas bem preenchidas.
