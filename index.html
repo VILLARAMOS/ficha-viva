@@ -144,6 +144,8 @@ tbody tr:hover{background:var(--surface-alt);}
 .modal-overlay{position:fixed;inset:0;background:rgba(20,20,15,.45);display:flex;align-items:flex-start;justify-content:center;padding:36px 16px;overflow-y:auto;z-index:50;}
 #confirm-root .modal-overlay{z-index:200;align-items:center;}
 #confirm-root .modal{max-width:420px;}
+#picker-root .modal-overlay{z-index:150;}
+#picker-root .modal{max-width:520px;}
 .modal{background:var(--surface);border-radius:14px;max-width:460px;width:100%;box-shadow:0 24px 60px -20px rgba(0,0,0,.4);border:1px solid var(--border);}
 /* modal mais largo — usado só na ficha técnica, pra grade de ingredientes caber sem rolagem lateral */
 .modal-wide{max-width:900px;}
@@ -229,19 +231,29 @@ tbody tr:hover{background:var(--surface-alt);}
 .pend-entrada-row:last-child{border-bottom:none;}
 .pend-entrada-row input{width:100%;}
 .ing-table{border:1px solid var(--border); border-radius:10px; overflow:hidden;}
-.ing-header, .ing-line{display:grid; grid-template-columns:2.4fr .95fr .9fr .9fr .9fr 70px; gap:10px; align-items:center;}
+.ing-header, .ing-line{display:grid; grid-template-columns:2.1fr .85fr .8fr .8fr .95fr .8fr 70px; gap:10px; align-items:center;}
 .ing-header{padding:7px 10px; background:var(--surface-alt); font-size:10.5px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.03em;}
 .ing-line{padding:6px 10px; border-top:1px solid var(--border);}
 .ing-line .microlabel{font-size:10.5px; color:var(--text-faint); margin-bottom:3px;}
 .ing-line-missing{outline:1.5px solid var(--critical); border-radius:8px;}
 .ing-line .ing-ckg{padding:8px 0; color:var(--text-muted); white-space:nowrap;}
+.ing-line .ing-qtd-dia{padding:8px 0; color:var(--text); white-space:nowrap; font-family:'IBM Plex Mono',ui-monospace,monospace;}
 .ing-line .ing-aviso{font-size:10.5px; color:var(--critical); margin-top:3px; grid-column:1 / -1;}
 .ing-line .ing-ficha-tag{font-size:10px; color:var(--text-faint); grid-column:1 / -1; margin-top:-2px;}
 .kk-dias-chips{display:flex; gap:3px; flex-wrap:wrap;}
 .chip-dia{border:1px solid var(--border); background:var(--surface); color:var(--text-faint); border-radius:6px; padding:3px 6px; font-size:10px; cursor:pointer; line-height:1;}
 .chip-dia.on{background:var(--accent); color:#fff; border-color:var(--accent);}
 @media (max-width:720px){ .ing-header{display:none;} }
-.autocomplete{position:relative;}
+.autocomplete{position:relative; display:flex; align-items:center; gap:4px;}
+.autocomplete .search-input{flex:1; min-width:0;}
+.ing-search-btn{flex:none; width:28px; height:28px; display:flex; align-items:center; justify-content:center; background:var(--surface); border:1px solid var(--border); border-radius:6px; color:var(--text-muted); cursor:pointer; padding:0;}
+.ing-search-btn:hover{background:var(--surface-alt); color:var(--text);}
+.ing-search-btn .ico{width:14px; height:14px;}
+.insumo-picker-list{max-height:360px; overflow-y:auto; border:1px solid var(--border); border-radius:8px;}
+.insumo-picker-list .ipk-group{padding:6px 10px; background:var(--surface-alt); font-size:10.5px; text-transform:uppercase; letter-spacing:.03em; color:var(--text-faint); position:sticky; top:0;}
+.insumo-picker-list .ipk-item{padding:8px 10px; border-top:1px solid var(--border); cursor:pointer; display:flex; justify-content:space-between; gap:10px; font-size:13px;}
+.insumo-picker-list .ipk-item:hover{background:var(--accent-soft);}
+.insumo-picker-list .ipk-item .footnote{flex:none;}
 .autocomplete .options{position:absolute; top:100%; left:0; right:0; background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow); max-height:180px; overflow-y:auto; z-index:10; margin-top:2px;}
 .autocomplete .options div{padding:7px 10px; font-size:13px; cursor:pointer;}
 .autocomplete .options div:hover{background:var(--accent-soft);}
@@ -340,9 +352,9 @@ table.cardapio-table .autocomplete{position:relative;}
 
     <div class="nav-group">
       <div class="group-label">Cardápio &amp; receitas</div>
-      <button class="nav-btn" data-view="cardapio" title="Cardápio"><i class="ico" data-lucide="utensils-crossed"></i><span class="label">Cardápio</span></button>
-      <button class="nav-btn" data-view="fichas" title="Fichas técnicas"><i class="ico" data-lucide="clipboard-list"></i><span class="label">Fichas técnicas</span></button>
       <button class="nav-btn active" data-view="insumos" title="Insumos"><i class="ico" data-lucide="package"></i><span class="label">Insumos</span></button>
+      <button class="nav-btn" data-view="fichas" title="Fichas técnicas"><i class="ico" data-lucide="clipboard-list"></i><span class="label">Fichas técnicas</span></button>
+      <button class="nav-btn" data-view="cardapio" title="Cardápio"><i class="ico" data-lucide="utensils-crossed"></i><span class="label">Cardápio</span></button>
     </div>
 
     <div class="nav-group">
@@ -389,6 +401,7 @@ table.cardapio-table .autocomplete{position:relative;}
 </div>
 
 <div id="modal-root"></div>
+<div id="picker-root"></div>
 <div id="confirm-root"></div>
 
 <p class="toast-err" id="bootErr" hidden>A biblioteca de conexão com o banco não carregou. Recarregue a página.</p>
@@ -557,6 +570,12 @@ const ORDEM_GRUPO_COMPRA_BASE = ["PROTEÍNAS","BASE","GUARNIÇÕES E MERCADO","S
 function blocosCadastro(){
   const extras = [...new Set([...insumos.values()].map(d => d.grupo_compra).filter(g => g && !ORDEM_GRUPO_COMPRA_BASE.includes(g)))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
   return [...ORDEM_GRUPO_COMPRA_BASE, ...extras];
+}
+// categorias de receita — mesma família de 7 grupos usada na grade de cardápio (Proteína/Base/Guarnição/Salada/Sobremesa/Suco/Extra)
+const GRUPOS_FICHA_BASE = ["PROTEÍNA","BASE","GUARNIÇÃO","SALADA","SOBREMESA","SUCO","EXTRA"];
+function gruposFichaCadastro(){
+  const extras = [...new Set([...fichas.values()].map(f => f.grupo).filter(g => g && !GRUPOS_FICHA_BASE.includes(g)))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
+  return [...GRUPOS_FICHA_BASE, ...extras];
 }
 function confirmDialog(message){
   return new Promise(resolve => {
@@ -1635,6 +1654,16 @@ function unidadeCustoInsumo(ins){
   return "un";
 }
 function fichaServidaPorUnidade(f){ return !!(f && f.servido_por_unidade === true); }
+// fator de escala da receita padrão (rendimento_kg) pro volume do dia informado — usado pra calcular
+// quanto de cada ingrediente pesar na produção, sem sobrescrever os pesos cadastrados da ficha.
+function fatorVolumeDia(f){
+  if(!f || !(f.volume_dia > 0) || !(f.rendimento_kg > 0)) return null;
+  return f.volume_dia / f.rendimento_kg;
+}
+function atendimentoCalculado(f){
+  if(!f || !(f.volume_dia > 0) || !(f.gramas_pessoa > 0)) return null;
+  return (f.volume_dia * 1000) / f.gramas_pessoa;
+}
 // busca por nome com ranking — todas as palavras digitadas precisam aparecer (em qualquer ordem, sem acento);
 // nome exato > começa com o texto > alguma palavra começa com o texto > contém.
 function buscarPorNome(entries, texto, limite){
@@ -2947,23 +2976,35 @@ function openFichaModal(id){
   const draft = existing ? JSON.parse(JSON.stringify(existing)) : {
     nome:"", grupo:"", rendimento_kg:0, rendimento_und:0, preco_venda:null,
     modo_preparo:null, ingredientes:[], vendavel:false, servido_por_unidade:false,
-    disponivel_como_insumo:false
+    disponivel_como_insumo:false, volume_dia:null, gramas_pessoa:null, replicada_de:null
   };
   renderFichaModal(id, draft);
 }
 
-/* Ficha de produção pra cozinha: nome, ingredientes com peso, modo de preparo — sem custo/preço. */
-function imprimirFichaProducao(draft){
-  const linhas = (draft.ingredientes||[]).filter(l => (l.nome||"").trim()).map(l => {
-    const peso = (l.peso_liquido!==null && l.peso_liquido!==undefined && l.peso_liquido!=="") ? l.peso_liquido : l.peso_bruto;
-    const pesoTxt = (peso===null || peso===undefined || peso==="") ? "—" : `${Number(peso).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg`;
-    return `<tr><td>${escapeHtml(l.nome||"")}</td><td class="peso">${pesoTxt}</td></tr>`;
-  }).join("") || `<tr><td colspan="2" class="vazio">Nenhum ingrediente cadastrado.</td></tr>`;
-
+function _fichaMetaTxt(draft){
   const rendTxt = [
     draft.rendimento_kg ? `${Number(draft.rendimento_kg).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg` : "",
     draft.rendimento_und ? `${Number(draft.rendimento_und).toLocaleString('pt-BR')} und/pç` : ""
   ].filter(Boolean).join(" · ");
+  const atendimento = atendimentoCalculado(draft);
+  return [
+    draft.grupo ? `Grupo: ${escapeHtml(draft.grupo)}` : "",
+    rendTxt ? `Rendimento: ${rendTxt}` : "",
+    draft.volume_dia ? `Volume do dia: ${Number(draft.volume_dia).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg` : "",
+    draft.gramas_pessoa ? `${Number(draft.gramas_pessoa).toLocaleString('pt-BR')} g/pessoa` : "",
+    atendimento ? `Atendimento: ≈${Math.round(atendimento)} pessoas` : ""
+  ].filter(Boolean).join(" · ");
+}
+
+/* Ficha de produção pra cozinha: nome, ingredientes com peso (padrão e escalado pro volume do dia), modo de preparo — sem custo/preço. */
+function imprimirFichaProducao(draft){
+  const fator = fatorVolumeDia(draft);
+  const linhas = (draft.ingredientes||[]).filter(l => (l.nome||"").trim()).map(l => {
+    const peso = (l.peso_liquido!==null && l.peso_liquido!==undefined && l.peso_liquido!=="") ? l.peso_liquido : l.peso_bruto;
+    const pesoTxt = (peso===null || peso===undefined || peso==="") ? "—" : `${Number(peso).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg`;
+    const qtdDiaTxt = (fator!==null && peso!==null && peso!==undefined && peso!=="") ? `${(Number(peso)*fator).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg` : "—";
+    return `<tr><td>${escapeHtml(l.nome||"")}</td><td class="peso">${pesoTxt}</td><td class="peso destaque">${qtdDiaTxt}</td></tr>`;
+  }).join("") || `<tr><td colspan="3" class="vazio">Nenhum ingrediente cadastrado.</td></tr>`;
 
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Ficha de produção — ${escapeHtml(draft.nome||"")}</title>
   <style>
@@ -2974,6 +3015,7 @@ function imprimirFichaProducao(draft){
     table{width:100%; border-collapse:collapse; margin-bottom:6px;}
     td, th{border:1px solid #ccc; padding:6px 8px; text-align:left; font-size:13px;}
     td.peso{width:140px; text-align:right; font-family:'Courier New',monospace;}
+    td.destaque{font-weight:700;}
     td.vazio{color:#777; font-style:italic;}
     .modo{white-space:pre-wrap; border:1px solid #ccc; padding:10px 12px; border-radius:4px; min-height:60px;}
     @media print{ body{margin:12mm;} }
@@ -2981,9 +3023,9 @@ function imprimirFichaProducao(draft){
   </style></head><body>
     ${printHeadHtml()}
     <h1>${escapeHtml(draft.nome||"(sem nome)")}</h1>
-    <div class="meta">${draft.grupo ? `Grupo: ${escapeHtml(draft.grupo)}` : ""}${draft.grupo && rendTxt ? " · " : ""}${rendTxt ? `Rendimento: ${rendTxt}` : ""}</div>
+    <div class="meta">${_fichaMetaTxt(draft)}</div>
     <h2>Ingredientes</h2>
-    <table><thead><tr><th>Ingrediente</th><th style="width:140px;">Peso</th></tr></thead><tbody>${linhas}</tbody></table>
+    <table><thead><tr><th>Ingrediente</th><th style="width:140px;">Peso (receita padrão)</th><th style="width:140px;">Qtd. p/ volume do dia</th></tr></thead><tbody>${linhas}</tbody></table>
     <h2>Modo de preparo</h2>
     <div class="modo">${escapeHtml(draft.modo_preparo||"").trim() || "—"}</div>
   </body></html>`;
@@ -2994,6 +3036,102 @@ function imprimirFichaProducao(draft){
   w.focus();
   w.onload = () => w.print();
   setTimeout(() => { try{ w.print(); }catch(e){} }, 300);
+}
+
+/* Ficha completa: igual à ficha de produção, mas com custo por linha, totais, CMV e preço — pra gestão/engenharia de cardápio, não pra cozinha. */
+function imprimirFichaCompleta(draft, id){
+  const cc = computeFicha(draft, id);
+  const fator = fatorVolumeDia(draft);
+  const linhas = (draft.ingredientes||[]).filter(l => (l.nome||"").trim()).map((l, i) => {
+    const line = cc.lines[i];
+    const peso = (l.peso_liquido!==null && l.peso_liquido!==undefined && l.peso_liquido!=="") ? l.peso_liquido : l.peso_bruto;
+    const pesoTxt = (peso===null || peso===undefined || peso==="") ? "—" : `${Number(peso).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg`;
+    const qtdDiaTxt = (fator!==null && peso!==null && peso!==undefined && peso!=="") ? `${(Number(peso)*fator).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg` : "—";
+    const custoTxt = line ? fmtMoney(line.custo_linha) : "—";
+    return `<tr><td>${escapeHtml(l.nome||"")}</td><td class="peso">${pesoTxt}</td><td class="peso">${qtdDiaTxt}</td><td class="peso">${custoTxt}</td></tr>`;
+  }).join("") || `<tr><td colspan="4" class="vazio">Nenhum ingrediente cadastrado.</td></tr>`;
+
+  const porUnidade = fichaServidaPorUnidade(draft);
+  const totaisLinhas = [
+    `<tr><td>Custo total</td><td>${fmtMoney(cc.custoTotal)}</td></tr>`,
+    `<tr><td>Custo / kg</td><td>${fmtMoney(cc.custoKg)}</td></tr>`,
+    porUnidade ? `<tr><td>Custo / un</td><td>${draft.rendimento_und ? fmtMoney(cc.custoUnd) : "—"}</td></tr>` : "",
+    draft.preco_venda ? `<tr><td>Preço de venda</td><td>${fmtMoney(draft.preco_venda)}</td></tr>` : "",
+    `<tr><td>CMV</td><td>${fmtPct(cc.cmvKg ?? cc.cmvUnd)}</td></tr>`,
+  ].filter(Boolean).join("");
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Ficha técnica completa — ${escapeHtml(draft.nome||"")}</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif; color:#111; margin:32px; font-size:14px;}
+    h1{font-size:20px; margin:0 0 4px;}
+    .meta{color:#555; font-size:12.5px; margin-bottom:18px;}
+    h2{font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:#333; border-bottom:1px solid #ccc; padding-bottom:4px; margin:22px 0 8px;}
+    table{width:100%; border-collapse:collapse; margin-bottom:6px;}
+    td, th{border:1px solid #ccc; padding:6px 8px; text-align:left; font-size:13px;}
+    td.peso{width:120px; text-align:right; font-family:'Courier New',monospace;}
+    td.vazio{color:#777; font-style:italic;}
+    .modo{white-space:pre-wrap; border:1px solid #ccc; padding:10px 12px; border-radius:4px; min-height:60px;}
+    table.totais{width:auto; min-width:280px;}
+    table.totais td:last-child{text-align:right; font-family:'Courier New',monospace;}
+    @media print{ body{margin:12mm;} }
+    ${printHeadStyle()}
+  </style></head><body>
+    ${printHeadHtml()}
+    <h1>${escapeHtml(draft.nome||"(sem nome)")}</h1>
+    <div class="meta">${_fichaMetaTxt(draft)}</div>
+    <h2>Ingredientes</h2>
+    <table><thead><tr><th>Ingrediente</th><th style="width:120px;">Peso (receita padrão)</th><th style="width:120px;">Qtd. p/ volume do dia</th><th style="width:120px;">Custo</th></tr></thead><tbody>${linhas}</tbody></table>
+    <h2>Custos</h2>
+    <table class="totais"><tbody>${totaisLinhas}</tbody></table>
+    <h2>Modo de preparo</h2>
+    <div class="modo">${escapeHtml(draft.modo_preparo||"").trim() || "—"}</div>
+  </body></html>`;
+
+  const w = window.open("", "_blank");
+  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para este site e tente novamente."); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+  w.focus();
+  w.onload = () => w.print();
+  setTimeout(() => { try{ w.print(); }catch(e){} }, 300);
+}
+
+/* Busca na lista de insumos (e fichas disponíveis como sub-receita) pra escolher um ingrediente clicando,
+   em vez de só digitar o nome. excludeId tira a própria ficha sendo editada da lista de sub-receitas.
+   onEscolher(tipo, refId) é chamado com tipo "insumo" ou "ficha". */
+function abrirBuscaInsumoModal(excludeId, onEscolher){
+  const root = document.getElementById("picker-root");
+  const insumoList = [...insumos.entries()].sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+  const fichaList = fichasComoInsumoOptions(excludeId).sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+
+  function render(busca){
+    const nb = normalizeText(busca||"");
+    const insF = insumoList.filter(([,d]) => !nb || normalizeText(d.nome).includes(nb));
+    const ficF = fichaList.filter(([,d]) => !nb || normalizeText(d.nome).includes(nb));
+    const listEl = root.querySelector(".insumo-picker-list");
+    if(!listEl) return;
+    listEl.innerHTML = `
+      ${ficF.length ? `<div class="ipk-group">Fichas técnicas (sub-receitas)</div>` + ficF.map(([fid,d]) => `<div class="ipk-item" data-ficha="${fid}"><span>${escapeHtml(d.nome)}</span><span class="footnote">${fmtMoney(computeFicha(d, fid).custoKg)}/kg</span></div>`).join("") : ""}
+      <div class="ipk-group">Insumos</div>
+      ${insF.length ? insF.map(([iid,d]) => `<div class="ipk-item" data-insumo="${iid}"><span>${escapeHtml(d.nome)}</span><span class="footnote">${fmtMoney(d.custo_kg_l_und)}/${unidadeCustoInsumo(d)}</span></div>`).join("") : `<div class="empty-state">Nenhum insumo encontrado.</div>`}
+    `;
+    listEl.querySelectorAll("[data-insumo]").forEach(el => el.addEventListener("click", () => { root.innerHTML=""; onEscolher("insumo", el.dataset.insumo); }));
+    listEl.querySelectorAll("[data-ficha]").forEach(el => el.addEventListener("click", () => { root.innerHTML=""; onEscolher("ficha", el.dataset.ficha); }));
+  }
+
+  root.innerHTML = `
+    <div class="modal-overlay" id="pk-ov">
+      <div class="modal">
+        <div class="modal-head"><h2>Escolher ingrediente</h2><button class="close-x" id="pk-close">&times;</button></div>
+        <div class="modal-body">
+          <div class="field"><input type="text" id="pk-busca" placeholder="Buscar insumo ou ficha técnica…" autofocus></div>
+          <div class="insumo-picker-list"></div>
+        </div>
+      </div>
+    </div>`;
+  render("");
+  document.getElementById("pk-busca").addEventListener("input", e => render(e.target.value));
+  document.getElementById("pk-close").onclick = () => root.innerHTML = "";
+  document.getElementById("pk-ov").addEventListener("click", e => { if(e.target.id==="pk-ov") root.innerHTML=""; });
 }
 
 function renderFichaModal(id, draft){
@@ -3008,10 +3146,23 @@ function renderFichaModal(id, draft){
         <div class="modal-body">
           <div class="field"><label>Nome / prato</label><input type="text" id="ff-nome" value="${escapeHtml(draft.nome)}"></div>
           <div class="field-row">
-            <div class="field"><label>Grupo (opcional)</label><input type="text" id="ff-grupo" value="${escapeHtml(draft.grupo||"")}" placeholder="Ex.: MARMITA"></div>
+            <div class="field"><label for="ff-grupo">Grupo (categoria do prato)</label>
+              <select id="ff-grupo">
+                <option value="">— sem grupo —</option>
+                ${gruposFichaCadastro().map(g => `<option value="${escapeHtml(g)}" ${draft.grupo===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}
+                <option value="__novo__">＋ Criar novo grupo…</option>
+              </select>
+              <input type="text" id="ff-grupo-novo" hidden placeholder="Nome do novo grupo" style="margin-top:6px;">
+            </div>
             <div class="field"><label>Rendimento (kg)</label><input type="number" step="0.001" id="ff-rkg" value="${draft.rendimento_kg||""}"></div>
             <div class="field"><label>Rendimento (und/pç)</label><input type="number" step="0.001" id="ff-rund" value="${draft.rendimento_und||""}"></div>
           </div>
+          <div class="field-row">
+            <div class="field"><label>Volume do dia (kg)</label><input type="number" step="0.001" id="ff-volume-dia" value="${draft.volume_dia||""}" placeholder="Quanto produzir hoje"></div>
+            <div class="field"><label>Grama por pessoa (g)</label><input type="number" step="1" id="ff-gramas-pessoa" value="${draft.gramas_pessoa||""}" placeholder="Porção por pessoa"></div>
+            <div class="field"><label>Atendimento (calculado)</label><div class="footnote" id="ff-atendimento-calc" style="padding:9px 0;">—</div></div>
+          </div>
+          <div class="footnote" style="margin:-8px 0 14px;">Volume do dia e grama por pessoa alimentam a coluna "Qtd. p/ volume do dia" nos ingredientes abaixo e saem na impressão — importante pra produção calcular quanto pesar.</div>
           <div class="field"><label>Preço de venda (R$, opcional)</label><input type="number" step="0.01" id="ff-preco" value="${draft.preco_venda===null||draft.preco_venda===undefined?"":draft.preco_venda}"></div>
           <div class="field"><label><input type="checkbox" id="ff-vendavel" style="width:auto; display:inline-block; margin-right:6px;" ${draft.vendavel===true?"checked":""}> Item vendável</label></div>
           <div class="field"><label><input type="checkbox" id="ff-por-unidade" style="width:auto; display:inline-block; margin-right:6px;" ${draft.servido_por_unidade===true?"checked":""}> Servido por unidade (ovo, panqueca, hambúrguer, lanche…) — mostra o "Custo / un" desta ficha</label></div>
@@ -3029,7 +3180,7 @@ function renderFichaModal(id, draft){
           <h3 style="font-size:14px; margin:18px 0 4px;">Ingredientes</h3>
           <div class="footnote" style="margin-bottom:10px;">Peso bruto (kg) é sempre o da receita padrão desenhada. Fator de correção e peso líquido são opcionais.</div>
           <div class="ing-table">
-            <div class="ing-header"><div>Ingrediente</div><div>Custo kg/L/un</div><div>Peso bruto (kg)</div><div>Peso líquido (kg)</div><div>Custo linha</div><div></div></div>
+            <div class="ing-header"><div>Ingrediente</div><div>Custo kg/L/un</div><div>Peso bruto (kg)</div><div>Peso líquido (kg)</div><div>Custo linha</div><div title="Peso escalado pro Volume do dia informado acima">Qtd. p/ volume do dia</div><div></div></div>
             <div id="ing-lines"></div>
           </div>
           <button class="btn small" id="add-line" style="margin-top:10px;">+ adicionar ingrediente</button>
@@ -3041,10 +3192,12 @@ function renderFichaModal(id, draft){
           </div>
           <div class="footnote" id="err-msg" style="color:var(--critical); margin-top:10px;"></div>
         </div>
-        <div class="modal-foot">
-          <div style="display:flex; gap:8px;">
+        <div class="modal-foot" style="flex-wrap:wrap; gap:8px;">
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
             ${id ? `<button class="btn danger" id="del-m">Excluir ficha</button>` : ""}
+            <button class="btn" id="dup-m">⧉ Duplicar</button>
             <button class="btn" id="print-m">Imprimir ficha de produção</button>
+            <button class="btn" id="print-completa-m">Imprimir ficha completa</button>
           </div>
           <div style="display:flex; gap:8px;">
             <button class="btn" id="cancel-m">Cancelar</button>
@@ -3073,6 +3226,7 @@ function renderFichaModal(id, draft){
     const l = draft.ingredientes[i], line = cc.lines[i];
     row.querySelector(".ing-ckg").textContent = custoRefLinha(l, line);
     row.querySelector(".ing-custo-linha").textContent = fmtMoney(line ? line.custo_linha : 0);
+    row.querySelector(".ing-qtd-dia").textContent = qtdVolumeDiaTxt(l);
     row.classList.toggle("ing-line-missing", !!(line && (line.ciclo || !line.encontrado)));
     const av = row.querySelector(".ing-aviso-slot");
     if(av) av.innerHTML = avisoLinha(l, line);
@@ -3095,6 +3249,14 @@ function renderFichaModal(id, draft){
     return true;
   }
 
+  function qtdVolumeDiaTxt(l){
+    const fator = fatorVolumeDia(draft);
+    if(fator === null) return "—";
+    const peso = (l.peso_liquido!==null && l.peso_liquido!==undefined && l.peso_liquido!=="") ? l.peso_liquido : l.peso_bruto;
+    if(peso===null || peso===undefined || peso==="") return "—";
+    return `${(Number(peso)*fator).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg`;
+  }
+
   function renderLines(){
     const wrap = document.getElementById("ing-lines");
     const cc = computeFicha(draft, id);
@@ -3106,18 +3268,28 @@ function renderFichaModal(id, draft){
       <div class="ing-line ${problema ? 'ing-line-missing' : ''}" data-i="${i}">
         <div class="autocomplete">
           <input type="text" class="ing-name search-input" value="${escapeHtml(l.nome||"")}" autocomplete="off">
+          <button type="button" class="ing-search-btn" data-search="${i}" title="Buscar na lista de insumos"><i class="ico" data-lucide="search"></i></button>
         </div>
         <div class="num ing-ckg">${custoRefLinha(l, line)}</div>
         <input type="number" step="0.001" class="ing-bruto" value="${l.peso_bruto||""}">
         <input type="number" step="0.001" class="ing-liquido" value="${l.peso_liquido||""}">
         <div class="num ing-custo-linha">${fmtMoney(line?line.custo_linha:0)}</div>
+        <div class="num ing-qtd-dia">${qtdVolumeDiaTxt(l)}</div>
         <button class="btn small ghost" data-rm="${i}" style="color:var(--critical);">remover</button>
         ${viaFicha ? `<div class="ing-ficha-tag">ficha técnica usada como insumo</div>` : ""}
         ${line && line.ciclo ? `<div class="ing-aviso" style="grid-column:1 / -1;">Referência circular — esta ficha (direta ou indiretamente) usa a si mesma. Linha ignorada no cálculo de custo.</div>` : ""}
         <div class="ing-aviso-slot" style="grid-column:1 / -1;">${avisoLinha(l, line)}</div>
       </div>`;
     }).join("") || `<div class="empty-state" style="padding:14px;">Nenhum ingrediente ainda.</div>`;
+    if(window.lucide) lucide.createIcons();
 
+    wrap.querySelectorAll("[data-search]").forEach(btn => btn.addEventListener("click", () => {
+      abrirBuscaInsumoModal(id, (tipo, refId) => {
+        const i = +btn.dataset.search;
+        vincularLinha(i, tipo, refId);
+        renderLines(); refreshTotals();
+      });
+    }));
     wrap.querySelectorAll(".ing-name").forEach((inp, i) => {
       let optsEl = null;
       const fecharOpts = () => { if(optsEl){ optsEl.remove(); optsEl = null; } };
@@ -3180,16 +3352,63 @@ function renderFichaModal(id, draft){
     `;
   }
 
+  // lê o estado atual do formulário (inclusive o que foi digitado e ainda não foi salvo) — usado
+  // pelos botões de impressão e duplicar, pra eles refletirem a tela, não só o que já está gravado.
+  function coletarDraftDoFormulario(){
+    const grupoSel = document.getElementById("ff-grupo").value;
+    const grupo = grupoSel === "__novo__" ? (document.getElementById("ff-grupo-novo").value.trim().replace(/\s+/g," ").toUpperCase() || null) : (grupoSel || null);
+    return {
+      ...draft,
+      nome: document.getElementById("ff-nome").value.trim(),
+      grupo,
+      vendavel: document.getElementById("ff-vendavel").checked,
+      disponivel_como_insumo: document.getElementById("ff-como-insumo").checked,
+      servido_por_unidade: document.getElementById("ff-por-unidade").checked,
+      rendimento_kg: parseFloat(document.getElementById("ff-rkg").value)||0,
+      rendimento_und: parseFloat(document.getElementById("ff-rund").value)||0,
+      volume_dia: document.getElementById("ff-volume-dia").value===""?null:parseFloat(document.getElementById("ff-volume-dia").value),
+      gramas_pessoa: document.getElementById("ff-gramas-pessoa").value===""?null:parseFloat(document.getElementById("ff-gramas-pessoa").value),
+      preco_venda: document.getElementById("ff-preco").value===""?null:parseFloat(document.getElementById("ff-preco").value),
+      modo_preparo: document.getElementById("ff-modo").value.trim() || null,
+      tipo_proteina: document.getElementById("ff-tipo-proteina").value || null,
+      ingredientes: draft.ingredientes.filter(l => l.nome),
+    };
+  }
+
+  function atualizarAtendimentoCalc(){
+    const vd = parseFloat(document.getElementById("ff-volume-dia").value) || 0;
+    const gp = parseFloat(document.getElementById("ff-gramas-pessoa").value) || 0;
+    const el = document.getElementById("ff-atendimento-calc");
+    el.textContent = (vd > 0 && gp > 0) ? `≈ ${Math.round((vd*1000)/gp)} pessoas` : "—";
+  }
+
   renderLines();
   refreshTotals();
+  atualizarAtendimentoCalc();
 
   document.getElementById("ff-rund").addEventListener("input", () => { draft.rendimento_und = parseFloat(document.getElementById("ff-rund").value)||0; renderLines(); refreshTotals(); });
   document.getElementById("ff-preco").addEventListener("input", () => { draft.preco_venda = document.getElementById("ff-preco").value===""?null:parseFloat(document.getElementById("ff-preco").value); refreshTotals(); });
   document.getElementById("ff-rkg").addEventListener("input", () => { draft.rendimento_kg = parseFloat(document.getElementById("ff-rkg").value)||0; renderLines(); refreshTotals(); });
   document.getElementById("ff-por-unidade").addEventListener("change", refreshTotals);
+  document.getElementById("ff-volume-dia").addEventListener("input", () => { draft.volume_dia = document.getElementById("ff-volume-dia").value===""?null:parseFloat(document.getElementById("ff-volume-dia").value); renderLines(); atualizarAtendimentoCalc(); });
+  document.getElementById("ff-gramas-pessoa").addEventListener("input", () => { draft.gramas_pessoa = document.getElementById("ff-gramas-pessoa").value===""?null:parseFloat(document.getElementById("ff-gramas-pessoa").value); atualizarAtendimentoCalc(); });
+  document.getElementById("ff-grupo").addEventListener("change", e => {
+    const novo = document.getElementById("ff-grupo-novo");
+    novo.hidden = e.target.value !== "__novo__";
+    if(!novo.hidden) novo.focus();
+  });
 
   document.getElementById("add-line").onclick = () => { draft.ingredientes.push({insumo_id:null, ficha_id:null, nome:"", peso_bruto:0, peso_liquido:null, fator_correcao:null}); renderLines(); refreshTotals(); };
-  document.getElementById("print-m").onclick = () => imprimirFichaProducao(draft);
+  document.getElementById("print-m").onclick = () => imprimirFichaProducao(coletarDraftDoFormulario());
+  document.getElementById("print-completa-m").onclick = () => imprimirFichaCompleta(coletarDraftDoFormulario(), id);
+  document.getElementById("dup-m").onclick = () => {
+    const copia = coletarDraftDoFormulario();
+    copia.replicada_de = id || draft.replicada_de || null;
+    copia.nome = `${copia.nome || draft.nome || ""} (CÓPIA)`.trim();
+    root.innerHTML = "";
+    renderFichaModal(null, copia);
+    setTimeout(() => { const el = document.getElementById("ff-nome"); if(el){ el.focus(); el.select(); } }, 0);
+  };
   document.getElementById("close-m").onclick = () => root.innerHTML = "";
   document.getElementById("cancel-m").onclick = () => root.innerHTML = "";
   document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
@@ -3229,18 +3448,24 @@ function renderFichaModal(id, draft){
     }
     const semVinculo = checagem.lines.filter(l => !l.encontrado && !l.ciclo).map(l => l.nome);
     if(semVinculo.length && !(await confirmDialog(`${semVinculo.length} ingrediente(s) sem vínculo com o cadastro — entram com custo ZERO: ${semVinculo.slice(0,5).join(", ")}${semVinculo.length>5?"…":""}. Salvar mesmo assim?`))) return;
+    let grupo = document.getElementById("ff-grupo").value;
+    if(grupo === "__novo__") grupo = document.getElementById("ff-grupo-novo").value.trim().replace(/\s+/g," ").toUpperCase();
+    if(document.getElementById("ff-grupo").value === "__novo__" && !grupo){ errEl.textContent = "Digite o nome do novo grupo ou escolha um da lista."; return; }
     const data = {
       nome,
-      grupo: document.getElementById("ff-grupo").value.trim() || null,
+      grupo: grupo || null,
       vendavel: document.getElementById("ff-vendavel").checked,
       disponivel_como_insumo: document.getElementById("ff-como-insumo").checked,
       servido_por_unidade: document.getElementById("ff-por-unidade").checked,
       rendimento_kg: parseFloat(document.getElementById("ff-rkg").value)||0,
       rendimento_und: parseFloat(document.getElementById("ff-rund").value)||0,
+      volume_dia: document.getElementById("ff-volume-dia").value===""?null:parseFloat(document.getElementById("ff-volume-dia").value),
+      gramas_pessoa: document.getElementById("ff-gramas-pessoa").value===""?null:parseFloat(document.getElementById("ff-gramas-pessoa").value),
       preco_venda: document.getElementById("ff-preco").value===""?null:parseFloat(document.getElementById("ff-preco").value),
       modo_preparo: document.getElementById("ff-modo").value.trim() || null,
       tipo_proteina: document.getElementById("ff-tipo-proteina").value || null,
       ingredientes: ingredientesFinal,
+      replicada_de: draft.replicada_de || null,
     };
     Object.assign(data, carimbo());
     errEl.textContent = "Salvando…";
