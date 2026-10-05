@@ -230,23 +230,26 @@ tbody tr:hover{background:var(--surface-alt);}
 .pend-entrada-row{display:grid; grid-template-columns:1.6fr .8fr .8fr .9fr 1.4fr auto; gap:10px; align-items:center; padding:10px 0; border-bottom:1px solid var(--border);}
 .pend-entrada-row:last-child{border-bottom:none;}
 .pend-entrada-row input{width:100%;}
-.ing-table{border:1px solid var(--border); border-radius:10px; overflow:hidden;}
-.ing-header, .ing-line{display:grid; grid-template-columns:2.1fr .85fr .8fr .8fr .95fr .8fr 70px; gap:10px; align-items:center;}
-.ing-header{padding:7px 10px; background:var(--surface-alt); font-size:10.5px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.03em;}
-.ing-line{padding:6px 10px; border-top:1px solid var(--border);}
-.ing-line .microlabel{font-size:10.5px; color:var(--text-faint); margin-bottom:3px;}
+.ing-table{border:1px solid var(--border); border-radius:10px; overflow:hidden; font-size:12px;}
+.ing-header, .ing-line{display:grid; grid-template-columns:2fr .8fr .72fr .72fr .85fr .95fr 56px; gap:6px; align-items:center;}
+.ing-header{padding:6px 8px; background:var(--surface-alt); font-size:10px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.02em;}
+.ing-line{padding:4px 8px; border-top:1px solid var(--border);}
+.ing-line .microlabel{font-size:10px; color:var(--text-faint); margin-bottom:3px;}
 .ing-line-missing{outline:1.5px solid var(--critical); border-radius:8px;}
-.ing-line .ing-ckg{padding:8px 0; color:var(--text-muted); white-space:nowrap;}
-.ing-line .ing-qtd-dia{padding:8px 0; color:var(--text); white-space:nowrap; font-family:'IBM Plex Mono',ui-monospace,monospace;}
-.ing-line .ing-aviso{font-size:10.5px; color:var(--critical); margin-top:3px; grid-column:1 / -1;}
+.ing-line input{font-size:12px; padding:6px 7px;}
+.ing-line .ing-ckg{padding:6px 0; color:var(--text-muted); white-space:nowrap; font-size:11.5px;}
+.ing-line .ing-custo-linha{font-size:12px;}
+.ing-line .ing-qtd-dia{padding:6px 0; color:var(--text); white-space:nowrap; font-family:'IBM Plex Mono',ui-monospace,monospace; font-size:11.5px;}
+.ing-line .ing-aviso{font-size:10px; color:var(--critical); margin-top:3px; grid-column:1 / -1;}
 .ing-line .ing-ficha-tag{font-size:10px; color:var(--text-faint); grid-column:1 / -1; margin-top:-2px;}
+.ing-line [data-rm]{padding:5px 8px; font-size:11.5px;}
 .kk-dias-chips{display:flex; gap:3px; flex-wrap:wrap;}
 .chip-dia{border:1px solid var(--border); background:var(--surface); color:var(--text-faint); border-radius:6px; padding:3px 6px; font-size:10px; cursor:pointer; line-height:1;}
 .chip-dia.on{background:var(--accent); color:#fff; border-color:var(--accent);}
 @media (max-width:720px){ .ing-header{display:none;} }
 .autocomplete{position:relative; display:flex; align-items:center; gap:4px;}
 .autocomplete .search-input{flex:1; min-width:0;}
-.ing-search-btn{flex:none; width:28px; height:28px; display:flex; align-items:center; justify-content:center; background:var(--surface); border:1px solid var(--border); border-radius:6px; color:var(--text-muted); cursor:pointer; padding:0;}
+.ing-search-btn{flex:none; width:24px; height:24px; display:flex; align-items:center; justify-content:center; background:var(--surface); border:1px solid var(--border); border-radius:6px; color:var(--text-muted); cursor:pointer; padding:0;}
 .ing-search-btn:hover{background:var(--surface-alt); color:var(--text);}
 .ing-search-btn .ico{width:14px; height:14px;}
 .insumo-picker-list{max-height:360px; overflow-y:auto; border:1px solid var(--border); border-radius:8px;}
@@ -1660,10 +1663,6 @@ function fatorVolumeDia(f){
   if(!f || !(f.volume_dia > 0) || !(f.rendimento_kg > 0)) return null;
   return f.volume_dia / f.rendimento_kg;
 }
-function atendimentoCalculado(f){
-  if(!f || !(f.volume_dia > 0) || !(f.gramas_pessoa > 0)) return null;
-  return (f.volume_dia * 1000) / f.gramas_pessoa;
-}
 // busca por nome com ranking — todas as palavras digitadas precisam aparecer (em qualquer ordem, sem acento);
 // nome exato > começa com o texto > alguma palavra começa com o texto > contém.
 function buscarPorNome(entries, texto, limite){
@@ -2976,7 +2975,7 @@ function openFichaModal(id){
   const draft = existing ? JSON.parse(JSON.stringify(existing)) : {
     nome:"", grupo:"", rendimento_kg:0, rendimento_und:0, preco_venda:null,
     modo_preparo:null, ingredientes:[], vendavel:false, servido_por_unidade:false,
-    disponivel_como_insumo:false, volume_dia:null, gramas_pessoa:null, replicada_de:null
+    disponivel_como_insumo:false, volume_dia:null, gramas_pessoa:null, atendimento:null, replicada_de:null
   };
   renderFichaModal(id, draft);
 }
@@ -2986,13 +2985,12 @@ function _fichaMetaTxt(draft){
     draft.rendimento_kg ? `${Number(draft.rendimento_kg).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg` : "",
     draft.rendimento_und ? `${Number(draft.rendimento_und).toLocaleString('pt-BR')} und/pç` : ""
   ].filter(Boolean).join(" · ");
-  const atendimento = atendimentoCalculado(draft);
   return [
     draft.grupo ? `Grupo: ${escapeHtml(draft.grupo)}` : "",
     rendTxt ? `Rendimento: ${rendTxt}` : "",
-    draft.volume_dia ? `Volume do dia: ${Number(draft.volume_dia).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg` : "",
+    draft.atendimento ? `Atendimento: ${Number(draft.atendimento).toLocaleString('pt-BR')} pessoas` : "",
     draft.gramas_pessoa ? `${Number(draft.gramas_pessoa).toLocaleString('pt-BR')} g/pessoa` : "",
-    atendimento ? `Atendimento: ≈${Math.round(atendimento)} pessoas` : ""
+    draft.volume_dia ? `Volume do dia: ${Number(draft.volume_dia).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg` : ""
   ].filter(Boolean).join(" · ");
 }
 
@@ -3158,11 +3156,11 @@ function renderFichaModal(id, draft){
             <div class="field"><label>Rendimento (und/pç)</label><input type="number" step="0.001" id="ff-rund" value="${draft.rendimento_und||""}"></div>
           </div>
           <div class="field-row">
-            <div class="field"><label>Volume do dia (kg)</label><input type="number" step="0.001" id="ff-volume-dia" value="${draft.volume_dia||""}" placeholder="Quanto produzir hoje"></div>
+            <div class="field"><label>Atendimento do dia (pessoas)</label><input type="number" step="1" id="ff-atendimento" value="${draft.atendimento||""}" placeholder="Quantas pessoas hoje"></div>
             <div class="field"><label>Grama por pessoa (g)</label><input type="number" step="1" id="ff-gramas-pessoa" value="${draft.gramas_pessoa||""}" placeholder="Porção por pessoa"></div>
-            <div class="field"><label>Atendimento (calculado)</label><div class="footnote" id="ff-atendimento-calc" style="padding:9px 0;">—</div></div>
+            <div class="field"><label>Volume do dia (calculado)</label><div class="footnote" id="ff-volume-dia-calc" style="padding:9px 0;">—</div></div>
           </div>
-          <div class="footnote" style="margin:-8px 0 14px;">Volume do dia e grama por pessoa alimentam a coluna "Qtd. p/ volume do dia" nos ingredientes abaixo e saem na impressão — importante pra produção calcular quanto pesar.</div>
+          <div class="footnote" style="margin:-8px 0 14px;">Atendimento do dia e grama por pessoa calculam o volume do dia (kg), que alimenta a coluna "Qtd. p/ volume do dia" nos ingredientes abaixo e sai na impressão — importante pra produção calcular quanto pesar.</div>
           <div class="field"><label>Preço de venda (R$, opcional)</label><input type="number" step="0.01" id="ff-preco" value="${draft.preco_venda===null||draft.preco_venda===undefined?"":draft.preco_venda}"></div>
           <div class="field"><label><input type="checkbox" id="ff-vendavel" style="width:auto; display:inline-block; margin-right:6px;" ${draft.vendavel===true?"checked":""}> Item vendável</label></div>
           <div class="field"><label><input type="checkbox" id="ff-por-unidade" style="width:auto; display:inline-block; margin-right:6px;" ${draft.servido_por_unidade===true?"checked":""}> Servido por unidade (ovo, panqueca, hambúrguer, lanche…) — mostra o "Custo / un" desta ficha</label></div>
@@ -3366,8 +3364,9 @@ function renderFichaModal(id, draft){
       servido_por_unidade: document.getElementById("ff-por-unidade").checked,
       rendimento_kg: parseFloat(document.getElementById("ff-rkg").value)||0,
       rendimento_und: parseFloat(document.getElementById("ff-rund").value)||0,
-      volume_dia: document.getElementById("ff-volume-dia").value===""?null:parseFloat(document.getElementById("ff-volume-dia").value),
+      atendimento: document.getElementById("ff-atendimento").value===""?null:parseFloat(document.getElementById("ff-atendimento").value),
       gramas_pessoa: document.getElementById("ff-gramas-pessoa").value===""?null:parseFloat(document.getElementById("ff-gramas-pessoa").value),
+      volume_dia: volumeDiaCalculado(),
       preco_venda: document.getElementById("ff-preco").value===""?null:parseFloat(document.getElementById("ff-preco").value),
       modo_preparo: document.getElementById("ff-modo").value.trim() || null,
       tipo_proteina: document.getElementById("ff-tipo-proteina").value || null,
@@ -3375,23 +3374,30 @@ function renderFichaModal(id, draft){
     };
   }
 
-  function atualizarAtendimentoCalc(){
-    const vd = parseFloat(document.getElementById("ff-volume-dia").value) || 0;
+  // volume do dia (kg) vem de atendimento (pessoas) × grama por pessoa — é o que a produção realmente precisa pesar
+  function volumeDiaCalculado(){
+    const at = parseFloat(document.getElementById("ff-atendimento").value) || 0;
     const gp = parseFloat(document.getElementById("ff-gramas-pessoa").value) || 0;
-    const el = document.getElementById("ff-atendimento-calc");
-    el.textContent = (vd > 0 && gp > 0) ? `≈ ${Math.round((vd*1000)/gp)} pessoas` : "—";
+    return (at > 0 && gp > 0) ? (at*gp)/1000 : null;
+  }
+  function atualizarVolumeDiaCalc(){
+    const vd = volumeDiaCalculado();
+    document.getElementById("ff-volume-dia-calc").textContent = vd!==null ? `${vd.toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg` : "—";
+    draft.atendimento = document.getElementById("ff-atendimento").value===""?null:parseFloat(document.getElementById("ff-atendimento").value);
+    draft.gramas_pessoa = document.getElementById("ff-gramas-pessoa").value===""?null:parseFloat(document.getElementById("ff-gramas-pessoa").value);
+    draft.volume_dia = vd;
   }
 
   renderLines();
   refreshTotals();
-  atualizarAtendimentoCalc();
+  atualizarVolumeDiaCalc();
 
   document.getElementById("ff-rund").addEventListener("input", () => { draft.rendimento_und = parseFloat(document.getElementById("ff-rund").value)||0; renderLines(); refreshTotals(); });
   document.getElementById("ff-preco").addEventListener("input", () => { draft.preco_venda = document.getElementById("ff-preco").value===""?null:parseFloat(document.getElementById("ff-preco").value); refreshTotals(); });
-  document.getElementById("ff-rkg").addEventListener("input", () => { draft.rendimento_kg = parseFloat(document.getElementById("ff-rkg").value)||0; renderLines(); refreshTotals(); });
+  document.getElementById("ff-rkg").addEventListener("input", () => { draft.rendimento_kg = parseFloat(document.getElementById("ff-rkg").value)||0; renderLines(); refreshTotals(); atualizarVolumeDiaCalc(); });
   document.getElementById("ff-por-unidade").addEventListener("change", refreshTotals);
-  document.getElementById("ff-volume-dia").addEventListener("input", () => { draft.volume_dia = document.getElementById("ff-volume-dia").value===""?null:parseFloat(document.getElementById("ff-volume-dia").value); renderLines(); atualizarAtendimentoCalc(); });
-  document.getElementById("ff-gramas-pessoa").addEventListener("input", () => { draft.gramas_pessoa = document.getElementById("ff-gramas-pessoa").value===""?null:parseFloat(document.getElementById("ff-gramas-pessoa").value); atualizarAtendimentoCalc(); });
+  document.getElementById("ff-atendimento").addEventListener("input", () => { atualizarVolumeDiaCalc(); renderLines(); });
+  document.getElementById("ff-gramas-pessoa").addEventListener("input", () => { atualizarVolumeDiaCalc(); renderLines(); });
   document.getElementById("ff-grupo").addEventListener("change", e => {
     const novo = document.getElementById("ff-grupo-novo");
     novo.hidden = e.target.value !== "__novo__";
@@ -3459,8 +3465,9 @@ function renderFichaModal(id, draft){
       servido_por_unidade: document.getElementById("ff-por-unidade").checked,
       rendimento_kg: parseFloat(document.getElementById("ff-rkg").value)||0,
       rendimento_und: parseFloat(document.getElementById("ff-rund").value)||0,
-      volume_dia: document.getElementById("ff-volume-dia").value===""?null:parseFloat(document.getElementById("ff-volume-dia").value),
+      atendimento: document.getElementById("ff-atendimento").value===""?null:parseFloat(document.getElementById("ff-atendimento").value),
       gramas_pessoa: document.getElementById("ff-gramas-pessoa").value===""?null:parseFloat(document.getElementById("ff-gramas-pessoa").value),
+      volume_dia: volumeDiaCalculado(),
       preco_venda: document.getElementById("ff-preco").value===""?null:parseFloat(document.getElementById("ff-preco").value),
       modo_preparo: document.getElementById("ff-modo").value.trim() || null,
       tipo_proteina: document.getElementById("ff-tipo-proteina").value || null,
