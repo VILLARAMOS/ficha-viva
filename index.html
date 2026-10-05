@@ -1918,6 +1918,7 @@ function renderCardapio(){
       <button class="btn" id="btn-imprimir-cardapio-completo">Imprimir completo</button>
       <button class="btn danger" id="btn-excluir-semana">Excluir semana</button>
     </div>
+    <div id="card-cmv-panel"></div>
     <div id="card-week"></div>
   `;
 
@@ -1933,6 +1934,157 @@ function renderCardapio(){
 
   if(cardapioTabSel === "cafe") montarTabelaCafe(cardapioNumSel, cardapioSemanaSel);
   else montarTabelaAlmoco(cardapioNumSel, cardapioSemanaSel);
+  montarPainelCmv(grupo, cardapioNumSel, cardapioSemanaSel);
+}
+
+/* ===== Painel de CMV (planejado + real) e incidência de proteína — topo da aba Cardápio =====
+   Planejado vem direto da grade (cardapios.custo_planejado/preco_venda_planejado); real reaproveita
+   a mesma apuração de Faturamento (apurarContrato), filtrando pelos itens do catálogo cujo tipo_custo
+   bate com o grupo em questão (cardapio_refeicao / cardapio_marmita(+especial) / cardapio_cafe), somado
+   entre todos os contratos ativos que usam este número de cardápio. Incidência (mapa de carnes) só se
+   aplica a Refeição/Marmita — conta Proteína 1+2 da semana selecionada e, quando só um perfil de
+   incidência é usado pelos contratos deste número, mostra o alvo da semana-do-mês lado a lado. */
+function cmvPlanejadoSemana(num, semana){
+  const porDia = new Map([...cardapiosAlmoco.values()].filter(r => r.cardapio_num === num && r.semana === semana).map(r => [r.dia, r]));
+  let custoTotal = 0, custoComPreco = 0, precoTotal = 0, dias = 0, diasComPreco = 0;
+  DIAS_ORDEM.forEach(dia => {
+    const row = porDia.get(dia);
+    if(!row) return;
+    dias++; custoTotal += row.custo_planejado || 0;
+    if(row.preco_venda_planejado != null && row.preco_venda_planejado > 0){
+      diasComPreco++; custoComPreco += row.custo_planejado || 0; precoTotal += row.preco_venda_planejado;
+    }
+  });
+  return { custoMedioDia: dias ? custoTotal/dias : null, precoMedioDia: diasComPreco ? precoTotal/diasComPreco : null, cmv: precoTotal>0 ? custoComPreco/precoTotal : null, dias, diasComPreco };
+}
+function cmvPlanejadoMes(num, mesId){
+  const semanasDoMes = (MESES_REFERENCIA.find(m => m.id === mesId) || {}).semanas || [];
+  let custoTotal = 0, custoComPreco = 0, precoTotal = 0, dias = 0;
+  [...cardapiosAlmoco.values()].filter(r => r.cardapio_num === num && semanasDoMes.includes(r.semana) && mesDoDia(r.semana, r.dia) === mesId).forEach(row => {
+    dias++; custoTotal += row.custo_planejado || 0;
+    if(row.preco_venda_planejado != null && row.preco_venda_planejado > 0){ custoComPreco += row.custo_planejado || 0; precoTotal += row.preco_venda_planejado; }
+  });
+  return { custoMedioDia: dias ? custoTotal/dias : null, cmv: precoTotal>0 ? custoComPreco/precoTotal : null, dias };
+}
+function custoPlanejadoCafeSemana(num, semana){
+  const cafeIdx = indiceCafeSemana();
+  let total = 0, dias = 0;
+  DIAS_ORDEM.forEach(dia => { const c = custoCafeDia(cafeIdx, num, semana, dia); if(c != null){ total += c; dias++; } });
+  return { custoMedioDia: dias ? total/dias : null, dias };
+}
+function custoPlanejadoCafeMes(num, mesId){
+  const semanasDoMes = (MESES_REFERENCIA.find(m => m.id === mesId) || {}).semanas || [];
+  const cafeIdx = indiceCafeSemana();
+  let total = 0, dias = 0;
+  semanasDoMes.forEach(sem => DIAS_ORDEM.forEach(dia => {
+    if(mesDoDia(sem, dia) !== mesId) return;
+    const c = custoCafeDia(cafeIdx, num, sem, dia);
+    if(c != null){ total += c; dias++; }
+  }));
+  return { custoMedioDia: dias ? total/dias : null, dias };
+}
+// CMV real do mês: soma, entre todos os contratos ativos que usam este número de cardápio, só os itens
+// do catálogo cujo tipo_custo pertence a este grupo — evita misturar refeição/marmita/café no mesmo total.
+function realCmvCardapio(grupo, num, mesId){
+  const tiposAlvo = grupo === "refeicao" ? ["cardapio_refeicao"] : grupo === "marmita" ? ["cardapio_marmita","cardapio_marmita_especial"] : ["cardapio_cafe"];
+  const campoNum = grupo === "refeicao" ? "cardapio_refeicao_num" : grupo === "marmita" ? "cardapio_marmita_num" : "cardapio_cafe_num";
+  const almocoIdx = indiceCardapioAlmoco(), cafeIdx = indiceCafeSemana();
+  let custo = 0, receita = 0, registros = 0;
+  const nomesContratos = [];
+  contratos.forEach((ct, id) => {
+    if(!ct.ativo) return;
+    const usaEspecial = grupo === "marmita" && ct.marmita_especial_ativo && ct.cardapio_marmita_especial_num === num;
+    const usaEspecialCafe = grupo === "cafe" && ct.cafe_especial_ativo && ct.cardapio_cafe_especial_num === num;
+    if(ct[campoNum] !== num && !usaEspecial && !usaEspecialCafe) return;
+    nomesContratos.push(ct.nome_cliente);
+    const ap = apurarContrato(id, ct, mesId, almocoIdx, cafeIdx);
+    ap.porProduto.forEach((acc, produtoId) => {
+      const cat = catalogoPorProduto(produtoId);
+      if(cat && tiposAlvo.includes(cat.tipo_custo)){ custo += acc.custo; receita += acc.receita; registros += acc.quantidade; }
+    });
+  });
+  return { custo, receita, registros, cmv: receita>0 ? custo/receita : null, contratos: nomesContratos.sort((a,b)=>normalizeText(a).localeCompare(normalizeText(b))) };
+}
+function incidenciaAtualSemana(num, semana){
+  const porDia = new Map([...cardapiosAlmoco.values()].filter(r => r.cardapio_num === num && r.semana === semana).map(r => [r.dia, r]));
+  const counts = {}; TIPOS_PROTEINA.forEach(t => counts[t.id] = 0);
+  let semClassificar = 0;
+  DIAS_ORDEM.forEach(dia => {
+    const row = porDia.get(dia);
+    if(!row) return;
+    ["Proteína 1","Proteína 2"].forEach(cat => {
+      const it = (row.itens || []).find(i => i.categoria === cat);
+      if(!it || !it.nome) return;
+      const f = it.ficha_id ? fichas.get(it.ficha_id) : null;
+      if(f && f.tipo_proteina && counts.hasOwnProperty(f.tipo_proteina)) counts[f.tipo_proteina]++;
+      else semClassificar++;
+    });
+  });
+  return { counts, semClassificar };
+}
+function perfisUsadosPorCardapio(grupo, num){
+  if(grupo === "cafe") return [];
+  const campoNum = grupo === "marmita" ? "cardapio_marmita_num" : "cardapio_refeicao_num";
+  const ids = new Set();
+  contratos.forEach(ct => {
+    if(!ct.ativo || !ct.perfil_incidencia_id) return;
+    const usaEspecial = grupo === "marmita" && ct.marmita_especial_ativo && ct.cardapio_marmita_especial_num === num;
+    if(ct[campoNum] === num || usaEspecial) ids.add(ct.perfil_incidencia_id);
+  });
+  return [...ids];
+}
+function montarPainelCmv(grupo, num, semana){
+  const host = document.getElementById("card-cmv-panel");
+  if(!host || num == null || semana == null) return;
+  const mesId = mesDoDia(semana, "QUARTA");
+  const semanaDoMesInfo = _infoSemana(semana);
+  const semanaDoMes = semanaDoMesInfo ? semanaDoMesInfo.num : null;
+
+  let blocosHtml;
+  if(grupo === "cafe"){
+    const pSemana = custoPlanejadoCafeSemana(num, semana);
+    const pMes = custoPlanejadoCafeMes(num, mesId);
+    const real = realCmvCardapio("cafe", num, mesId);
+    blocosHtml = `
+      <div class="stat-block"><div class="label">Custo médio/dia — semana</div><div class="val">${pSemana.custoMedioDia!=null?fmtMoney(pSemana.custoMedioDia):"—"}</div></div>
+      <div class="stat-block"><div class="label">Custo médio/dia — mês</div><div class="val">${pMes.custoMedioDia!=null?fmtMoney(pMes.custoMedioDia):"—"}</div></div>
+      <div class="stat-block"><div class="label">CMV real do mês</div><div class="val">${real.cmv!=null?fmtPct(real.cmv):"—"}</div><div class="val small">${real.receita>0?`${fmtMoney(real.receita)} receita · ${fmtMoney(real.custo)} custo`:"sem vendas lançadas ainda"}</div></div>
+    `;
+  } else {
+    const pSemana = cmvPlanejadoSemana(num, semana);
+    const pMes = cmvPlanejadoMes(num, mesId);
+    const real = realCmvCardapio(grupo, num, mesId);
+    blocosHtml = `
+      <div class="stat-block"><div class="label">CMV planejado — semana</div><div class="val">${pSemana.cmv!=null?fmtPct(pSemana.cmv):"—"}</div><div class="val small">${pSemana.custoMedioDia!=null?`custo médio ${fmtMoney(pSemana.custoMedioDia)}/dia`:"sem dados"}${pSemana.precoMedioDia!=null?` · venda ${fmtMoney(pSemana.precoMedioDia)}/dia`:""}</div></div>
+      <div class="stat-block"><div class="label">CMV planejado — mês</div><div class="val">${pMes.cmv!=null?fmtPct(pMes.cmv):"—"}</div><div class="val small">${pMes.custoMedioDia!=null?`custo médio ${fmtMoney(pMes.custoMedioDia)}/dia`:"sem dados"}</div></div>
+      <div class="stat-block"><div class="label">CMV real do mês</div><div class="val">${real.cmv!=null?fmtPct(real.cmv):"—"}</div><div class="val small">${real.receita>0?`${fmtMoney(real.receita)} receita · ${fmtMoney(real.custo)} custo`:"sem vendas lançadas ainda"}</div></div>
+    `;
+  }
+
+  let incHtml = "";
+  if(grupo !== "cafe"){
+    const atual = incidenciaAtualSemana(num, semana);
+    const perfis = perfisUsadosPorCardapio(grupo, num);
+    const perfilUnico = perfis.length === 1 ? perfisIncidencia.get(perfis[0]) : null;
+    const alvoDaSemana = (perfilUnico && semanaDoMes) ? (perfilUnico.semanas[semanaDoMes-1] || {}) : null;
+    let notaPerfil = "";
+    if(perfilUnico && alvoDaSemana) notaPerfil = ` <span class="footnote">· alvo: ${escapeHtml(perfilUnico.nome)}, semana ${semanaDoMes} do mês</span>`;
+    else if(perfis.length > 1) notaPerfil = ` <span class="footnote" style="color:var(--critical);">· ${perfis.length} perfis de incidência diferentes usam este cardápio (${perfis.map(pid => escapeHtml((perfisIncidencia.get(pid)||{}).nome || pid)).join(", ")}) — sem alvo único pra comparar</span>`;
+    else if(!perfis.length) notaPerfil = ` <span class="footnote">· nenhum contrato ativo com perfil de incidência usa este cardápio</span>`;
+    const linha = TIPOS_PROTEINA.map(t => {
+      const n = atual.counts[t.id] || 0;
+      const alvoN = alvoDaSemana ? (alvoDaSemana[t.id] ?? null) : null;
+      const diff = alvoN != null ? n - alvoN : null;
+      const cor = diff == null ? "" : (diff === 0 ? "color:var(--text-muted);" : (diff > 0 ? "color:var(--ok);" : "color:var(--critical);"));
+      return `<span style="margin-right:16px;"><strong>${escapeHtml(t.curto)}:</strong> <span style="${cor}">${n}${alvoN!=null?` / ${alvoN}`:""}</span></span>`;
+    }).join("");
+    incHtml = `<div class="footnote" style="margin:-6px 0 14px;">Incidência de proteína nesta semana (Proteína 1+2)${notaPerfil}<br>${linha}${atual.semClassificar?`<span style="color:var(--text-faint);"> · ${atual.semClassificar} prato(s) sem classificação de proteína ou sem ficha vinculada</span>`:""}</div>
+      <a href="#" id="card-abrir-incidencia" class="footnote" style="display:inline-block; margin:-10px 0 14px;">Abrir Tabela de incidência completa →</a>`;
+  }
+
+  host.innerHTML = `<div class="cardapio-cmv-panel">${blocosHtml}</div>${incHtml}`;
+  const linkInc = document.getElementById("card-abrir-incidencia");
+  if(linkInc) linkInc.addEventListener("click", e => { e.preventDefault(); goToView("incidencia"); });
 }
 
 /* ===== REFEIÇÃO / MARMITA — tabela editável (categorias × dias) =====
