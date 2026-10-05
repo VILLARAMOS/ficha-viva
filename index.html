@@ -1265,7 +1265,7 @@ function imprimirListaContagem(semana, unidade){
       <tbody>${rows.map(r => `<tr><td>${escapeHtml(r.nome)}</td><td>${escapeHtml(r.grupo_compra||"—")}</td><td>${escapeHtml(r.unidade_medida||"—")}</td><td class="num"></td></tr>`).join("")}</tbody>
     </table>
     <div class="assinatura"><div>Contado por</div><div>Conferido por</div></div>
-    <script>window.onload = () => window.print();</script>
+    <script>window.onload = () => window.print();<\/script>
     </body></html>`);
   w.document.close();
 }
