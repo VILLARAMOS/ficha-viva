@@ -5,11 +5,13 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
 <style>
 :root{
   --bg:#f6f4ee; --surface:#ffffff; --surface-alt:#edeade; --border:#ddd7c8;
   --text:#23241f; --text-muted:#6c6b60; --text-faint:#969383;
-  --accent:#1f5f6b; --accent-strong:#153f47; --accent-soft:#e4eeef;
+  /* identidade Villa Ramos: maroon do logo como cor institucional — usada com moderação (ações, seleção, destaques), não em áreas grandes */
+  --accent:#7a2328; --accent-strong:#4f1518; --accent-soft:#f4e4e3;
   --ok:#2f8f5b; --ok-soft:#e4f2ea;
   --warn:#b9791b; --warn-soft:#faf0dd;
   --critical:#c23b3b; --critical-soft:#fbe8e6;
@@ -21,7 +23,7 @@
   :root:not([data-theme="light"]){
     --bg:#14171a; --surface:#1b1f22; --surface-alt:#22262a; --border:#333a3f;
     --text:#e8e6df; --text-muted:#9b9d9c; --text-faint:#6c7274;
-    --accent:#5bc0cc; --accent-strong:#8adae2; --accent-soft:#1d3438;
+    --accent:#c17a7e; --accent-strong:#e2a7aa; --accent-soft:#2f1d1e;
     --ok:#49b07a; --ok-soft:#173226;
     --warn:#dba43f; --warn-soft:#332a15;
     --critical:#e2685f; --critical-soft:#3a1e1c;
@@ -52,18 +54,32 @@ button{font-family:inherit;}
 
 /* ---------- app shell ---------- */
 #app{display:flex;min-height:100vh;}
-.sidebar{width:230px;flex:none;background:var(--surface);border-right:1px solid var(--border);padding:18px 14px;display:flex;flex-direction:column;gap:4px;}
-.brand{display:flex;align-items:center;gap:10px;padding:4px 10px 20px;}
+.sidebar{width:236px;flex:none;background:var(--surface);border-right:1px solid var(--border);padding:16px 12px;display:flex;flex-direction:column;gap:2px;transition:width .15s ease;}
+.sidebar.collapsed{width:68px;padding:16px 10px;}
+.brand{display:flex;align-items:center;gap:10px;padding:2px 8px 18px;}
+.brand .brand-mark{width:30px;height:30px;flex:none;border-radius:8px;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-family:'Fraunces',serif;font-weight:600;font-size:15px;}
 .brand .brand-text{display:flex;flex-direction:column;gap:2px;min-width:0;}
-.brand .mark{font-family:'Fraunces',serif;font-size:20px;font-weight:600;letter-spacing:.2px;}
+.brand .mark{font-family:'Fraunces',serif;font-size:18px;font-weight:600;letter-spacing:.2px;white-space:nowrap;}
 .brand .mark em{color:var(--accent);font-style:normal;}
-.brand .sub{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-faint);}
-.nav-btn{display:flex;align-items:center;gap:10px;text-align:left;background:none;border:none;border-radius:8px;padding:10px 10px;font-size:14px;color:var(--text-muted);cursor:pointer;}
+.brand .sub{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-faint);white-space:nowrap;}
+.sidebar.collapsed .brand{padding:2px 0 18px; justify-content:center;}
+.sidebar.collapsed .brand-text, .sidebar.collapsed .group-label, .sidebar.collapsed .nav-btn .label, .sidebar.collapsed .sidebar-foot, .sidebar.collapsed .collapse-label{display:none;}
+.sidebar.collapsed .nav-btn{justify-content:center;}
+.nav-group{display:flex;flex-direction:column;gap:2px;margin-bottom:10px;}
+.group-label{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-faint);padding:10px 10px 4px;}
+.nav-btn{display:flex;align-items:center;gap:11px;text-align:left;background:none;border:none;border-radius:8px;padding:9px 10px;font-size:13.5px;color:var(--text-muted);cursor:pointer;width:100%;}
 .nav-btn:hover{background:var(--surface-alt);color:var(--text);}
 .nav-btn.active{background:var(--accent-soft);color:var(--accent-strong);font-weight:600;}
-.nav-btn:disabled{opacity:.45;cursor:not-allowed;}
-.nav-btn .ico{width:18px;text-align:center;font-size:15px;}
+.nav-btn.active .ico{color:var(--accent-strong);}
+.nav-btn:disabled{opacity:.42;cursor:not-allowed;}
+.nav-btn .ico{width:17px;height:17px;flex:none;color:var(--text-faint);}
+.nav-btn .label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .sidebar-foot{margin-top:auto;padding:10px;font-size:11.5px;color:var(--text-faint);line-height:1.5;}
+.collapse-toggle{display:flex;align-items:center;gap:10px;background:none;border:none;border-radius:8px;padding:9px 10px;font-size:12px;color:var(--text-faint);cursor:pointer;width:100%;margin-top:2px;}
+.collapse-toggle:hover{background:var(--surface-alt);color:var(--text-muted);}
+.collapse-toggle .ico{width:17px;height:17px;flex:none;transition:transform .15s ease;}
+.sidebar.collapsed .collapse-toggle .ico{transform:rotate(180deg);}
+.sidebar.collapsed .collapse-toggle{justify-content:center;}
 
 .main{flex:1;min-width:0;display:flex;flex-direction:column;}
 .topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:22px 32px;border-bottom:1px solid var(--border);background:var(--surface);}
@@ -218,6 +234,14 @@ tbody tr:hover{background:var(--surface-alt);}
 .stat-block .label{font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-faint);}
 .stat-block .val{font-size:19px; font-weight:600; font-family:'IBM Plex Mono',monospace;}
 .stat-block .val.small{font-size:14px; font-weight:500; color:var(--text-muted);}
+.stat-block .trend{display:flex; align-items:center; gap:4px; font-size:12px; font-family:'IBM Plex Mono',monospace; margin-top:4px;}
+.stat-block .trend.ok{color:var(--ok);}
+.stat-block .trend.critical{color:var(--critical);}
+.stat-block .trend.neutral{color:var(--text-faint);}
+.stat-block .trend .ico{width:13px;height:13px;}
+.panel-head{display:flex; align-items:center; gap:10px; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--border);}
+.panel-head h3{display:flex; align-items:center; gap:9px; margin:0; font-size:15.5px;}
+.panel-head h3 .ico{width:17px; height:17px; color:var(--accent); flex:none;}
 textarea{font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 11px;width:100%;}
 @media (max-width:720px){ .ing-line{grid-template-columns:1fr 1fr;} .ing-line .autocomplete{grid-column:1 / -1;} }
 
@@ -277,28 +301,46 @@ table.cardapio-table .autocomplete{position:relative;}
 </div>
 
 <div id="app" hidden>
-  <nav class="sidebar">
+  <nav class="sidebar" id="sidebar">
     <div class="brand">
+      <div class="brand-mark">VR</div>
       <div class="brand-text">
         <div class="mark">Ficha <em>Viva</em></div>
         <div class="sub">Grupo Villa Ramos</div>
       </div>
     </div>
-    <button class="nav-btn" data-view="painel"><span class="ico">&#9670;</span> Painel</button>
-    <button class="nav-btn active" data-view="insumos"><span class="ico">&#9673;</span> Insumos</button>
-    <button class="nav-btn" data-view="fichas"><span class="ico">&#9636;</span> Fichas técnicas</button>
-    <button class="nav-btn" data-view="cardapio"><span class="ico">&#9633;</span> Cardápio</button>
-    <button class="nav-btn" data-view="contratos"><span class="ico">&#9737;</span> Contratos</button>
-    <button class="nav-btn" data-view="eventos"><span class="ico">&#9671;</span> Eventos</button>
-    <button class="nav-btn" data-view="incidencia"><span class="ico">&#9661;</span> Incidência</button>
-    <button class="nav-btn" data-view="vendas"><span class="ico">&#9650;</span> Vendas</button>
-    <button class="nav-btn" data-view="faturamento"><span class="ico">&#9679;</span> Faturamento apurado</button>
-    <button class="nav-btn" data-view="compras"><span class="ico">&#9678;</span> Compras</button>
-    <button class="nav-btn" data-view="orcamento"><span class="ico">&#9881;</span> Orçamento</button>
-    <button class="nav-btn" disabled title="Em construção"><span class="ico">&#9881;</span> PCP / Expedição</button>
+
+    <div class="nav-group">
+      <button class="nav-btn" data-view="painel" title="Painel"><i class="ico" data-lucide="layout-dashboard"></i><span class="label">Painel</span></button>
+    </div>
+
+    <div class="nav-group">
+      <div class="group-label">Cardápio &amp; receitas</div>
+      <button class="nav-btn" data-view="cardapio" title="Cardápio"><i class="ico" data-lucide="utensils-crossed"></i><span class="label">Cardápio</span></button>
+      <button class="nav-btn" data-view="fichas" title="Fichas técnicas"><i class="ico" data-lucide="clipboard-list"></i><span class="label">Fichas técnicas</span></button>
+      <button class="nav-btn active" data-view="insumos" title="Insumos"><i class="ico" data-lucide="package"></i><span class="label">Insumos</span></button>
+    </div>
+
+    <div class="nav-group">
+      <div class="group-label">Comercial</div>
+      <button class="nav-btn" data-view="contratos" title="Contratos"><i class="ico" data-lucide="file-signature"></i><span class="label">Contratos</span></button>
+      <button class="nav-btn" data-view="eventos" title="Eventos"><i class="ico" data-lucide="calendar"></i><span class="label">Eventos</span></button>
+      <button class="nav-btn" data-view="incidencia" title="Incidência"><i class="ico" data-lucide="triangle-alert"></i><span class="label">Incidência</span></button>
+      <button class="nav-btn" data-view="vendas" title="Vendas"><i class="ico" data-lucide="trending-up"></i><span class="label">Vendas</span></button>
+      <button class="nav-btn" data-view="faturamento" title="Faturamento apurado"><i class="ico" data-lucide="receipt"></i><span class="label">Faturamento apurado</span></button>
+    </div>
+
+    <div class="nav-group">
+      <div class="group-label">Suprimentos &amp; financeiro</div>
+      <button class="nav-btn" data-view="compras" title="Compras"><i class="ico" data-lucide="shopping-cart"></i><span class="label">Compras</span></button>
+      <button class="nav-btn" data-view="orcamento" title="Orçamento"><i class="ico" data-lucide="wallet"></i><span class="label">Orçamento</span></button>
+      <button class="nav-btn" disabled title="PCP / Expedição — em construção"><i class="ico" data-lucide="truck"></i><span class="label">PCP / Expedição</span></button>
+    </div>
+
     <div class="sidebar-foot">
       Cadastro único de custo dos insumos. Os demais módulos do Ficha Viva ainda serão migrados para cá.
     </div>
+    <button class="collapse-toggle" id="sidebar-toggle" title="Recolher menu"><i class="ico" data-lucide="panel-left-close"></i><span class="collapse-label">Recolher</span></button>
   </nav>
   <div class="main">
     <div class="topbar">
@@ -368,6 +410,17 @@ function goToView(view){
 }
 
 document.querySelectorAll(".nav-btn[data-view]").forEach(b => b.addEventListener("click", () => goToView(b.dataset.view)));
+
+if(window.lucide) lucide.createIcons();
+
+const sidebarEl = document.getElementById("sidebar");
+const sidebarToggleBtn = document.getElementById("sidebar-toggle");
+if(localStorage.getItem("fv-sidebar-collapsed") === "1") sidebarEl.classList.add("collapsed");
+sidebarToggleBtn.addEventListener("click", () => {
+  const collapsed = sidebarEl.classList.toggle("collapsed");
+  localStorage.setItem("fv-sidebar-collapsed", collapsed ? "1" : "0");
+  sidebarToggleBtn.title = collapsed ? "Expandir menu" : "Recolher menu";
+});
 
 async function showApp(user){
   currentUser = user;
@@ -5339,6 +5392,15 @@ function svgCmvFormulacao(series, semanas){
 
 /* ---- insights automáticos: leitura rápida do período, cada insight só aparece quando há dado
    suficiente pra sustentá-lo (nunca inventa número). ---- */
+// trend de um KPI vs. o mês anterior — "invertido" é pra métricas onde menor é melhor (ex.: CMV)
+function kpiTendenciaHtml(atual, anterior, {invertido=false, mesNome=""}={}){
+  const v = variacaoFrac(atual, anterior);
+  if(v === null) return "";
+  const favoravel = invertido ? v <= 0 : v >= 0;
+  const tone = Math.abs(v) < 0.005 ? "neutral" : (favoravel ? "ok" : "critical");
+  const icone = Math.abs(v) < 0.005 ? "minus" : (v >= 0 ? "trending-up" : "trending-down");
+  return `<div class="trend ${tone}"><i class="ico" data-lucide="${icone}"></i>${v>=0?"+":"−"}${fmtPct(Math.abs(v))}${mesNome?` vs. ${escapeHtml(mesNome)}`:""}</div>`;
+}
 function variacaoFrac(atual, anterior){
   if(atual===null||atual===undefined||anterior===null||anterior===undefined||!isFinite(anterior)||anterior===0) return null;
   return (atual-anterior)/Math.abs(anterior);
@@ -5609,18 +5671,18 @@ function renderPainel(){
       ${blocosNegocio.map(b => visaoNegocioCardHtml(b)).join("")}
     </div>
     <div class="panel">
-      <div class="panel-head"><h3>Pendências</h3><span class="${pendencias.length ? "pend-count alerta" : "pend-count"}">${pendencias.length} ${pendencias.length===1?"item":"itens"}</span></div>
+      <div class="panel-head"><h3><i class="ico" data-lucide="list-checks"></i>Pendências</h3><span class="${pendencias.length ? "pend-count alerta" : "pend-count"}">${pendencias.length} ${pendencias.length===1?"item":"itens"}</span></div>
       <div class="panel-body">${pendenciasHtml(pendencias)}</div>
       <div class="footnote" style="padding:0 20px 16px;">Olha sempre Matriz + Filial juntas (Grupo), independente do seletor acima — é um painel de controle, não deveria esconder pendência de uma unidade só porque o resto da página está filtrado.</div>
     </div>
     <div class="two-col-num" style="margin-bottom:16px;">
-      <div class="stat-block"><div class="label">Faturamento do mês</div><div class="val">${fmtMoney(totReceita)}</div></div>
-      <div class="stat-block"><div class="label">Custo real do mês</div><div class="val">${fmtMoney(totCusto)}</div></div>
-      <div class="stat-block"><div class="label">CMV real</div><div class="val">${cmvReal!==null?fmtPct(cmvReal):"—"}</div></div>
-      <div class="stat-block"><div class="label">Margem</div><div class="val">${fmtMoney(margem)}</div></div>
+      <div class="stat-block"><div class="label">Faturamento do mês</div><div class="val">${fmtMoney(totReceita)}</div>${resumoAnterior?kpiTendenciaHtml(totReceita, resumoAnterior.receita, {mesNome: mesAnteriorRef.nome}):""}</div>
+      <div class="stat-block"><div class="label">Custo real do mês</div><div class="val">${fmtMoney(totCusto)}</div>${resumoAnterior?kpiTendenciaHtml(totCusto, resumoAnterior.custo, {invertido:true, mesNome: mesAnteriorRef.nome}):""}</div>
+      <div class="stat-block"><div class="label">CMV real</div><div class="val">${cmvReal!==null?fmtPct(cmvReal):"—"}</div>${resumoAnterior?kpiTendenciaHtml(cmvReal, resumoAnterior.cmv, {invertido:true, mesNome: mesAnteriorRef.nome}):""}</div>
+      <div class="stat-block"><div class="label">Margem</div><div class="val">${fmtMoney(margem)}</div>${resumoAnterior?kpiTendenciaHtml(margem, resumoAnterior.receita-resumoAnterior.custo, {mesNome: mesAnteriorRef.nome}):""}</div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h3>Insights automáticos</h3></div>
+      <div class="panel-head"><h3><i class="ico" data-lucide="sparkles"></i>Insights automáticos</h3></div>
       <div class="panel-body">${insightsAutomaticos({
         receita: totReceita, cmv: cmvReal, resumoAnterior, mesAnteriorNome: mesAnteriorRef ? mesAnteriorRef.nome : "",
         clientesTop, clientesRows, numsComDados: formulacao.numsComDados, resumosFormulacao: formulacao.resumos,
@@ -5629,7 +5691,7 @@ function renderPainel(){
       })}</div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h3>Checagem de integridade das fichas</h3></div>
+      <div class="panel-head"><h3><i class="ico" data-lucide="shield-check"></i>Checagem de integridade das fichas</h3></div>
       <div class="panel-body">
         <div class="two-col-num" style="margin-bottom:10px;">
           <div class="stat-block"><div class="label">Ingredientes órfãos</div><div class="val">${orfaos.length ? `<span class="chip critical"><span class="dot"></span>${orfaos.length}</span>` : `<span class="chip ok"><span class="dot"></span>0</span>`}</div></div>
@@ -5644,7 +5706,7 @@ function renderPainel(){
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h3>Orçamento do mês</h3><span class="hint"><a href="#" id="pn-ir-orcamento">ver detalhe por bloco/semana →</a></span></div>
+      <div class="panel-head"><h3><i class="ico" data-lucide="wallet"></i>Orçamento do mês</h3><span class="hint"><a href="#" id="pn-ir-orcamento">ver detalhe por bloco/semana →</a></span></div>
       <div class="panel-body two-col-num">
         <div class="stat-block"><div class="label">Orçado (CMV)</div><div class="val">${fmtMoney(orcadoMes)}</div></div>
         <div class="stat-block"><div class="label">Comprado (pedidos)</div><div class="val">${fmtMoney(compradoMesVal)}</div></div>
@@ -5652,7 +5714,7 @@ function renderPainel(){
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h3>Estoque — última contagem</h3><span class="hint"><a href="#" id="pn-ir-estoque">abrir Estoque →</a></span></div>
+      <div class="panel-head"><h3><i class="ico" data-lucide="boxes"></i>Estoque — última contagem</h3><span class="hint"><a href="#" id="pn-ir-estoque">abrir Estoque →</a></span></div>
       <div class="panel-body two-col-num">
         ${estoqueLinha("Matriz", estoqueMatriz)}
         ${estoqueLinha("Filial", estoqueFilial)}
@@ -5667,6 +5729,7 @@ function renderPainel(){
   });
   document.getElementById("pn-ir-orcamento").addEventListener("click", e => { e.preventDefault(); orcamentoMesSel = painelMesSel; orcamentoEscopoSel = painelEscopoSel; goToView("orcamento"); });
   document.getElementById("pn-ir-estoque").addEventListener("click", e => { e.preventDefault(); insumoTabSel = "estoque"; estoqueSubTab = "contagem"; goToView("insumos"); });
+  if(window.lucide) lucide.createIcons();
 }
 
 /* ===================================================================== INIT */
