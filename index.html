@@ -1971,7 +1971,9 @@ function montarTabelaAlmoco(num, semana){
       const l = draftAlmoco[dia].itens[ci];
       if(tipo === "insumo"){ l.insumo_id = refId; l.ficha_id = null; l.nome = insumos.get(refId).nome; }
       else { l.ficha_id = refId; l.insumo_id = null; l.nome = fichas.get(refId).nome; }
-      montarTabelaAlmoco(num, semana);
+      const campoNome = host.querySelector(`.cel-nome[data-dia="${dia}"][data-ci="${ci}"]`);
+      if(campoNome) campoNome.value = l.nome;
+      recomputarCustoDia(dia); recomputarCustoCelula(dia, ci);
     });
   }));
 
@@ -2138,7 +2140,9 @@ function montarTabelaCafe(num, semana){
         const l = draftCafe.itens[dia][ci];
         if(tipo === "insumo"){ l.insumo_id = refId; l.ficha_id = null; l.nome = insumos.get(refId).nome; }
         else { l.ficha_id = refId; l.insumo_id = null; l.nome = fichas.get(refId).nome; }
-        montarTabelaCafe(num, semana);
+        const campoNome = host.querySelector(`.cel-nome[data-dia="${dia}"][data-ci="${ci}"]`);
+        if(campoNome) campoNome.value = l.nome;
+        recomputarCustoCelulaCafe(dia, ci);
       });
     }));
     host.querySelectorAll(".cel-nome").forEach(inp => {
