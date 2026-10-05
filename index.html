@@ -147,6 +147,26 @@ tbody tr:hover{background:var(--surface-alt);}
 .insight-item.neutral .dot{background:var(--text-faint);}
 .painel-clientes-grid{display:grid; grid-template-columns:220px 1fr; gap:22px; align-items:center;}
 @media (max-width:860px){ .painel-clientes-grid{grid-template-columns:1fr;} }
+/* ---------- v127: Visão do Negócio (quadros Grupo/Matriz/Filial) + Pendências ---------- */
+.vn-wrap{display:flex; flex-direction:column; gap:16px; margin-bottom:20px;}
+.vn-unidade{background:var(--surface); border:1px solid var(--border); border-radius:14px; padding:18px 20px; box-shadow:var(--shadow);}
+.vn-unidade-head{display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin-bottom:14px; flex-wrap:wrap;}
+.vn-unidade-head h3{margin:0; font-size:16px; font-weight:600;}
+.vn-unidade-chip{font-size:10.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-faint); background:var(--surface-alt); padding:4px 10px; border-radius:100px;}
+.vn-grid{display:grid; grid-template-columns:repeat(auto-fit, minmax(152px,1fr)); gap:12px;}
+.vn-card{position:relative; background:var(--surface-alt); border-radius:10px; padding:12px 14px 12px 17px; overflow:hidden;}
+.vn-card::before{content:""; position:absolute; left:0; top:0; bottom:0; width:4px; background:var(--border);}
+.vn-card.ok::before{background:var(--ok);}
+.vn-card.warn::before{background:var(--warn);}
+.vn-card.critical::before{background:var(--critical);}
+.vn-card .vn-label{font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-faint); margin-bottom:5px;}
+.vn-card .vn-value{font-size:19px; font-weight:600; font-family:'IBM Plex Mono',monospace; line-height:1.15;}
+.vn-card .vn-sub{font-size:11px; color:var(--text-muted); margin-top:6px; line-height:1.45;}
+.vn-card .vn-sub b{font-family:'IBM Plex Mono',monospace; font-weight:600; color:var(--text);}
+.vn-sub .up{color:var(--ok); font-weight:600;}
+.vn-sub .down{color:var(--critical); font-weight:600;}
+.pend-count{font-size:11px; font-weight:600; padding:3px 10px; border-radius:100px; background:var(--ok-soft); color:var(--ok);}
+.pend-count.alerta{background:var(--warn-soft); color:var(--warn);}
 .ing-table{border:1px solid var(--border); border-radius:10px; overflow:hidden;}
 .ing-header, .ing-line{display:grid; grid-template-columns:2.4fr .95fr .9fr .9fr .9fr 70px; gap:10px; align-items:center;}
 .ing-header{padding:7px 10px; background:var(--surface-alt); font-size:10.5px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.03em;}
@@ -4941,9 +4961,163 @@ function insightsAutomaticos(ctx){
   return `<div class="insight-list">${itens.slice(0,7).map(it => `<div class="insight-item ${it.tone}"><span class="dot"></span><span>${it.texto}</span></div>`).join("")}</div>`;
 }
 
+/* ---- v127: Visão do Negócio — quadros Grupo/Matriz/Filial (pedido do Marcelo, 05/10/2026) ----
+   Reaproveita apurarResumoMes (realizado) e totalOrcadoMes/totalCompradoMes (orçamento), que já são
+   por construção filtráveis por "todos"/"matriz"/"filial" — por isso Grupo/Matriz/Filial bate aqui
+   com o resto do Painel, sem fórmula nova. O "Planejado" é novo: meu sistema não tinha, até aqui,
+   nenhum motor de previsão de RECEITA (só o de previsão de CONSUMO de insumo, usado em Compras) —
+   então o planejado de faturamento/CMV abaixo reaproveita esse mesmo motor de previsão de
+   quantidade (ajuste manual > lançado na semana > mediana do mês > ciclo de 2 meses > quantidade
+   contratada), multiplicando a quantidade prevista pelo preço do contrato em vez de pelo kg de
+   insumo. Confirmado com o Marcelo antes de construir — é a única base de dado que já existe pra
+   isso; não lê Vendas (por isso não vira "zero planejado" quando ninguém lançou nada ainda). */
+function apurarPlanejadoContrato(id, ct, mesId, almocoIdx, cafeIdx){
+  const mes = MESES_REFERENCIA.find(m => m.id === mesId);
+  const out = { receita: 0, receitaItemizada: 0, custo: 0, quantidade: 0, porCategoria: { refeicao: {custo:0, receita:0, quantidade:0}, cafeExtras: {custo:0, receita:0, quantidade:0} } };
+  if(!mes || !ct) return out;
+  const itensContrato = itensDoContratoVenda(id);
+  const porProduto = new Map();
+  mes.semanas.forEach(semana => DIAS_ORDEM.forEach(dia => {
+    if(mesDoDia(semana, dia) !== mesId) return;
+    if(!contratoVigenteNoDia(ct, semana, dia)) return;
+    itensContrato.forEach(item => {
+      if(!item.produto_id) return;
+      const q = quantidadePrevista(id, item.produto_id, dia, semana);
+      if(!q) return;
+      const custoUnd = custoUnidadeItemVendaVivo(almocoIdx, cafeIdx, item.produto_id, ct, semana, dia);
+      const c = (custoUnd != null ? custoUnd : 0) * q;
+      const r = (item.preco_venda != null ? item.preco_venda : 0) * q;
+      out.custo += c; out.receitaItemizada += r; out.quantidade += q;
+      const acc = porProduto.get(item.produto_id) || {quantidade:0, receita:0, custo:0};
+      acc.quantidade += q; acc.receita += r; acc.custo += c; porProduto.set(item.produto_id, acc);
+      const cat = categoriaSimples(item.produto_id);
+      if(cat){ out.porCategoria[cat].custo += c; out.porCategoria[cat].receita += r; out.porCategoria[cat].quantidade += q; }
+    });
+  }));
+  if(ct.modelo_faturamento === "franquia"){
+    const fr = out.quantidade > 0 ? receitaFranquia(ct, porProduto) : null;
+    out.receita = fr ? fr.total : 0;
+  } else if(ct.modelo_faturamento === "fixo"){
+    out.receita = out.quantidade > 0 ? (ct.valor_fixo_mensal || 0) : 0;
+  } else {
+    out.receita = out.receitaItemizada;
+  }
+  return out;
+}
+function visaoNegocioBloco(mesId, escopo, nome, almocoIdx, cafeIdx){
+  const resumo = apurarResumoMes(mesId, escopo, almocoIdx, cafeIdx);
+  const contratosEscopo = [...contratos.entries()].filter(([,c]) => escopo === "todos" || c.unidade === escopo);
+  let plReceita = 0, plCusto = 0;
+  const plCat = { refeicao: {custo:0, receita:0}, cafeExtras: {custo:0, receita:0} };
+  contratosEscopo.forEach(([id,ct]) => {
+    const pl = apurarPlanejadoContrato(id, ct, mesId, almocoIdx, cafeIdx);
+    plReceita += pl.receita; plCusto += pl.custo;
+    ["refeicao","cafeExtras"].forEach(k => { plCat[k].custo += pl.porCategoria[k].custo; plCat[k].receita += pl.porCategoria[k].receita; });
+  });
+  const cmvDe = (c,r) => r > 0 ? c/r : null;
+  const orcado = totalOrcadoMes(mesId, escopo), comprado = totalCompradoMes(mesId, escopo);
+  return {
+    nome, escopo,
+    receita: resumo.receita, custo: resumo.custo, cmv: resumo.cmv, cmvRefeicao: resumo.cmvRefeicao, cmvCafeExtras: resumo.cmvCafeExtras,
+    plReceita, plCusto, plCmv: cmvDe(plCusto, plReceita),
+    plCmvRefeicao: cmvDe(plCat.refeicao.custo, plCat.refeicao.receita), plCmvCafeExtras: cmvDe(plCat.cafeExtras.custo, plCat.cafeExtras.receita),
+    orcado, comprado, saldo: orcado - comprado
+  };
+}
+function cmvCardCls(real, plan){
+  if(real === null || real === undefined) return "neutral";
+  if(plan === null || plan === undefined) return "";
+  const diff = real - plan;
+  if(diff <= 0.005) return "ok";
+  if(diff <= 0.03) return "warn";
+  return "critical";
+}
+function deltaReceitaHtml(real, plan){
+  if(plan === null || plan === undefined || plan <= 0.5) return `<div class="vn-sub">sem planejamento para o mês</div>`;
+  const pct = real/plan;
+  const cls = pct >= 1 ? "up" : (pct >= 0.9 ? "" : "down");
+  return `<div class="vn-sub">Planejado <b>${fmtMoney(plan)}</b> · <span class="${cls}">${fmtPct(pct)} do planejado</span></div>`;
+}
+function deltaCmvHtml(real, plan){
+  if(plan === null || plan === undefined) return `<div class="vn-sub">sem planejamento</div>`;
+  if(real === null || real === undefined) return `<div class="vn-sub">Planejado <b>${fmtPct(plan)}</b></div>`;
+  const diffPP = (real - plan) * 100;
+  const cls = diffPP > 0.5 ? "down" : (diffPP < -0.5 ? "up" : "");
+  const sinal = diffPP > 0 ? "+" : "";
+  return `<div class="vn-sub">Planejado <b>${fmtPct(plan)}</b> · <span class="${cls}">${sinal}${diffPP.toFixed(1).replace(".",",")} p.p.</span></div>`;
+}
+function visaoNegocioCardHtml(b){
+  const subEscopo = b.escopo === "todos" ? "Matriz + Filial" : (b.escopo === "matriz" ? "Contratos da Matriz" : "Contratos da Filial");
+  return `<div class="vn-unidade">
+    <div class="vn-unidade-head"><h3>${escapeHtml(b.nome)}</h3><span class="vn-unidade-chip">${subEscopo}</span></div>
+    <div class="vn-grid">
+      <div class="vn-card ${b.plReceita > 0.5 ? (b.receita >= b.plReceita ? "ok" : (b.receita > 0 ? "warn" : "critical")) : ""}">
+        <div class="vn-label">Faturamento do mês</div>
+        <div class="vn-value">${fmtMoney(b.receita)}</div>
+        ${deltaReceitaHtml(b.receita, b.plReceita)}
+      </div>
+      <div class="vn-card ${cmvCardCls(b.cmv, b.plCmv)}">
+        <div class="vn-label">CMV Total</div>
+        <div class="vn-value">${b.cmv!==null?fmtPct(b.cmv):"—"}</div>
+        ${deltaCmvHtml(b.cmv, b.plCmv)}
+      </div>
+      <div class="vn-card ${cmvCardCls(b.cmvRefeicao, b.plCmvRefeicao)}">
+        <div class="vn-label">CMV Refeição</div>
+        <div class="vn-value">${b.cmvRefeicao!==null?fmtPct(b.cmvRefeicao):"—"}</div>
+        ${deltaCmvHtml(b.cmvRefeicao, b.plCmvRefeicao)}
+      </div>
+      <div class="vn-card ${cmvCardCls(b.cmvCafeExtras, b.plCmvCafeExtras)}">
+        <div class="vn-label">CMV Café e Extras</div>
+        <div class="vn-value">${b.cmvCafeExtras!==null?fmtPct(b.cmvCafeExtras):"—"}</div>
+        ${deltaCmvHtml(b.cmvCafeExtras, b.plCmvCafeExtras)}
+      </div>
+      <div class="vn-card">
+        <div class="vn-label">Orçamento</div>
+        <div class="vn-value">${fmtMoney(b.orcado)}</div>
+        <div class="vn-sub">previsão de compra em R$</div>
+      </div>
+      <div class="vn-card">
+        <div class="vn-label">Comprado</div>
+        <div class="vn-value">${fmtMoney(b.comprado)}</div>
+        <div class="vn-sub">${b.orcado > 0.5 ? fmtPct(b.comprado/b.orcado) + " do orçado" : "sem orçamento no mês"}</div>
+      </div>
+      <div class="vn-card ${b.saldo < 0 ? "critical" : (b.orcado > 0.5 && b.saldo/b.orcado < 0.15 ? "warn" : "ok")}">
+        <div class="vn-label">Saldo do Orçamento</div>
+        <div class="vn-value">${fmtMoney(b.saldo)}</div>
+        <div class="vn-sub">orçado − comprado</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ---- v127: Painel de pendências — observações e erros de preenchimento/marcações fora do comum
+   que precisam de ajuste. Reúne sinais que já existiam espalhados (itens sem custo/preço em Vendas,
+   órfãos/duplicadas de ficha) com um sinal novo (semanas já encerradas e ainda não fechadas em
+   Vendas) — escopo confirmado com o Marcelo antes de construir. */
+function pendenciasDoMes(mesId, linhasRealizado, orfaos, duplicadas){
+  const itens = [];
+  linhasRealizado.forEach(r => {
+    if(r.ap.itensSemCusto) itens.push({tone:"critical", texto: `${escapeHtml(r.ct.nome_cliente)}: ${r.ap.itensSemCusto} lançamento(s) de venda sem custo apurado neste mês — item sem ficha/custo vinculado ou faltando cadastro.`});
+    if(r.ap.itensSemPreco) itens.push({tone:"warn", texto: `${escapeHtml(r.ct.nome_cliente)}: ${r.ap.itensSemPreco} lançamento(s) de venda sem preço apurado neste mês — item sem preço no contrato.`});
+  });
+  if(orfaos.length) itens.push({tone:"critical", texto: `${orfaos.length} ingrediente(s) de ficha técnica apontando para insumo/ficha que não existe mais — ver Checagem de integridade das fichas, abaixo.`});
+  if(duplicadas.length) itens.push({tone:"warn", texto: `${duplicadas.length} ficha(s) técnica(s) com nome duplicado cadastradas — ver Checagem de integridade das fichas, abaixo.`});
+  const mes = MESES_REFERENCIA.find(m => m.id === mesId);
+  if(mes){
+    const semanasPassadasAbertas = mes.semanas.filter(s => diaJaAconteceu(s, "DOMINGO") && !semanaGeralFechada(s));
+    if(semanasPassadasAbertas.length) itens.push({tone:"warn", texto: `${semanasPassadasAbertas.length} semana(s) já encerrada(s) e ainda sem fechamento geral em Vendas: ${semanasPassadasAbertas.map(s=>escapeHtml(rotuloSemanaCurto(s))).join(", ")} — enquanto aberta, o custo continua sendo recalculado ao vivo.`});
+  }
+  const ordem = {critical:0, warn:1, neutral:2};
+  return itens.sort((a,b) => (ordem[a.tone]??2) - (ordem[b.tone]??2));
+}
+function pendenciasHtml(itens){
+  if(!itens.length) return `<div class="empty-state">Nenhuma pendência encontrada para este período.</div>`;
+  return `<div class="insight-list">${itens.map(it => `<div class="insight-item ${it.tone}"><span class="dot"></span><span>${it.texto}</span></div>`).join("")}</div>`;
+}
+
 function renderPainel(){
   document.getElementById("page-title").textContent = "Painel";
-  document.getElementById("page-desc").textContent = "Faturamento, custo e CMV real do mês, e resumo de Orçamento e Estoque";
+  document.getElementById("page-desc").textContent = "Visão do Negócio (Grupo/Matriz/Filial, realizado × planejado), pendências, e detalhe de faturamento, custo, CMV real, Orçamento e Estoque";
   document.getElementById("topbar-actions").innerHTML = "";
 
   const meses = MESES_REFERENCIA;
@@ -4990,8 +5164,19 @@ function renderPainel(){
   const { orfaos, duplicadas } = checarIntegridadeFichas();
   const mostraFaixaCmv = painelEscopoSel !== "todos"; // faixa de CMV exige saber matriz/filial — não dá pra aplicar num "grupo inteiro" misturado
 
+  // ---- v127: Visão do Negócio (Grupo/Matriz/Filial) e Painel de pendências ----
+  const blocosNegocio = [
+    visaoNegocioBloco(painelMesSel, "todos", "Grupo", almocoIdx, cafeIdx),
+    visaoNegocioBloco(painelMesSel, "matriz", "Matriz", almocoIdx, cafeIdx),
+    visaoNegocioBloco(painelMesSel, "filial", "Filial", almocoIdx, cafeIdx)
+  ];
+  // pendências sempre olha TODOS os contratos (independente do toggle Grupo/Matriz/Filial do resto da página) —
+  // é um painel de controle, não deveria "esconder" pendência da Filial só porque o escopo selecionado é Matriz.
+  const resumoTodos = painelEscopoSel === "todos" ? resumo : apurarResumoMes(painelMesSel, "todos", almocoIdx, cafeIdx);
+  const pendencias = pendenciasDoMes(painelMesSel, resumoTodos.linhas, orfaos, duplicadas);
+
   content.innerHTML = `
-    <div class="footnote" style="margin-bottom:14px;">V1 ampliada: evolução semanal (receita/custo ratean fixo/franquia igualmente entre as semanas — só para o gráfico, não muda a apuração real), faixas de CMV (só com Matriz ou Filial selecionado — em "Grupo inteiro" misturaria padrões diferentes), ranking de pratos (não separa por unidade — cardápio não é por unidade nesta base), checagem de órfãos/fichas duplicadas, análise por cliente (composição, dispersão faturamento×CMV e ranking), insights automáticos, orçado×comprado por bloco e CMV de formulação planejado×real por cardápio. "Divergência vs. planilha" do sistema antigo não foi portada (sem dado equivalente aqui) e "fechar mês" foi substituído por uma exportação simples. O que ainda falta do Painel antigo, e por que: a "Visão do negócio" segmentada por operação (RB · Cardápio 1 / Clientes do Cardápio 2 dentro da Matriz) — bloqueado estruturalmente, porque a tabela de contratos desta base não guarda essa sub-operação (só Matriz/Filial); decidir isso é um passo separado, de esquema, não desta rodada.</div>
+    <div class="footnote" style="margin-bottom:14px;">V1 ampliada: Visão do Negócio em quadros (Grupo/Matriz/Filial, realizado × planejado), Painel de pendências, evolução semanal (receita/custo ratean fixo/franquia igualmente entre as semanas — só para o gráfico, não muda a apuração real), faixas de CMV (só com Matriz ou Filial selecionado — em "Grupo inteiro" misturaria padrões diferentes), ranking de pratos (não separa por unidade — cardápio não é por unidade nesta base), checagem de órfãos/fichas duplicadas, análise por cliente (composição, dispersão faturamento×CMV e ranking), insights automáticos, orçado×comprado por bloco e CMV de formulação planejado×real por cardápio. O "Planejado" da Visão do Negócio é novo aqui: não existia motor de previsão de receita, então reaproveito o motor de previsão de CONSUMO (o mesmo da aba Compras) multiplicado pelo preço do contrato — não lê Vendas, é projeção pura. "Divergência vs. planilha" do sistema antigo não foi portada (sem dado equivalente aqui) e "fechar mês" foi substituído por uma exportação simples. O que ainda falta do Painel antigo, e por que: a "Visão do negócio" segmentada por operação (RB · Cardápio 1 / Clientes do Cardápio 2 dentro da Matriz) — bloqueado estruturalmente, porque a tabela de contratos desta base não guarda essa sub-operação (só Matriz/Filial); decidir isso é um passo separado, de esquema, não desta rodada.</div>
     <div class="menu-controls">
       <select id="pn-mes">${meses.map(m => `<option value="${m.id}" ${m.id===painelMesSel?"selected":""}>${escapeHtml(m.nome)}</option>`).join("")}</select>
       <div class="seg-toggle" id="pn-escopo">
@@ -5000,6 +5185,14 @@ function renderPainel(){
         <button type="button" data-esc="filial" class="${painelEscopoSel==="filial"?"active":""}">Filial</button>
       </div>
       <button type="button" class="btn" id="pn-exportar">Exportar resumo (CSV)</button>
+    </div>
+    <div class="vn-wrap">
+      ${blocosNegocio.map(b => visaoNegocioCardHtml(b)).join("")}
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Pendências</h3><span class="${pendencias.length ? "pend-count alerta" : "pend-count"}">${pendencias.length} ${pendencias.length===1?"item":"itens"}</span></div>
+      <div class="panel-body">${pendenciasHtml(pendencias)}</div>
+      <div class="footnote" style="padding:0 20px 16px;">Olha sempre Matriz + Filial juntas (Grupo), independente do seletor acima — é um painel de controle, não deveria esconder pendência de uma unidade só porque o resto da página está filtrado.</div>
     </div>
     <div class="two-col-num" style="margin-bottom:16px;">
       <div class="stat-block"><div class="label">Faturamento do mês</div><div class="val">${fmtMoney(totReceita)}</div></div>
