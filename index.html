@@ -1904,9 +1904,9 @@ function renderCardapio(){
   content.innerHTML = `
     <div class="menu-controls">
       <select id="card-num">${numerosPorGrupo.map(n => `<option value="${n}" ${n===cardapioNumSel?"selected":""}>${labelNumeroCardapio(grupo, n)}</option>`).join("")}</select>
-      <button class="btn small" id="btn-novo-cardapio" title="Criar novo número de ${grupo==='cafe'?'café':grupo==='marmita'?'marmita':'cardápio'}">+ Novo cardápio</button>
+      <button class="btn" id="btn-novo-cardapio" title="Criar novo número de ${grupo==='cafe'?'café':grupo==='marmita'?'marmita':'cardápio'}">+ Novo cardápio</button>
       <select id="card-semana">${semanasDisponiveis.map(s => `<option value="${s}" ${s===cardapioSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
-      <button class="btn small" id="btn-nova-semana" title="Criar nova semana para este cardápio">+ Nova semana</button>
+      <button class="btn" id="btn-nova-semana" title="Criar nova semana para este cardápio">+ Nova semana</button>
       <div class="seg-toggle">
         <button type="button" data-tab="refeicao" class="${cardapioTabSel==="refeicao"?"active":""}">Refeição</button>
         <button type="button" data-tab="marmita" class="${cardapioTabSel==="marmita"?"active":""}">Marmita</button>
@@ -1914,9 +1914,9 @@ function renderCardapio(){
       </div>
       <span style="flex:1 1 auto;"></span>
       <button class="btn primary" id="btn-salvar-semana">Salvar semana</button>
-      <button class="btn small" id="btn-copiar-semana">⧉ Copiar semana</button>
-      <button class="btn small" id="btn-imprimir-cardapio-completo">Imprimir completo</button>
-      <button class="btn small" id="btn-excluir-semana" style="color:var(--critical);">Excluir semana</button>
+      <button class="btn" id="btn-copiar-semana">⧉ Copiar semana</button>
+      <button class="btn" id="btn-imprimir-cardapio-completo">Imprimir completo</button>
+      <button class="btn danger" id="btn-excluir-semana">Excluir semana</button>
     </div>
     <div id="card-week"></div>
   `;
