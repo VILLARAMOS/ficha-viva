@@ -15,6 +15,7 @@
   --critical:#c23b3b; --critical-soft:#fbe8e6;
   --shadow: 0 1px 2px rgba(30,30,20,.06), 0 8px 24px -12px rgba(30,30,20,.18);
   --radius: 10px;
+  --chart-1:#1f5f6b; --chart-2:#c23b3b; --chart-3:#b9791b; --chart-4:#6b4fa0; --chart-5:#2f8f5b;
 }
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="light"]){
@@ -25,6 +26,7 @@
     --warn:#dba43f; --warn-soft:#332a15;
     --critical:#e2685f; --critical-soft:#3a1e1c;
     --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
+    --chart-1:#5bc0cc; --chart-2:#e2685f; --chart-3:#dba43f; --chart-4:#a995d9; --chart-5:#49b07a;
     color-scheme:dark;
   }
 }
@@ -125,6 +127,26 @@ tbody tr:hover{background:var(--surface-alt);}
 .chart-axis-label{font-size:9.5px; fill:var(--text-faint);}
 .chart-dot title{pointer-events:none;}
 .panel-body{padding:16px 20px;}
+/* ---------- v126: ranking (barras), orçado×comprado (barras duplas) e insights automáticos (Painel) ---------- */
+.rank-bar-track{height:7px; border-radius:100px; background:var(--surface-alt); overflow:hidden;}
+.rank-bar-fill{height:100%; border-radius:100px; background:var(--accent);}
+.rank-bar-fill.alt{background:var(--chart-3);}
+.cc-bars{display:flex; flex-direction:column;}
+.cc-bar-row{display:grid; align-items:center; gap:8px; margin:2px 0;}
+.cc-bar-row .bl{font-size:11px; color:var(--text-faint);}
+.cc-bar-track{height:9px; border-radius:100px; background:var(--surface-alt); overflow:hidden;}
+.cc-bar-fill{height:100%; border-radius:100px;}
+.cc-bar-fill.planned{background:var(--text-faint);}
+.cc-bar-fill.real{background:var(--accent);}
+.insight-list{display:flex; flex-direction:column; gap:10px;}
+.insight-item{display:flex; align-items:flex-start; gap:9px; font-size:13px; line-height:1.5;}
+.insight-item .dot{width:7px; height:7px; border-radius:50%; margin-top:5px; flex:none; background:var(--text-faint);}
+.insight-item.ok .dot{background:var(--ok);}
+.insight-item.warn .dot{background:var(--warn);}
+.insight-item.critical .dot{background:var(--critical);}
+.insight-item.neutral .dot{background:var(--text-faint);}
+.painel-clientes-grid{display:grid; grid-template-columns:220px 1fr; gap:22px; align-items:center;}
+@media (max-width:860px){ .painel-clientes-grid{grid-template-columns:1fr;} }
 .ing-table{border:1px solid var(--border); border-radius:10px; overflow:hidden;}
 .ing-header, .ing-line{display:grid; grid-template-columns:2.4fr .95fr .9fr .9fr .9fr 70px; gap:10px; align-items:center;}
 .ing-header{padding:7px 10px; background:var(--surface-alt); font-size:10.5px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.03em;}
@@ -4660,6 +4682,265 @@ function exportarResumoMesCSV(mesId, escopo, resumo){
   URL.revokeObjectURL(a.href);
 }
 
+/* ---- v126: resumo mensal reutilizável — mesma apuração do bloco de KPIs do Painel, mas isolada
+   numa função pra poder ser chamada tanto pro mês escolhido quanto pro mês anterior (comparação
+   dos insights automáticos), sem duplicar a lógica de apurarContrato/eventos/categoria. ---- */
+function apurarResumoMes(mesId, escopo, almocoIdx, cafeIdx){
+  if(!mesId) return null;
+  const contratosEscopo = [...contratos.entries()].filter(([,c]) => escopo === "todos" || c.unidade === escopo);
+  const linhas = contratosEscopo.map(([id,ct]) => ({ id, ct, ap: apurarContrato(id, ct, mesId, almocoIdx, cafeIdx) }))
+    .filter(r => r.ap.registros > 0 || r.ap.receita > 0.005);
+  const eventosEscopo = apurarEventosDoMes(mesId).filter(e => escopo === "todos" || e.unidade === escopo);
+  let receita = 0, custo = 0;
+  const catAcum = { refeicao: {custo:0, receita:0}, cafeExtras: {custo:0, receita:0} };
+  linhas.forEach(r => {
+    receita += r.ap.receita; custo += r.ap.custoTotal;
+    ["refeicao","cafeExtras"].forEach(k => { catAcum[k].custo += r.ap.porCategoria[k].custo; catAcum[k].receita += r.ap.porCategoria[k].receita; });
+  });
+  eventosEscopo.forEach(e => { receita += e.receita; custo += e.custo; });
+  return {
+    linhas, eventosEscopo, receita, custo, cmv: receita > 0 ? custo/receita : null, catAcum,
+    cmvRefeicao: catAcum.refeicao.receita > 0 ? catAcum.refeicao.custo/catAcum.refeicao.receita : null,
+    cmvCafeExtras: catAcum.cafeExtras.receita > 0 ? catAcum.cafeExtras.custo/catAcum.cafeExtras.receita : null
+  };
+}
+
+/* ---- análise por cliente: donut de composição + dispersão (faturamento x CMV) + ranking ----
+   ported from the old Painel's clientesDonutChart/clientesScatterChart/clientesRankTable, reusing
+   the per-contrato apurarContrato() rows already computed in renderPainel (linhas). */
+function fmtMoneyCurto(v){
+  if(v===null || v===undefined || !isFinite(v)) return "—";
+  if(Math.abs(v) >= 1000) return "R$" + (v/1000).toLocaleString("pt-BR",{maximumFractionDigits:1}) + "k";
+  return "R$" + v.toFixed(0);
+}
+function clientesDonutChart(rows, outros){
+  const PALETA = ["var(--chart-1)","var(--chart-2)","var(--chart-3)","var(--chart-4)","var(--chart-5)"];
+  const slices = rows.map((r,i) => ({nome: r.nome, valor: r.receita, cor: PALETA[i % PALETA.length]}));
+  if(outros > 0.005) slices.push({nome: "Outros clientes", valor: outros, cor: "#8a8172"});
+  const totalGeral = slices.reduce((a,s) => a+s.valor, 0);
+  if(totalGeral <= 0) return `<div class="empty-state">Nenhum faturamento apurado ainda — lance quantidades em Vendas.</div>`;
+  const R = 70, CX = 100, CY = 100, SW = 32, circ = 2*Math.PI*R;
+  let acc = 0;
+  const arcs = slices.map(s => {
+    const frac = s.valor/totalGeral;
+    const dash = frac*circ, gap = circ-dash, offset = -acc*circ;
+    acc += frac;
+    return `<circle cx="${CX}" cy="${CY}" r="${R}" fill="none" stroke="${s.cor}" stroke-width="${SW}" stroke-dasharray="${dash.toFixed(2)} ${gap.toFixed(2)}" stroke-dashoffset="${offset.toFixed(2)}" transform="rotate(-90 ${CX} ${CY})"><title>${escapeHtml(s.nome)}: ${fmtMoney(s.valor)} (${(frac*100).toFixed(1)}%)</title></circle>`;
+  }).join("");
+  return `<svg viewBox="0 0 200 200" width="200" height="200" role="img" aria-label="Composição do faturamento por cliente" style="flex-shrink:0;">
+    ${arcs}
+    <text x="100" y="95" text-anchor="middle" style="font-size:10.5px; fill:var(--text-faint);">Total do mês</text>
+    <text x="100" y="114" text-anchor="middle" style="font-size:14px; font-weight:600; fill:var(--text);">${fmtMoneyCurto(totalGeral)}</text>
+  </svg>`;
+}
+function clientesScatterChart(rows, faixaRef){
+  if(rows.length < 2) return `<div class="empty-state">É preciso pelo menos 2 clientes com faturamento apurado no período para cruzar volume × eficiência.</div>`;
+  const W = 640, H = 230, ML = 54, MR = 20, MT = 16, MB = 30;
+  const PW = W-ML-MR, PH = H-MT-MB;
+  const maxReceita = Math.max(...rows.map(r=>r.receita)) * 1.08;
+  const YMAX = 0.60;
+  const maxReg = Math.max(1, ...rows.map(r=>r.registros));
+  const xFor = v => ML + Math.min(v,maxReceita)/maxReceita*PW;
+  const yFor = v => MT + (1 - Math.min(v===null?0:v, YMAX)/YMAX)*PH;
+  const rFor = n => 4 + Math.sqrt(n/maxReg)*13;
+  const gridVals = [0,0.20,0.40,0.60];
+  const gridLines = gridVals.map(v => `<line class="chart-grid" x1="${ML}" y1="${yFor(v).toFixed(1)}" x2="${W-MR}" y2="${yFor(v).toFixed(1)}" stroke-width="1"></line>
+    <text class="chart-axis-label" x="${ML-6}" y="${(yFor(v)+3).toFixed(1)}" text-anchor="end">${(v*100).toFixed(0)}%</text>`).join("");
+  const xTicks = [0, maxReceita*0.5, maxReceita].map(v => `<text class="chart-axis-label" x="${xFor(v).toFixed(1)}" y="${H-8}" text-anchor="middle">${fmtMoneyCurto(v)}</text>`).join("");
+  const bandOk = `<rect x="${ML}" y="${yFor(faixaRef.alerta/100).toFixed(1)}" width="${PW}" height="${(yFor(0)-yFor(faixaRef.alerta/100)).toFixed(1)}" fill="var(--ok)" opacity="0.06"></rect>`;
+  const bandWarn = `<rect x="${ML}" y="${yFor(faixaRef.estourado/100).toFixed(1)}" width="${PW}" height="${(yFor(faixaRef.alerta/100)-yFor(faixaRef.estourado/100)).toFixed(1)}" fill="var(--warn)" opacity="0.08"></rect>`;
+  const bandCrit = `<rect x="${ML}" y="${yFor(YMAX).toFixed(1)}" width="${PW}" height="${(yFor(faixaRef.estourado/100)-yFor(YMAX)).toFixed(1)}" fill="var(--critical)" opacity="0.06"></rect>`;
+  const dots = rows.map(r => {
+    const cls = cmvCls(r.cmv, faixaRef); const cor = r.cmv===null ? "var(--text-faint)" : `var(--${cls})`;
+    return `<circle cx="${xFor(r.receita).toFixed(1)}" cy="${yFor(r.cmv).toFixed(1)}" r="${rFor(r.registros).toFixed(1)}" fill="${cor}" fill-opacity="0.55" stroke="${cor}" stroke-width="1.5"><title>${escapeHtml(r.nome)}: faturamento ${fmtMoney(r.receita)} · CMV ${r.cmv!==null?fmtPct(r.cmv):"—"} · ${r.registros} lançamento(s)</title></circle>`;
+  }).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Dispersão de clientes: faturamento por CMV, bolha proporcional ao número de lançamentos">
+    ${bandOk}${bandWarn}${bandCrit}${gridLines}${xTicks}${dots}
+  </svg>
+  <div class="footnote" style="margin-top:6px;">Eixo horizontal: faturamento apurado no período (volume). Eixo vertical: CMV (eficiência — menor é melhor). Tamanho da bolha: nº de lançamentos de venda (atividade). Faixa de referência: CMV de refeição da Matriz (simplificação — o cliente pode ser café/marmita/filial; não dá pra saber a faixa certa de cada um sem a operação de cada contrato).</div>`;
+}
+function clientesRankTable(rows, outros){
+  if(!rows.length) return `<div class="empty-state">Nenhum faturamento apurado ainda — lance quantidades em Vendas.</div>`;
+  const totalGeral = rows.reduce((s,r)=>s+r.receita,0) + outros;
+  const max = Math.max(...rows.map(r=>r.receita), 0.0001);
+  return `<div class="table-wrap"><table><thead><tr>
+      <th>#</th><th>Cliente</th><th style="text-align:right">Faturamento</th><th style="text-align:right">Custo</th><th>CMV</th><th>Participação</th>
+    </tr></thead><tbody>
+    ${rows.map((r,i) => `<tr>
+      <td class="num-cell">${i+1}</td>
+      <td class="name-cell">${escapeHtml(r.nome)}</td>
+      <td class="num-cell">${fmtMoney(r.receita)}</td>
+      <td class="num-cell">${fmtMoney(r.custo)}</td>
+      <td>${r.cmv!==null ? fmtPct(r.cmv) : "—"}</td>
+      <td style="min-width:130px;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <div class="rank-bar-track" style="flex:1;"><div class="rank-bar-fill" style="width:${(r.receita/max*100).toFixed(1)}%"></div></div>
+          <span class="footnote" style="margin:0; width:40px; text-align:right;">${totalGeral>0?(r.receita/totalGeral*100).toFixed(1):"0.0"}%</span>
+        </div>
+      </td>
+    </tr>`).join("")}
+    ${outros>0.5 ? `<tr><td></td><td class="name-cell" style="color:var(--text-faint)">Outros clientes</td><td class="num-cell">${fmtMoney(outros)}</td><td class="num-cell">—</td><td>—</td><td class="footnote">${totalGeral>0?(outros/totalGeral*100).toFixed(1):"0.0"}%</td></tr>` : ""}
+    </tbody></table></div>`;
+}
+
+/* ---- orçado x comprado por bloco de compra (total do mês, somando as semanas) ----
+   reaproveita orcadoPorBlocoSemana/compradoPorBlocoSemana (as mesmas funções da aba Orçamento). */
+function orcadoCompradoBarChart(mesId, escopo){
+  const orc = orcadoPorBlocoSemana(mesId, escopo), comp = compradoPorBlocoSemana(mesId, escopo);
+  if(!orc || !comp) return `<div class="empty-state">Nenhum mês de referência selecionado.</div>`;
+  const orcTotal = new Map(), compTotal = new Map();
+  orc.porSemanaBloco.forEach(sb => sb.porBloco.forEach((v,g) => orcTotal.set(g, (orcTotal.get(g)||0) + v)));
+  comp.porSemanaBloco.forEach(sb => sb.porBloco.forEach((v,g) => compTotal.set(g, (compTotal.get(g)||0) + v)));
+  const grupos = new Set([...orcTotal.keys(), ...compTotal.keys()]);
+  const rows = [...grupos].map(g => ({grupo: g, orcado: orcTotal.get(g)||0, comprado: compTotal.get(g)||0}))
+    .filter(r => r.orcado > 0.5 || r.comprado > 0.5)
+    .sort((a,b) => b.orcado - a.orcado).slice(0,8);
+  if(!rows.length) return `<div class="empty-state">Nenhum bloco de compra com orçado ou comprado neste mês.</div>`;
+  const max = Math.max(1, ...rows.map(r => Math.max(r.orcado, r.comprado)));
+  return `<div class="cc-bars" style="gap:14px;">${rows.map(r => `
+    <div>
+      <div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:4px;"><span>${escapeHtml(r.grupo)}</span><span class="footnote" style="margin:0;">${fmtMoney(r.comprado)} / ${fmtMoney(r.orcado)}</span></div>
+      <div class="cc-bar-row" style="grid-template-columns:62px 1fr 0px;"><span class="bl">Orçado</span><div class="cc-bar-track"><div class="cc-bar-fill planned" style="width:${Math.max(2,r.orcado/max*100).toFixed(1)}%"></div></div><span></span></div>
+      <div class="cc-bar-row" style="grid-template-columns:62px 1fr 0px;"><span class="bl">Comprado</span><div class="cc-bar-track"><div class="cc-bar-fill real" style="width:${Math.max(2,r.comprado/max*100).toFixed(1)}%"></div></div><span></span></div>
+    </div>`).join("")}</div>`;
+}
+
+/* ---- CMV de formulação: planejado x real por cardápio (1-5), semana a semana dentro do mês ----
+   diferente da evolução semanal acima (que é faturamento/custo REAL de Vendas): esta olha o cardápio
+   em si — "custo real" aqui é o custo da ficha/insumo recalculado AGORA com preço atual (mesma fórmula
+   usada em custo_planejado na hora de salvar o cardápio, ver botão salvar-almoco), comparado com o
+   custo_planejado que ficou congelado no momento em que o cardápio foi montado — então a diferença
+   mostra o quanto a inflação de insumo já corroeu a margem planejada daquele cardápio. */
+function custoRealCardapioDia(row){
+  if(!row || !row.itens || !row.itens.length) return 0;
+  return row.itens.reduce((s,item) => {
+    if(!item) return s;
+    const c = custoFichaOuInsumo(item);
+    return (c!==null && c!==undefined && item.gramagem_kg!=null) ? s + c*item.gramagem_kg : s;
+  }, 0);
+}
+function formulacaoCmvPorCardapio(mesId){
+  const mes = MESES_REFERENCIA.find(m => m.id === mesId);
+  if(!mes) return { numsComDados: [], resumos: new Map(), series: [], semanas: [] };
+  const diasFormulados = [...cardapiosAlmoco.values()].filter(d => d.itens && d.itens.length && mes.semanas.includes(d.semana) && REFEICAO_NUMS.includes(d.cardapio_num));
+  const byNum = new Map();     // num -> [{custoReal, custoPlanejado, preco}]
+  const bySemana = new Map();  // num -> Map(semana -> rows[])
+  diasFormulados.forEach(d => {
+    const num = d.cardapio_num || 1;
+    const row = {
+      custoReal: custoRealCardapioDia(d),
+      custoPlanejado: (d.custo_planejado!==null && d.custo_planejado!==undefined) ? d.custo_planejado : null,
+      preco: (d.preco_venda_planejado!==null && d.preco_venda_planejado!==undefined) ? d.preco_venda_planejado : null
+    };
+    if(!byNum.has(num)) byNum.set(num, []);
+    byNum.get(num).push(row);
+    if(!bySemana.has(num)) bySemana.set(num, new Map());
+    const bySem = bySemana.get(num);
+    if(!bySem.has(d.semana)) bySem.set(d.semana, []);
+    bySem.get(d.semana).push(row);
+  });
+  function media(arr, field){
+    const vals = arr.map(x=>x[field]).filter(v=>v!==null && v!==undefined && isFinite(v));
+    return vals.length ? vals.reduce((a,v)=>a+v,0)/vals.length : null;
+  }
+  function linhaResumo(rows){
+    const preco = media(rows,"preco"), custoPl = media(rows,"custoPlanejado"), custoReal = media(rows,"custoReal");
+    return {
+      dias: rows.length, preco, custoPlanejado: custoPl, custoReal,
+      cmvPlanejado: (custoPl!==null && preco>0) ? custoPl/preco : null,
+      cmvReal: (custoReal!==null && preco>0) ? custoReal/preco : null
+    };
+  }
+  const numsComDados = [...byNum.keys()].sort((a,b)=>a-b);
+  const resumos = new Map(numsComDados.map(num => [num, linhaResumo(byNum.get(num))]));
+  const semanas = mes.semanas;
+  const series = numsComDados.map((num, idx) => {
+    const bySem = bySemana.get(num) || new Map();
+    const pontos = semanas.map(s => {
+      const rows = bySem.get(s);
+      if(!rows || !rows.length) return null;
+      return linhaResumo(rows).cmvReal;
+    });
+    return {num, cor: `var(--chart-${(idx % 5) + 1})`, pontos};
+  }).filter(s => s.pontos.filter(v=>v!==null).length >= 2);
+  return { numsComDados, resumos, series, semanas };
+}
+function alertaGapFormulacao(r){
+  if(!r || r.cmvReal===null || r.cmvPlanejado===null) return null;
+  return r.cmvReal - r.cmvPlanejado;
+}
+function svgCmvFormulacao(series, semanas){
+  if(!series.length) return `<div class="empty-state">Dados insuficientes para traçar a evolução (é preciso pelo menos 2 semanas formuladas, com preço e custo planejado, em algum cardápio).</div>`;
+  const W = 640, H = 210, ML = 36, MR = 14, MT = 12, MB = 26;
+  const PW = W-ML-MR, PH = H-MT-MB;
+  const YMAX = 0.60;
+  const xFor = i => ML + (semanas.length>1 ? (i/(semanas.length-1))*PW : PW/2);
+  const yFor = v => MT + (1 - Math.min(v,YMAX)/YMAX)*PH;
+  const gridVals = [0,0.20,0.40,0.60];
+  const gridLines = gridVals.map(v => `<line class="chart-grid" x1="${ML}" y1="${yFor(v).toFixed(1)}" x2="${W-MR}" y2="${yFor(v).toFixed(1)}" stroke-width="1"></line>
+    <text class="chart-axis-label" x="${ML-6}" y="${(yFor(v)+3).toFixed(1)}" text-anchor="end">${(v*100).toFixed(0)}%</text>`).join("");
+  const xLabels = semanas.map((s,i) => `<text class="chart-axis-label" x="${xFor(i).toFixed(1)}" y="${H-6}" text-anchor="middle">${escapeHtml(rotuloSemanaCurto(s))}</text>`).join("");
+  const fb = CMV_FAIXAS_PADRAO.matriz_ref;
+  const bandOk = `<rect x="${ML}" y="${yFor(fb.alerta/100).toFixed(1)}" width="${PW}" height="${(yFor(0)-yFor(fb.alerta/100)).toFixed(1)}" fill="var(--ok)" opacity="0.06"></rect>`;
+  const bandWarn = `<rect x="${ML}" y="${yFor(fb.estourado/100).toFixed(1)}" width="${PW}" height="${(yFor(fb.alerta/100)-yFor(fb.estourado/100)).toFixed(1)}" fill="var(--warn)" opacity="0.08"></rect>`;
+  const bandCrit = `<rect x="${ML}" y="${yFor(YMAX).toFixed(1)}" width="${PW}" height="${(yFor(fb.estourado/100)-yFor(YMAX)).toFixed(1)}" fill="var(--critical)" opacity="0.06"></rect>`;
+  const lines = series.map(s => {
+    const pts = s.pontos.map((v,i) => v===null ? null : [xFor(i), yFor(v)]);
+    let segs = "";
+    for(let i=0;i<pts.length-1;i++){
+      if(pts[i] && pts[i+1]) segs += `<line x1="${pts[i][0].toFixed(1)}" y1="${pts[i][1].toFixed(1)}" x2="${pts[i+1][0].toFixed(1)}" y2="${pts[i+1][1].toFixed(1)}" stroke="${s.cor}" stroke-width="2.25" stroke-linecap="round"></line>`;
+    }
+    const dots = pts.map((p,i) => p ? `<circle class="chart-dot" cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="3.5" fill="${s.cor}"><title>${escapeHtml(labelNumeroCardapio("refeicao", s.num))} · ${escapeHtml(rotuloSemanaCurto(semanas[i]))}: CMV real ${fmtPct(s.pontos[i])}</title></circle>` : "").join("");
+    return segs + dots;
+  }).join("");
+  const legenda = series.map(s => `<span style="display:inline-flex; align-items:center; gap:5px; margin-right:14px;"><span style="width:9px; height:9px; border-radius:50%; background:${s.cor}; display:inline-block;"></span>${escapeHtml(labelNumeroCardapio("refeicao", s.num))}</span>`).join("");
+  return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Evolução do CMV real por semana, por cardápio">
+    ${bandOk}${bandWarn}${bandCrit}${gridLines}${xLabels}${lines}
+  </svg>
+  <div class="hint" style="margin-top:6px;">${legenda}</div>`;
+}
+
+/* ---- insights automáticos: leitura rápida do período, cada insight só aparece quando há dado
+   suficiente pra sustentá-lo (nunca inventa número). ---- */
+function variacaoFrac(atual, anterior){
+  if(atual===null||atual===undefined||anterior===null||anterior===undefined||!isFinite(anterior)||anterior===0) return null;
+  return (atual-anterior)/Math.abs(anterior);
+}
+function insightsAutomaticos(ctx){
+  const itens = [];
+  const varFat = variacaoFrac(ctx.receita, ctx.resumoAnterior ? ctx.resumoAnterior.receita : null);
+  if(varFat !== null){
+    itens.push({tone: varFat>=0?"ok":"critical", texto: `Faturamento ${varFat>=0?"subiu":"caiu"} ${fmtPct(Math.abs(varFat))} vs. ${escapeHtml(ctx.mesAnteriorNome)} (${fmtMoney(ctx.resumoAnterior.receita)} → ${fmtMoney(ctx.receita)}).`});
+  }
+  const varCmv = variacaoFrac(ctx.cmv, ctx.resumoAnterior ? ctx.resumoAnterior.cmv : null);
+  if(varCmv !== null){
+    itens.push({tone: varCmv<=0?"ok":"warn", texto: `CMV geral ${varCmv>=0?"piorou":"melhorou"} ${fmtPct(Math.abs(varCmv))} vs. mês anterior (${fmtPct(ctx.resumoAnterior.cmv)} → ${ctx.cmv!==null?fmtPct(ctx.cmv):"—"}).`});
+  }
+  if(ctx.clientesTop.length){
+    const top1 = ctx.clientesTop[0];
+    const totalCli = ctx.clientesRows.reduce((s,r)=>s+r.receita,0);
+    const pct = totalCli>0 ? top1.receita/totalCli : 0;
+    if(pct >= 0.25) itens.push({tone: pct>=0.4?"critical":"warn", texto: `${escapeHtml(top1.nome)} concentra ${(pct*100).toFixed(0)}% do faturamento do período — dependência alta de um único cliente.`});
+  }
+  if(ctx.numsComDados.length){
+    let pior = null;
+    ctx.numsComDados.forEach(num => { const g = alertaGapFormulacao(ctx.resumosFormulacao.get(num)); if(g!==null && (pior===null || g>pior.gap)) pior = {num, gap:g}; });
+    if(pior && pior.gap > 0.03) itens.push({tone:"critical", texto: `${escapeHtml(labelNumeroCardapio("refeicao", pior.num))} está com CMV real ${fmtPct(pior.gap)} acima do planejado — maior desvio do mês na formulação.`});
+  }
+  if(ctx.orcadoMes > 0){
+    const pctComprado = ctx.compradoMesVal/ctx.orcadoMes;
+    if(pctComprado >= 0.95) itens.push({tone:"critical", texto: `Orçamento de compras já ${(pctComprado*100).toFixed(0)}% utilizado (${fmtMoney(ctx.compradoMesVal)} de ${fmtMoney(ctx.orcadoMes)}) — saldo apertado para o restante do mês.`});
+    else itens.push({tone:"neutral", texto: `Comprado ${(pctComprado*100).toFixed(0)}% do orçado no mês — saldo de ${fmtMoney(ctx.orcadoMes-ctx.compradoMesVal)}.`});
+  }
+  if(ctx.cmvCafeExtras !== null && ctx.cmvRefeicao !== null){
+    const diff = ctx.cmvCafeExtras - ctx.cmvRefeicao;
+    if(Math.abs(diff) >= 0.03) itens.push({tone: diff>0?"warn":"ok", texto: `Café e extras está com CMV ${diff>0?"pior":"melhor"} que Refeição (${fmtPct(ctx.cmvCafeExtras)} vs. ${fmtPct(ctx.cmvRefeicao)}).`});
+  }
+  if(ctx.orfaosCount) itens.push({tone:"critical", texto: `${ctx.orfaosCount} ingrediente(s) sem insumo cadastrado — pode estar distorcendo o custo de alguma ficha (ver Checagem de integridade das fichas).`});
+  if(!itens.length) itens.push({tone:"neutral", texto: "Sem sinais fora do comum neste período — dados insuficientes ou tudo dentro do esperado."});
+  return `<div class="insight-list">${itens.slice(0,7).map(it => `<div class="insight-item ${it.tone}"><span class="dot"></span><span>${it.texto}</span></div>`).join("")}</div>`;
+}
+
 function renderPainel(){
   document.getElementById("page-title").textContent = "Painel";
   document.getElementById("page-desc").textContent = "Faturamento, custo e CMV real do mês, e resumo de Orçamento e Estoque";
@@ -4672,23 +4953,30 @@ function renderPainel(){
   if(!painelMesSel){ content.innerHTML = `<div class="empty-state">Nenhum mês de referência cadastrado ainda.</div>`; return; }
 
   const almocoIdx = indiceCardapioAlmoco(), cafeIdx = indiceCafeSemana();
-  const contratosEscopo = [...contratos.entries()].filter(([,c]) => painelEscopoSel === "todos" || c.unidade === painelEscopoSel);
-  const linhas = contratosEscopo.map(([id,ct]) => ({ id, ct, ap: apurarContrato(id, ct, painelMesSel, almocoIdx, cafeIdx) }))
-    .filter(r => r.ap.registros > 0 || r.ap.receita > 0.005);
-  const eventosEscopo = apurarEventosDoMes(painelMesSel).filter(e => painelEscopoSel === "todos" || e.unidade === painelEscopoSel);
-
-  let totReceita = 0, totCusto = 0;
-  const catAcum = { refeicao: {custo:0, receita:0}, cafeExtras: {custo:0, receita:0} };
-  linhas.forEach(r => {
-    totReceita += r.ap.receita; totCusto += r.ap.custoTotal;
-    ["refeicao","cafeExtras"].forEach(k => { catAcum[k].custo += r.ap.porCategoria[k].custo; catAcum[k].receita += r.ap.porCategoria[k].receita; });
-  });
-  eventosEscopo.forEach(e => { totReceita += e.receita; totCusto += e.custo; });
-  const cmvReal = totReceita > 0 ? totCusto/totReceita : null;
+  const resumo = apurarResumoMes(painelMesSel, painelEscopoSel, almocoIdx, cafeIdx);
+  const { linhas, eventosEscopo, catAcum } = resumo;
+  const totReceita = resumo.receita, totCusto = resumo.custo, cmvReal = resumo.cmv;
   const margem = totReceita - totCusto;
 
   const orcadoMes = totalOrcadoMes(painelMesSel, painelEscopoSel);
   const compradoMesVal = totalCompradoMes(painelMesSel, painelEscopoSel);
+
+  // ---- v126: mês anterior (para os insights automáticos de variação) ----
+  const idxMesAtual = meses.findIndex(m => m.id === painelMesSel);
+  const mesAnteriorRef = idxMesAtual > 0 ? meses[idxMesAtual - 1] : null;
+  const resumoAnterior = mesAnteriorRef ? apurarResumoMes(mesAnteriorRef.id, painelEscopoSel, almocoIdx, cafeIdx) : null;
+
+  // ---- v126: análise por cliente (donut + dispersão + ranking) ----
+  const clientesRows = linhas
+    .map(r => ({nome: r.ct.nome_cliente, receita: r.ap.receita, custo: r.ap.custoTotal, cmv: r.ap.cmv, registros: r.ap.registros}))
+    .filter(r => r.receita > 0.005)
+    .sort((a,b) => b.receita - a.receita);
+  const clientesTop = clientesRows.slice(0,10);
+  const clientesOutrosValor = Math.max(0, clientesRows.slice(10).reduce((s,r)=>s+r.receita,0));
+  const faixaClientesRef = CMV_FAIXAS_PADRAO[painelEscopoSel === "filial" ? "filial_ref" : "matriz_ref"];
+
+  // ---- v126: CMV de formulação (planejado x real por cardápio, semana a semana) ----
+  const formulacao = formulacaoCmvPorCardapio(painelMesSel);
 
   const estoqueMatriz = resumoEstoqueUnidade("matriz");
   const estoqueFilial = resumoEstoqueUnidade("filial");
@@ -4703,7 +4991,7 @@ function renderPainel(){
   const mostraFaixaCmv = painelEscopoSel !== "todos"; // faixa de CMV exige saber matriz/filial — não dá pra aplicar num "grupo inteiro" misturado
 
   content.innerHTML = `
-    <div class="footnote" style="margin-bottom:14px;">V1 ampliada: evolução semanal (receita/custo ratean fixo/franquia igualmente entre as semanas — só para o gráfico, não muda a apuração real), faixas de CMV (só com Matriz ou Filial selecionado — em "Grupo inteiro" misturaria padrões diferentes), ranking de pratos (não separa por unidade — cardápio não é por unidade nesta base) e checagem de órfãos/fichas duplicadas. "Divergência vs. planilha" do sistema antigo não foi portada (sem dado equivalente aqui) e "fechar mês" foi substituído por uma exportação simples — ele existia só pra contornar o limite de 5.000 documentos do Firestore, que não existe no Postgres, então apagar dados reais não teria propósito aqui. Ainda falta: filtro por operação (RB/Cardápio 1/2).</div>
+    <div class="footnote" style="margin-bottom:14px;">V1 ampliada: evolução semanal (receita/custo ratean fixo/franquia igualmente entre as semanas — só para o gráfico, não muda a apuração real), faixas de CMV (só com Matriz ou Filial selecionado — em "Grupo inteiro" misturaria padrões diferentes), ranking de pratos (não separa por unidade — cardápio não é por unidade nesta base), checagem de órfãos/fichas duplicadas, análise por cliente (composição, dispersão faturamento×CMV e ranking), insights automáticos, orçado×comprado por bloco e CMV de formulação planejado×real por cardápio. "Divergência vs. planilha" do sistema antigo não foi portada (sem dado equivalente aqui) e "fechar mês" foi substituído por uma exportação simples. O que ainda falta do Painel antigo, e por que: a "Visão do negócio" segmentada por operação (RB · Cardápio 1 / Clientes do Cardápio 2 dentro da Matriz) — bloqueado estruturalmente, porque a tabela de contratos desta base não guarda essa sub-operação (só Matriz/Filial); decidir isso é um passo separado, de esquema, não desta rodada.</div>
     <div class="menu-controls">
       <select id="pn-mes">${meses.map(m => `<option value="${m.id}" ${m.id===painelMesSel?"selected":""}>${escapeHtml(m.nome)}</option>`).join("")}</select>
       <div class="seg-toggle" id="pn-escopo">
@@ -4720,8 +5008,36 @@ function renderPainel(){
       <div class="stat-block"><div class="label">Margem</div><div class="val">${fmtMoney(margem)}</div></div>
     </div>
     <div class="panel">
+      <div class="panel-head"><h3>Insights automáticos</h3></div>
+      <div class="panel-body">${insightsAutomaticos({
+        receita: totReceita, cmv: cmvReal, resumoAnterior, mesAnteriorNome: mesAnteriorRef ? mesAnteriorRef.nome : "",
+        clientesTop, clientesRows, numsComDados: formulacao.numsComDados, resumosFormulacao: formulacao.resumos,
+        orcadoMes, compradoMesVal, cmvCafeExtras: catAcum.cafeExtras.receita>0 ? catAcum.cafeExtras.custo/catAcum.cafeExtras.receita : null,
+        cmvRefeicao: catAcum.refeicao.receita>0 ? catAcum.refeicao.custo/catAcum.refeicao.receita : null, orfaosCount: orfaos.length
+      })}</div>
+    </div>
+    <div class="panel">
       <div class="panel-head"><h3>Evolução semanal</h3></div>
       <div class="panel-body">${svgEvolucaoSemanal(evolucao)}</div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Análise por cliente</h3></div>
+      <div class="panel-body">
+        <div class="painel-clientes-grid" style="margin-bottom:18px;">
+          ${clientesDonutChart(clientesTop, clientesOutrosValor)}
+          <div>${clientesRankTable(clientesTop, clientesOutrosValor)}</div>
+        </div>
+        ${clientesScatterChart(clientesTop.concat(clientesRows.slice(10)), faixaClientesRef)}
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Orçado × Comprado por bloco de compra</h3></div>
+      <div class="panel-body">${orcadoCompradoBarChart(painelMesSel, painelEscopoSel)}</div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>CMV de formulação — planejado × real por cardápio</h3></div>
+      <div class="panel-body">${svgCmvFormulacao(formulacao.series, formulacao.semanas)}</div>
+      <div class="footnote" style="padding:0 20px 16px;">Diferente da Evolução semanal acima (que é faturamento/custo REAL apurado de Vendas): aqui "custo real" é o custo da ficha/insumo recalculado agora, com preço atual, e comparado ao custo planejado congelado no momento em que o cardápio foi montado — mostra a corrosão de margem por inflação de insumo na formulação do cardápio.</div>
     </div>
     <div class="panel">
       <div class="panel-head"><h3>Refeição × Café/Extras</h3></div>
