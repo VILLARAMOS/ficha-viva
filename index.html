@@ -60,7 +60,7 @@ button{font-family:inherit;}
 .sidebar{width:236px;flex:none;background:var(--surface);border-right:1px solid var(--border);padding:16px 12px;display:flex;flex-direction:column;gap:2px;transition:width .15s ease;}
 .sidebar.collapsed{width:68px;padding:16px 10px;}
 .brand{display:flex;align-items:center;gap:10px;padding:2px 8px 18px;}
-.brand .brand-mark{width:30px;height:30px;flex:none;border-radius:8px;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-family:'Fraunces',serif;font-weight:600;font-size:15px;}
+.brand .brand-mark{width:32px;height:32px;flex:none;border-radius:50%;object-fit:cover;box-shadow:0 0 0 1px var(--border);}
 .brand .brand-text{display:flex;flex-direction:column;gap:2px;min-width:0;}
 .brand .mark{font-family:'Fraunces',serif;font-size:18px;font-weight:600;letter-spacing:.2px;white-space:nowrap;}
 .brand .mark em{color:var(--accent);font-style:normal;}
@@ -306,7 +306,7 @@ table.cardapio-table .autocomplete{position:relative;}
 <div id="app" hidden>
   <nav class="sidebar" id="sidebar">
     <div class="brand">
-      <div class="brand-mark">VR</div>
+      <img class="brand-mark" src="assets/logo-mark.png" alt="Villa Ramos">
       <div class="brand-text">
         <div class="mark">Ficha <em>Viva</em></div>
         <div class="sub">Grupo Villa Ramos</div>
