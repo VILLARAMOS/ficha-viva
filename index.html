@@ -501,7 +501,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
   goToView(currentView);
 }
 
@@ -662,12 +662,40 @@ let cardapiosAlmoco = new Map(); // doc_id_legado -> {cardapio_num, semana, dia,
 let cafeSemanas = new Map();     // doc_id_legado -> {cardapio_num, semana, dias:{segunda:{itens:[...]}, ...}}
 let cafeConfigs = new Map();     // cardapio_num -> {label, num_slots}
 let cardapioNumsExtra = [];      // [{id, grupo, num, label}] números extras criados pelo usuário (refeição/marmita)
+let cardapioMetas = new Map();   // "grupo|num|mesId" -> {id, grupo, num, mes_id, tipo_meta:'cmv_pct'|'custo_refeicao', valor}
 
 async function loadCardapioNumerosExtra(){
   const { data, error } = await sb.from('cardapio_numeros_extra').select('*');
   cardapioNumsExtra = [];
   if (error) return;
   cardapioNumsExtra = data || [];
+}
+
+async function loadCardapioMetas(){
+  const { data, error } = await sb.from('cardapio_metas').select('*');
+  cardapioMetas = new Map();
+  if (error) return;
+  (data || []).forEach(r => cardapioMetas.set(`${r.grupo}|${r.num}|${r.mes_id}`, r));
+}
+function metaDoCardapio(grupo, num, mesId){
+  return cardapioMetas.get(`${grupo}|${num}|${mesId}`) || null;
+}
+async function salvarMetaCardapio(grupo, num, mesId, tipoMeta, valor){
+  const existente = metaDoCardapio(grupo, num, mesId);
+  const data = { grupo, num, mes_id: mesId, tipo_meta: tipoMeta, valor };
+  Object.assign(data, carimbo());
+  let error;
+  if(existente){ ({error} = await sb.from('cardapio_metas').update(data).eq('id', existente.id)); }
+  else { ({error} = await sb.from('cardapio_metas').insert(data)); }
+  if(error) throw error;
+  await loadCardapioMetas();
+}
+async function excluirMetaCardapio(grupo, num, mesId){
+  const existente = metaDoCardapio(grupo, num, mesId);
+  if(!existente) return;
+  const { error } = await sb.from('cardapio_metas').delete().eq('id', existente.id);
+  if(error) throw error;
+  await loadCardapioMetas();
 }
 
 async function loadCardapios(){
@@ -2040,24 +2068,46 @@ function montarPainelCmv(grupo, num, semana){
   const semanaDoMesInfo = _infoSemana(semana);
   const semanaDoMes = semanaDoMesInfo ? semanaDoMesInfo.num : null;
 
+  const meta = metaDoCardapio(grupo, num, mesId);
+  const metaBlocoHtml = (() => {
+    if(!meta){
+      return `<div class="stat-block"><div class="label">Meta do mês</div><div class="val small" style="color:var(--text-faint);">não definida</div><a href="#" id="card-editar-meta" class="footnote" style="display:inline-block; margin-top:4px;">+ definir meta</a></div>`;
+    }
+    const valorTxt = meta.tipo_meta === "cmv_pct" ? fmtPct(meta.valor) : fmtMoney(meta.valor);
+    const labelTxt = meta.tipo_meta === "cmv_pct" ? "Meta de CMV — mês" : "Meta de custo/refeição — mês";
+    return `<div class="stat-block"><div class="label">${labelTxt}</div><div class="val">${valorTxt}</div><a href="#" id="card-editar-meta" class="footnote" style="display:inline-block; margin-top:4px;">editar meta</a></div>`;
+  })();
+  function corDiff(diff, invertido){
+    // diff > 0 significa "acima da meta" (gastando/cobrando mais) — regra: custo acima da meta é ruim (vermelho),
+    // preço/CMV acima da meta também é ruim pro CMV (mais caro em % do que a meta definida).
+    if(diff == null) return "";
+    const ruim = invertido ? diff < 0 : diff > 0;
+    return diff === 0 ? "color:var(--text-muted);" : (ruim ? "color:var(--critical);" : "color:var(--ok);");
+  }
+
   let blocosHtml;
   if(grupo === "cafe"){
     const pSemana = custoPlanejadoCafeSemana(num, semana);
     const pMes = custoPlanejadoCafeMes(num, mesId);
     const real = realCmvCardapio("cafe", num, mesId);
+    const diffMes = (meta && meta.tipo_meta==="custo_refeicao" && pMes.custoMedioDia!=null) ? pMes.custoMedioDia - meta.valor : null;
     blocosHtml = `
       <div class="stat-block"><div class="label">Custo médio/dia — semana</div><div class="val">${pSemana.custoMedioDia!=null?fmtMoney(pSemana.custoMedioDia):"—"}</div></div>
-      <div class="stat-block"><div class="label">Custo médio/dia — mês</div><div class="val">${pMes.custoMedioDia!=null?fmtMoney(pMes.custoMedioDia):"—"}</div></div>
+      <div class="stat-block"><div class="label">Custo médio/dia — mês</div><div class="val" style="${corDiff(diffMes)}">${pMes.custoMedioDia!=null?fmtMoney(pMes.custoMedioDia):"—"}</div>${diffMes!=null?`<div class="val small" style="${corDiff(diffMes)}">${diffMes>0?"+":""}${fmtMoney(diffMes)} vs. meta</div>`:""}</div>
       <div class="stat-block"><div class="label">CMV real do mês</div><div class="val">${real.cmv!=null?fmtPct(real.cmv):"—"}</div><div class="val small">${real.receita>0?`${fmtMoney(real.receita)} receita · ${fmtMoney(real.custo)} custo`:"sem vendas lançadas ainda"}</div></div>
+      ${metaBlocoHtml}
     `;
   } else {
     const pSemana = cmvPlanejadoSemana(num, semana);
     const pMes = cmvPlanejadoMes(num, mesId);
     const real = realCmvCardapio(grupo, num, mesId);
+    const diffCmvMes = (meta && meta.tipo_meta==="cmv_pct" && pMes.cmv!=null) ? pMes.cmv - meta.valor : null;
+    const diffCustoMes = (meta && meta.tipo_meta==="custo_refeicao" && pMes.custoMedioDia!=null) ? pMes.custoMedioDia - meta.valor : null;
     blocosHtml = `
       <div class="stat-block"><div class="label">CMV planejado — semana</div><div class="val">${pSemana.cmv!=null?fmtPct(pSemana.cmv):"—"}</div><div class="val small">${pSemana.custoMedioDia!=null?`custo médio ${fmtMoney(pSemana.custoMedioDia)}/dia`:"sem dados"}${pSemana.precoMedioDia!=null?` · venda ${fmtMoney(pSemana.precoMedioDia)}/dia`:""}</div></div>
-      <div class="stat-block"><div class="label">CMV planejado — mês</div><div class="val">${pMes.cmv!=null?fmtPct(pMes.cmv):"—"}</div><div class="val small">${pMes.custoMedioDia!=null?`custo médio ${fmtMoney(pMes.custoMedioDia)}/dia`:"sem dados"}</div></div>
+      <div class="stat-block"><div class="label">CMV planejado — mês</div><div class="val" style="${corDiff(diffCmvMes)}">${pMes.cmv!=null?fmtPct(pMes.cmv):"—"}</div><div class="val small" style="${corDiff(diffCustoMes)}">${diffCustoMes!=null?`${diffCustoMes>0?"+":""}${fmtMoney(diffCustoMes)} vs. meta`:(pMes.custoMedioDia!=null?`custo médio ${fmtMoney(pMes.custoMedioDia)}/dia`:"sem dados")}</div></div>
       <div class="stat-block"><div class="label">CMV real do mês</div><div class="val">${real.cmv!=null?fmtPct(real.cmv):"—"}</div><div class="val small">${real.receita>0?`${fmtMoney(real.receita)} receita · ${fmtMoney(real.custo)} custo`:"sem vendas lançadas ainda"}</div></div>
+      ${metaBlocoHtml}
     `;
   }
 
@@ -2085,6 +2135,8 @@ function montarPainelCmv(grupo, num, semana){
   host.innerHTML = `<div class="cardapio-cmv-panel">${blocosHtml}</div>${incHtml}`;
   const linkInc = document.getElementById("card-abrir-incidencia");
   if(linkInc) linkInc.addEventListener("click", e => { e.preventDefault(); goToView("incidencia"); });
+  const linkMeta = document.getElementById("card-editar-meta");
+  if(linkMeta) linkMeta.addEventListener("click", e => { e.preventDefault(); abrirMetaModal(grupo, num, mesId, () => montarPainelCmv(grupo, num, semana)); });
 }
 
 /* ===== REFEIÇÃO / MARMITA — tabela editável (categorias × dias) =====
@@ -2673,6 +2725,63 @@ function abrirCopiarSemanaModal(grupo, destNum, destSemana){
     }
   }
   render();
+}
+
+function abrirMetaModal(grupo, num, mesId, onSaved){
+  const root = document.getElementById("modal-root");
+  const atual = metaDoCardapio(grupo, num, mesId);
+  const mesNome = (MESES_REFERENCIA.find(m => m.id === mesId) || {}).nome || mesId;
+  root.innerHTML = `
+    <div class="modal-overlay" id="mt-ov">
+      <div class="modal">
+        <div class="modal-head"><h2>Meta do mês — ${escapeHtml(mesNome)}</h2><button class="close-x" id="mt-close">&times;</button></div>
+        <div class="modal-body">
+          <div class="footnote" style="margin-bottom:12px;">${escapeHtml(labelNumeroCardapio(grupo, num))}. Essa meta é digitada aqui, mês a mês — não vem de nenhuma planilha. Serve de referência pra comparar com o CMV planejado/real e, mais pra frente, pra sugestão automática de cardápio respeitar o teto.</div>
+          <div class="field"><label>Tipo de meta</label>
+            <select id="mt-tipo">
+              <option value="cmv_pct" ${(!atual||atual.tipo_meta==="cmv_pct")?"selected":""}>% CMV (custo ÷ preço de venda)</option>
+              <option value="custo_refeicao" ${atual&&atual.tipo_meta==="custo_refeicao"?"selected":""}>Custo por refeição (R$)</option>
+            </select>
+          </div>
+          <div class="field"><label>Valor<span id="mt-valor-unidade" class="footnote"></span></label>
+            <input type="number" step="0.01" id="mt-valor" value="${atual ? (atual.tipo_meta==="cmv_pct" ? Number(atual.valor)*100 : Number(atual.valor)) : ""}" placeholder="${atual ? "" : "ex.: 35"}">
+          </div>
+          <div class="footnote" id="mt-err" style="color:var(--critical);"></div>
+        </div>
+        <div class="modal-foot">
+          ${atual ? `<button class="btn danger" id="mt-excluir" style="margin-right:auto;">Excluir meta</button>` : ""}
+          <button class="btn" id="mt-cancel">Cancelar</button>
+          <button class="btn primary" id="mt-salvar">Salvar</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById("mt-close").onclick = () => root.innerHTML = "";
+  document.getElementById("mt-cancel").onclick = () => root.innerHTML = "";
+  document.getElementById("mt-ov").addEventListener("click", e => { if(e.target.id==="mt-ov") root.innerHTML=""; });
+  const unidadeEl = document.getElementById("mt-valor-unidade");
+  const tipoEl = document.getElementById("mt-tipo");
+  const atualizarUnidade = () => { unidadeEl.textContent = tipoEl.value === "cmv_pct" ? " (em %, ex.: 35)" : " (em R$, ex.: 12.50)"; };
+  atualizarUnidade();
+  tipoEl.addEventListener("change", atualizarUnidade);
+  if(atual){
+    document.getElementById("mt-excluir").onclick = async () => {
+      if(!(await confirmDialog("Excluir a meta deste cardápio neste mês?"))) return;
+      try{ await excluirMetaCardapio(grupo, num, mesId); root.innerHTML = ""; onSaved && onSaved(); }
+      catch(e){ showAlert("Erro ao excluir: " + (e.message || e.code || e)); }
+    };
+  }
+  document.getElementById("mt-salvar").onclick = async () => {
+    const errEl = document.getElementById("mt-err");
+    const tipo = document.getElementById("mt-tipo").value;
+    const valorDigitado = parseFloat(document.getElementById("mt-valor").value);
+    if(!(valorDigitado >= 0)){ errEl.textContent = "Informe um valor válido."; return; }
+    const valor = tipo === "cmv_pct" ? valorDigitado/100 : valorDigitado;
+    try{
+      await salvarMetaCardapio(grupo, num, mesId, tipo, valor);
+      root.innerHTML = "";
+      onSaved && onSaved();
+    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+  };
 }
 
 function imprimirCardapioCompleto(grupo, num, semana){
