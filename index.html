@@ -135,6 +135,13 @@ tbody tr:hover{background:var(--surface-alt);}
 .num-cell{font-family:'IBM Plex Mono',monospace;text-align:right;font-variant-numeric:tabular-nums;}
 .name-cell{max-width:340px;white-space:normal;}
 .tag-sheet{font-size:11px;color:var(--text-faint);font-family:'IBM Plex Mono',monospace;}
+.tbl-compact th,.tbl-compact td{padding:6px 10px;font-size:12.5px;}
+.wrap-cell{white-space:normal;max-width:260px;}
+.inc-table th,.inc-table td{padding:6px 8px;font-size:12.5px;}
+.inc-table .name-cell{max-width:220px;}
+.inc-table input[type=number]{width:100%;max-width:56px;padding:5px 6px;text-align:right;box-sizing:border-box;font:inherit;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);}
+.inc-dias{display:flex;flex-wrap:wrap;gap:8px 14px;}
+.inc-dia{display:flex;align-items:center;gap:5px;font-size:13px;white-space:nowrap;}
 .search-bar{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
 .search-bar input,.search-bar select{font:inherit;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:9px 11px;width:auto;min-width:170px;}
 .search-bar input[type=text]{flex:1;min-width:220px;}
@@ -3568,13 +3575,26 @@ function renderIncidencia(){
   const fichasNuncaUsadas = [...fichas.entries()].filter(([id]) => !usoProteina.has(id));
   const fichasSemTipoTotal = [...fichas.entries()].filter(([,f]) => !f.tipo_proteina).length;
 
+  // Mesma lógica de mineração de histórico, agora para as outras categorias do cardápio (grupo da ficha:
+  // Base, Guarnição, Salada, Sobremesa, Suco) — ajuda a saber que tipo de item é cada ficha na hora de montar cardápio.
+  const CATEGORIA_GRUPO_PREFIXO = [["Proteína","PROTEÍNA"],["Base","BASE"],["Guarnição","GUARNIÇÃO"],["Salada","SALADA"],["Sobremesa","SOBREMESA"],["Suco","SUCO"]];
+  const usoGrupo = new Map();
+  cardapiosAlmoco.forEach(row => (row.itens||[]).forEach(it => {
+    if(!it.ficha_id || !it.categoria) return;
+    if(!CATEGORIA_GRUPO_PREFIXO.some(([pfx]) => it.categoria.startsWith(pfx))) return;
+    usoGrupo.set(it.ficha_id, (usoGrupo.get(it.ficha_id)||0) + 1);
+  }));
+  const fichasUsadasGrupo = [...fichas.entries()].filter(([id]) => usoGrupo.has(id));
+  const fichasNuncaUsadasGrupo = [...fichas.entries()].filter(([id]) => !usoGrupo.has(id));
+  const fichasSemGrupoTotal = [...fichas.entries()].filter(([,f]) => !f.grupo).length;
+
   content.innerHTML = `
     <div class="footnote" style="margin-bottom:14px;">Cada <strong>perfil</strong> é o mapa de carnes de um grupo de contratos: quantos pratos de cada tipo de proteína entram em cada semana do mês (Semana 1 a 5) e quais dias da semana contam (Geral = seg–sex, RB = seg–sáb, por exemplo). Cada contrato ativo escolhe um perfil (campo "Perfil de incidência", na aba Contratos).</div>
     <div class="panel">
       <div class="panel-head"><h3>Perfis</h3></div>
       <div class="table-wrap">
-        <table>
-          <thead><tr><th>Perfil</th><th>Dias que contam</th>${TIPOS_PROTEINA.map(t => `<th style="text-align:right;">${escapeHtml(t.curto)}/mês</th>`).join("")}<th>Usado por</th><th></th></tr></thead>
+        <table class="tbl-compact">
+          <thead><tr><th>Perfil</th><th>Dias</th>${TIPOS_PROTEINA.map(t => `<th style="text-align:right;">${escapeHtml(t.curto)}/mês</th>`).join("")}<th>Usado por</th><th></th></tr></thead>
           <tbody id="inc-tbody"></tbody>
         </table>
       </div>
@@ -3585,12 +3605,27 @@ function renderIncidencia(){
         <div class="footnote" style="margin-bottom:10px;">Pré-classifiquei em 06/10/2026, por padrão de nome, os pratos que já apareceram em algum cardápio real (histórico de 14 semanas) — revise/corrija abaixo. As demais ${fichasNuncaUsadas.length} fichas cadastradas nunca entraram como Proteína num cardápio, então não aparecem na lista por padrão (ligue "mostrar todas" se precisar).</div>
         <div class="search-bar">
           <input type="text" id="inc-busca-ficha" placeholder="Buscar ficha…">
-          <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted); white-space:nowrap;"><input type="checkbox" id="inc-mostrar-todas"> mostrar todas as fichas, não só as já usadas (${fichasNuncaUsadas.length})</label>
+          <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted); white-space:nowrap;"><input type="checkbox" id="inc-mostrar-todas"> mostrar todas, não só as já usadas (${fichasNuncaUsadas.length})</label>
           <span class="footnote" id="inc-count" style="align-self:center;"></span>
         </div>
-        <div class="table-wrap"><table>
-          <thead><tr><th>Ficha</th><th>Usos em cardápio</th><th>Tipo de proteína</th></tr></thead>
+        <div class="table-wrap"><table class="tbl-compact">
+          <thead><tr><th>Ficha</th><th style="text-align:right;">Usos</th><th>Tipo de proteína</th></tr></thead>
           <tbody id="inc-ficha-tbody"></tbody>
+        </table></div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Classificação por grupo das fichas</h3><span class="hint">${fichasSemGrupoTotal} sem classificar de ${fichas.size} fichas no total</span></div>
+      <div class="panel-body">
+        <div class="footnote" style="margin-bottom:10px;">Mesma ideia da classificação de proteína, mas pra dizer se a ficha é Base, Guarnição, Salada, Sobremesa ou Suco — isso ajuda na elaboração do cardápio. Pré-classifiquei pelo histórico de 14 semanas os pratos que já apareceram em algum cardápio real; revise/corrija abaixo. As demais ${fichasNuncaUsadasGrupo.length} fichas nunca entraram num cardápio nessas categorias, então não aparecem na lista por padrão.</div>
+        <div class="search-bar">
+          <input type="text" id="inc-busca-grupo" placeholder="Buscar ficha…">
+          <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted); white-space:nowrap;"><input type="checkbox" id="inc-mostrar-todas-grupo"> mostrar todas, não só as já usadas (${fichasNuncaUsadasGrupo.length})</label>
+          <span class="footnote" id="inc-count-grupo" style="align-self:center;"></span>
+        </div>
+        <div class="table-wrap"><table class="tbl-compact">
+          <thead><tr><th>Ficha</th><th style="text-align:right;">Usos</th><th>Grupo</th></tr></thead>
+          <tbody id="inc-grupo-tbody"></tbody>
         </table></div>
       </div>
     </div>
@@ -3601,9 +3636,9 @@ function renderIncidencia(){
     const usoTxt = uso.length ? `${uso.slice(0,5).map(escapeHtml).join(", ")}${uso.length>5?` +${uso.length-5}`:""}` : '<span style="color:var(--text-faint);">nenhum contrato ativo</span>';
     return `<tr>
       <td class="name-cell">${escapeHtml(p.nome)}</td>
-      <td style="font-size:12.5px;">${diasResumoIncidencia(p.dias)}</td>
+      <td class="wrap-cell" style="max-width:150px;">${diasResumoIncidencia(p.dias)}</td>
       ${TIPOS_PROTEINA.map(t => `<td class="num-cell">${totalMensalPerfil(p, t.id)}</td>`).join("")}
-      <td style="font-size:12.5px;">${usoTxt}</td>
+      <td class="wrap-cell">${usoTxt}</td>
       <td style="text-align:right; white-space:nowrap;"><button class="btn small ghost" data-open-perfil="${id}">abrir</button></td>
     </tr>`;
   }).join("") || `<tr><td colspan="${3+TIPOS_PROTEINA.length}" class="empty-state">Nenhum perfil cadastrado.</td></tr>`;
@@ -3625,8 +3660,8 @@ function renderIncidencia(){
     document.getElementById("inc-ficha-tbody").innerHTML = lista.map(([id, f]) => `
       <tr>
         <td class="name-cell">${escapeHtml(f.nome)}</td>
-        <td class="num-cell">${usoProteina.get(id) ? `${usoProteina.get(id)}×` : '<span style="color:var(--text-faint);">nunca usada</span>'}</td>
-        <td><select class="inc-f-tipo" data-id="${id}" style="max-width:260px;">
+        <td class="num-cell">${usoProteina.get(id) ? `${usoProteina.get(id)}×` : '<span style="color:var(--text-faint);">nunca</span>'}</td>
+        <td><select class="inc-f-tipo" data-id="${id}" style="max-width:220px;">
           <option value="">— sem tipo —</option>
           ${TIPOS_PROTEINA.map(t => `<option value="${escapeHtml(t.id)}" ${f.tipo_proteina===t.id?"selected":""}>${escapeHtml(t.nome)}</option>`).join("")}
         </select></td>
@@ -3641,6 +3676,39 @@ function renderIncidencia(){
   renderFichaTbody("", false);
   document.getElementById("inc-busca-ficha").addEventListener("input", e => renderFichaTbody(e.target.value, document.getElementById("inc-mostrar-todas").checked));
   document.getElementById("inc-mostrar-todas").addEventListener("change", e => renderFichaTbody(document.getElementById("inc-busca-ficha").value, e.target.checked));
+
+  function renderGrupoTbody(busca, mostrarTodas){
+    const nb = normalizeText(busca||"");
+    const base = mostrarTodas ? [...fichas.entries()] : fichasUsadasGrupo;
+    let lista = base.filter(([,f]) => !nb || normalizeText(f.nome).includes(nb));
+    // prioriza: sem classificar primeiro, depois por nº de usos (mais usado primeiro), depois nome
+    lista.sort((a,b) => {
+      const semGrupoA = a[1].grupo ? 1 : 0, semGrupoB = b[1].grupo ? 1 : 0;
+      if(semGrupoA !== semGrupoB) return semGrupoA - semGrupoB;
+      const usoA = usoGrupo.get(a[0])||0, usoB = usoGrupo.get(b[0])||0;
+      if(usoA !== usoB) return usoB - usoA;
+      return normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome));
+    });
+    document.getElementById("inc-count-grupo").textContent = `${lista.length} ficha(s)`;
+    document.getElementById("inc-grupo-tbody").innerHTML = lista.map(([id, f]) => `
+      <tr>
+        <td class="name-cell">${escapeHtml(f.nome)}</td>
+        <td class="num-cell">${usoGrupo.get(id) ? `${usoGrupo.get(id)}×` : '<span style="color:var(--text-faint);">nunca</span>'}</td>
+        <td><select class="inc-f-grupo" data-id="${id}" style="max-width:220px;">
+          <option value="">— sem grupo —</option>
+          ${GRUPOS_FICHA_BASE.map(g => `<option value="${escapeHtml(g)}" ${f.grupo===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}
+        </select></td>
+      </tr>`).join("") || `<tr><td colspan="3" class="empty-state">Nenhuma ficha encontrada.</td></tr>`;
+    document.getElementById("inc-grupo-tbody").querySelectorAll(".inc-f-grupo").forEach(sel => sel.addEventListener("change", async () => {
+      const { error } = await sb.from('fichas').update({ grupo: sel.value || null, ...carimbo() }).eq('id', sel.dataset.id);
+      if(error){ showAlert("Erro ao salvar: " + (error.message||error.code||error)); return; }
+      await loadFichas();
+      renderIncidencia();
+    }));
+  }
+  renderGrupoTbody("", false);
+  document.getElementById("inc-busca-grupo").addEventListener("input", e => renderGrupoTbody(e.target.value, document.getElementById("inc-mostrar-todas-grupo").checked));
+  document.getElementById("inc-mostrar-todas-grupo").addEventListener("change", e => renderGrupoTbody(document.getElementById("inc-busca-grupo").value, e.target.checked));
 }
 
 function diasResumoIncidencia(dias){
