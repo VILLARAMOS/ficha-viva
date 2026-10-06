@@ -627,7 +627,7 @@ function blocosCadastro(){
   return [...ORDEM_GRUPO_COMPRA_BASE, ...extras];
 }
 // categorias de receita — mesma família de 7 grupos usada na grade de cardápio (Proteína/Base/Guarnição/Salada/Sobremesa/Suco/Extra)
-const GRUPOS_FICHA_BASE = ["PROTEÍNA","BASE","GUARNIÇÃO","SALADA","SOBREMESA","SUCO","EXTRA"];
+const GRUPOS_FICHA_BASE = ["PROTEÍNA","BASE","GUARNIÇÃO DE LEGUMES","GUARNIÇÃO DE MASSAS","GUARNIÇÃO DE SECOS","SALADA","SOBREMESA","SUCO","EXTRA"];
 function gruposFichaCadastro(){
   const extras = [...new Set([...fichas.values()].map(f => f.grupo).filter(g => g && !GRUPOS_FICHA_BASE.includes(g)))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
   return [...GRUPOS_FICHA_BASE, ...extras];
@@ -3617,7 +3617,7 @@ function renderIncidencia(){
     <div class="panel">
       <div class="panel-head"><h3>Classificação por grupo das fichas</h3><span class="hint">${fichasSemGrupoTotal} sem classificar de ${fichas.size} fichas no total</span></div>
       <div class="panel-body">
-        <div class="footnote" style="margin-bottom:10px;">Mesma ideia da classificação de proteína, mas pra dizer se a ficha é Base, Guarnição, Salada, Sobremesa ou Suco — isso ajuda na elaboração do cardápio. Pré-classifiquei pelo histórico de 14 semanas os pratos que já apareceram em algum cardápio real; revise/corrija abaixo. As demais ${fichasNuncaUsadasGrupo.length} fichas nunca entraram num cardápio nessas categorias, então não aparecem na lista por padrão.</div>
+        <div class="footnote" style="margin-bottom:10px;">Mesma ideia da classificação de proteína, mas pra dizer o grupo da ficha (Base, Guarnição de legumes/massas/secos, Salada, Sobremesa, Suco, Proteína ou Extra) — isso ajuda na elaboração do cardápio. Classifiquei em 06/10/2026 todas as fichas que ainda estavam sem grupo: as que já apareceram em cardápio real usei o histórico de 14 semanas, as demais classifiquei por nome — revise/corrija abaixo o que não bater.</div>
         <div class="search-bar">
           <input type="text" id="inc-busca-grupo" placeholder="Buscar ficha…">
           <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted); white-space:nowrap;"><input type="checkbox" id="inc-mostrar-todas-grupo"> mostrar todas, não só as já usadas (${fichasNuncaUsadasGrupo.length})</label>
