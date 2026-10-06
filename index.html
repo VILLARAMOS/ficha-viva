@@ -3563,30 +3563,20 @@ function renderIncidencia(){
   const content = document.getElementById("content");
   const perfisOrdenados = [...perfisIncidencia.entries()].sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
 
-  // Quantas vezes cada ficha já foi usada como Proteína 1/2 em algum cardápio real — usado pra priorizar
+  // Quantas vezes cada ficha já foi usada em algum cardápio real (qualquer categoria) — usado pra priorizar
   // a revisão (pratos que realmente entram no cardápio) em vez de obrigar a rolar as ~640 fichas cadastradas.
-  const usoProteina = new Map();
-  cardapiosAlmoco.forEach(row => (row.itens||[]).forEach(it => {
-    if(!it.ficha_id || !it.categoria || !it.categoria.startsWith("Proteína")) return;
-    usoProteina.set(it.ficha_id, (usoProteina.get(it.ficha_id)||0) + 1);
-  }));
-  const fichasUsadas = [...fichas.entries()].filter(([id]) => usoProteina.has(id));
-  const fichasUsadasSemTipo = fichasUsadas.filter(([,f]) => !f.tipo_proteina);
-  const fichasNuncaUsadas = [...fichas.entries()].filter(([id]) => !usoProteina.has(id));
-  const fichasSemTipoTotal = [...fichas.entries()].filter(([,f]) => !f.tipo_proteina).length;
-
-  // Mesma lógica de mineração de histórico, agora para as outras categorias do cardápio (grupo da ficha:
-  // Base, Guarnição, Salada, Sobremesa, Suco) — ajuda a saber que tipo de item é cada ficha na hora de montar cardápio.
   const CATEGORIA_GRUPO_PREFIXO = [["Proteína","PROTEÍNA"],["Base","BASE"],["Guarnição","GUARNIÇÃO"],["Salada","SALADA"],["Sobremesa","SOBREMESA"],["Suco","SUCO"]];
-  const usoGrupo = new Map();
+  const usoFicha = new Map();
   cardapiosAlmoco.forEach(row => (row.itens||[]).forEach(it => {
     if(!it.ficha_id || !it.categoria) return;
     if(!CATEGORIA_GRUPO_PREFIXO.some(([pfx]) => it.categoria.startsWith(pfx))) return;
-    usoGrupo.set(it.ficha_id, (usoGrupo.get(it.ficha_id)||0) + 1);
+    usoFicha.set(it.ficha_id, (usoFicha.get(it.ficha_id)||0) + 1);
   }));
-  const fichasUsadasGrupo = [...fichas.entries()].filter(([id]) => usoGrupo.has(id));
-  const fichasNuncaUsadasGrupo = [...fichas.entries()].filter(([id]) => !usoGrupo.has(id));
-  const fichasSemGrupoTotal = [...fichas.entries()].filter(([,f]) => !f.grupo).length;
+  const fichasUsadas = [...fichas.entries()].filter(([id]) => usoFicha.has(id));
+  const fichasNuncaUsadas = [...fichas.entries()].filter(([id]) => !usoFicha.has(id));
+  // pendente = sem grupo nenhum, ou é Proteína mas falta o tipo de proteína
+  const fichaPendente = f => !f.grupo || (f.grupo === "PROTEÍNA" && !f.tipo_proteina);
+  const fichasPendentesTotal = [...fichas.values()].filter(fichaPendente).length;
 
   content.innerHTML = `
     <div class="footnote" style="margin-bottom:14px;">Cada <strong>perfil</strong> é o mapa de carnes de um grupo de contratos: quantos pratos de cada tipo de proteína entram em cada semana do mês (Semana 1 a 5) e quais dias da semana contam (Geral = seg–sex, RB = seg–sáb, por exemplo). Cada contrato ativo escolhe um perfil (campo "Perfil de incidência", na aba Contratos).</div>
@@ -3600,32 +3590,17 @@ function renderIncidencia(){
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h3>Classificação de proteína das fichas</h3><span class="hint">${fichasSemTipoTotal} sem classificar de ${fichas.size} fichas no total</span></div>
+      <div class="panel-head"><h3>Classificação das fichas</h3><span class="hint">${fichasPendentesTotal} sem classificar de ${fichas.size} fichas no total</span></div>
       <div class="panel-body">
-        <div class="footnote" style="margin-bottom:10px;">Pré-classifiquei em 06/10/2026, por padrão de nome, os pratos que já apareceram em algum cardápio real (histórico de 14 semanas) — revise/corrija abaixo. As demais ${fichasNuncaUsadas.length} fichas cadastradas nunca entraram como Proteína num cardápio, então não aparecem na lista por padrão (ligue "mostrar todas" se precisar).</div>
+        <div class="footnote" style="margin-bottom:10px;">Uma lista só: grupo (Base, Guarnição de legumes/massas/secos, Salada, Sobremesa, Suco, Proteína ou Extra) e, só quando é Proteína, o tipo (Bovina/Peixe, Ave, Suína, Embutida). Classifiquei tudo em 06/10/2026 — pelo histórico de cardápio quando a ficha já foi usada, por nome quando nunca foi usada — revise/corrija abaixo. Desde a <strong>Nova ficha técnica</strong> esses dois campos já vêm pra preencher na hora de cadastrar, então essa lista tende a ficar cada vez mais curta.</div>
         <div class="search-bar">
           <input type="text" id="inc-busca-ficha" placeholder="Buscar ficha…">
           <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted); white-space:nowrap;"><input type="checkbox" id="inc-mostrar-todas"> mostrar todas, não só as já usadas (${fichasNuncaUsadas.length})</label>
           <span class="footnote" id="inc-count" style="align-self:center;"></span>
         </div>
         <div class="table-wrap"><table class="tbl-compact">
-          <thead><tr><th>Ficha</th><th style="text-align:right;">Usos</th><th>Tipo de proteína</th></tr></thead>
+          <thead><tr><th>Ficha</th><th style="text-align:right;">Usos</th><th>Grupo</th><th>Tipo de proteína</th></tr></thead>
           <tbody id="inc-ficha-tbody"></tbody>
-        </table></div>
-      </div>
-    </div>
-    <div class="panel">
-      <div class="panel-head"><h3>Classificação por grupo das fichas</h3><span class="hint">${fichasSemGrupoTotal} sem classificar de ${fichas.size} fichas no total</span></div>
-      <div class="panel-body">
-        <div class="footnote" style="margin-bottom:10px;">Mesma ideia da classificação de proteína, mas pra dizer o grupo da ficha (Base, Guarnição de legumes/massas/secos, Salada, Sobremesa, Suco, Proteína ou Extra) — isso ajuda na elaboração do cardápio. Classifiquei em 06/10/2026 todas as fichas que ainda estavam sem grupo: as que já apareceram em cardápio real usei o histórico de 14 semanas, as demais classifiquei por nome — revise/corrija abaixo o que não bater.</div>
-        <div class="search-bar">
-          <input type="text" id="inc-busca-grupo" placeholder="Buscar ficha…">
-          <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted); white-space:nowrap;"><input type="checkbox" id="inc-mostrar-todas-grupo"> mostrar todas, não só as já usadas (${fichasNuncaUsadasGrupo.length})</label>
-          <span class="footnote" id="inc-count-grupo" style="align-self:center;"></span>
-        </div>
-        <div class="table-wrap"><table class="tbl-compact">
-          <thead><tr><th>Ficha</th><th style="text-align:right;">Usos</th><th>Grupo</th></tr></thead>
-          <tbody id="inc-grupo-tbody"></tbody>
         </table></div>
       </div>
     </div>
@@ -3648,11 +3623,11 @@ function renderIncidencia(){
     const nb = normalizeText(busca||"");
     const base = mostrarTodas ? [...fichas.entries()] : fichasUsadas;
     let lista = base.filter(([,f]) => !nb || normalizeText(f.nome).includes(nb));
-    // prioriza: sem classificar primeiro, depois por nº de usos (mais usado primeiro), depois nome
+    // prioriza: pendente primeiro, depois por nº de usos (mais usado primeiro), depois nome
     lista.sort((a,b) => {
-      const semTipoA = a[1].tipo_proteina ? 1 : 0, semTipoB = b[1].tipo_proteina ? 1 : 0;
-      if(semTipoA !== semTipoB) return semTipoA - semTipoB;
-      const usoA = usoProteina.get(a[0])||0, usoB = usoProteina.get(b[0])||0;
+      const pendA = fichaPendente(a[1]) ? 0 : 1, pendB = fichaPendente(b[1]) ? 0 : 1;
+      if(pendA !== pendB) return pendA - pendB;
+      const usoA = usoFicha.get(a[0])||0, usoB = usoFicha.get(b[0])||0;
       if(usoA !== usoB) return usoB - usoA;
       return normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome));
     });
@@ -3660,12 +3635,25 @@ function renderIncidencia(){
     document.getElementById("inc-ficha-tbody").innerHTML = lista.map(([id, f]) => `
       <tr>
         <td class="name-cell">${escapeHtml(f.nome)}</td>
-        <td class="num-cell">${usoProteina.get(id) ? `${usoProteina.get(id)}×` : '<span style="color:var(--text-faint);">nunca</span>'}</td>
-        <td><select class="inc-f-tipo" data-id="${id}" style="max-width:220px;">
+        <td class="num-cell">${usoFicha.get(id) ? `${usoFicha.get(id)}×` : '<span style="color:var(--text-faint);">nunca</span>'}</td>
+        <td><select class="inc-f-grupo" data-id="${id}" style="max-width:200px;">
+          <option value="">— sem grupo —</option>
+          ${gruposFichaCadastro().map(g => `<option value="${escapeHtml(g)}" ${f.grupo===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}
+        </select></td>
+        <td><select class="inc-f-tipo" data-id="${id}" style="max-width:200px;" ${f.grupo!=="PROTEÍNA"?"disabled":""}>
           <option value="">— sem tipo —</option>
           ${TIPOS_PROTEINA.map(t => `<option value="${escapeHtml(t.id)}" ${f.tipo_proteina===t.id?"selected":""}>${escapeHtml(t.nome)}</option>`).join("")}
         </select></td>
-      </tr>`).join("") || `<tr><td colspan="3" class="empty-state">Nenhuma ficha encontrada.</td></tr>`;
+      </tr>`).join("") || `<tr><td colspan="4" class="empty-state">Nenhuma ficha encontrada.</td></tr>`;
+    document.getElementById("inc-ficha-tbody").querySelectorAll(".inc-f-grupo").forEach(sel => sel.addEventListener("change", async () => {
+      const novoGrupo = sel.value || null;
+      const payload = { grupo: novoGrupo, ...carimbo() };
+      if(novoGrupo !== "PROTEÍNA") payload.tipo_proteina = null; // deixou de ser Proteína — limpa o tipo pra não ficar dado órfão
+      const { error } = await sb.from('fichas').update(payload).eq('id', sel.dataset.id);
+      if(error){ showAlert("Erro ao salvar: " + (error.message||error.code||error)); return; }
+      await loadFichas();
+      renderIncidencia();
+    }));
     document.getElementById("inc-ficha-tbody").querySelectorAll(".inc-f-tipo").forEach(sel => sel.addEventListener("change", async () => {
       const { error } = await sb.from('fichas').update({ tipo_proteina: sel.value || null, ...carimbo() }).eq('id', sel.dataset.id);
       if(error){ showAlert("Erro ao salvar: " + (error.message||error.code||error)); return; }
@@ -3676,39 +3664,6 @@ function renderIncidencia(){
   renderFichaTbody("", false);
   document.getElementById("inc-busca-ficha").addEventListener("input", e => renderFichaTbody(e.target.value, document.getElementById("inc-mostrar-todas").checked));
   document.getElementById("inc-mostrar-todas").addEventListener("change", e => renderFichaTbody(document.getElementById("inc-busca-ficha").value, e.target.checked));
-
-  function renderGrupoTbody(busca, mostrarTodas){
-    const nb = normalizeText(busca||"");
-    const base = mostrarTodas ? [...fichas.entries()] : fichasUsadasGrupo;
-    let lista = base.filter(([,f]) => !nb || normalizeText(f.nome).includes(nb));
-    // prioriza: sem classificar primeiro, depois por nº de usos (mais usado primeiro), depois nome
-    lista.sort((a,b) => {
-      const semGrupoA = a[1].grupo ? 1 : 0, semGrupoB = b[1].grupo ? 1 : 0;
-      if(semGrupoA !== semGrupoB) return semGrupoA - semGrupoB;
-      const usoA = usoGrupo.get(a[0])||0, usoB = usoGrupo.get(b[0])||0;
-      if(usoA !== usoB) return usoB - usoA;
-      return normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome));
-    });
-    document.getElementById("inc-count-grupo").textContent = `${lista.length} ficha(s)`;
-    document.getElementById("inc-grupo-tbody").innerHTML = lista.map(([id, f]) => `
-      <tr>
-        <td class="name-cell">${escapeHtml(f.nome)}</td>
-        <td class="num-cell">${usoGrupo.get(id) ? `${usoGrupo.get(id)}×` : '<span style="color:var(--text-faint);">nunca</span>'}</td>
-        <td><select class="inc-f-grupo" data-id="${id}" style="max-width:220px;">
-          <option value="">— sem grupo —</option>
-          ${gruposFichaCadastro().map(g => `<option value="${escapeHtml(g)}" ${f.grupo===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}
-        </select></td>
-      </tr>`).join("") || `<tr><td colspan="3" class="empty-state">Nenhuma ficha encontrada.</td></tr>`;
-    document.getElementById("inc-grupo-tbody").querySelectorAll(".inc-f-grupo").forEach(sel => sel.addEventListener("change", async () => {
-      const { error } = await sb.from('fichas').update({ grupo: sel.value || null, ...carimbo() }).eq('id', sel.dataset.id);
-      if(error){ showAlert("Erro ao salvar: " + (error.message||error.code||error)); return; }
-      await loadFichas();
-      renderIncidencia();
-    }));
-  }
-  renderGrupoTbody("", false);
-  document.getElementById("inc-busca-grupo").addEventListener("input", e => renderGrupoTbody(e.target.value, document.getElementById("inc-mostrar-todas-grupo").checked));
-  document.getElementById("inc-mostrar-todas-grupo").addEventListener("change", e => renderGrupoTbody(document.getElementById("inc-busca-grupo").value, e.target.checked));
 }
 
 function diasResumoIncidencia(dias){
@@ -4050,6 +4005,12 @@ function renderFichaModal(id, draft){
               </select>
               <input type="text" id="ff-grupo-novo" hidden placeholder="Nome do novo grupo" style="margin-top:6px;">
             </div>
+            <div class="field" id="ff-tipo-proteina-field" ${draft.grupo==="PROTEÍNA"?"":"hidden"}><label>Tipo de proteína</label>
+              <select id="ff-tipo-proteina">
+                <option value="" ${!draft.tipo_proteina?"selected":""}>— sem tipo —</option>
+                ${TIPOS_PROTEINA.map(t => `<option value="${escapeHtml(t.id)}" ${draft.tipo_proteina===t.id?"selected":""}>${escapeHtml(t.nome)}</option>`).join("")}
+              </select>
+            </div>
             <div class="field"><label>Rendimento (kg)</label><input type="number" step="0.001" id="ff-rkg" value="${draft.rendimento_kg||""}"></div>
             <div class="field"><label>Rendimento (und/pç)</label><input type="number" step="0.001" id="ff-rund" value="${draft.rendimento_und||""}"></div>
           </div>
@@ -4063,13 +4024,6 @@ function renderFichaModal(id, draft){
           <div class="field"><label><input type="checkbox" id="ff-vendavel" style="width:auto; display:inline-block; margin-right:6px;" ${draft.vendavel===true?"checked":""}> Item vendável</label></div>
           <div class="field"><label><input type="checkbox" id="ff-por-unidade" style="width:auto; display:inline-block; margin-right:6px;" ${draft.servido_por_unidade===true?"checked":""}> Servido por unidade (ovo, panqueca, hambúrguer, lanche…) — mostra o "Custo / un" desta ficha</label></div>
           <div class="field"><label><input type="checkbox" id="ff-como-insumo" style="width:auto; display:inline-block; margin-right:6px;" ${draft.disponivel_como_insumo===true?"checked":""}> Disponível como insumo (esta ficha passa a aparecer na busca de ingredientes de OUTRAS fichas, como um preparo/sub-receita pronta)</label></div>
-          <div class="field"><label>Tipo de proteína (para a tabela de incidência — deixe em branco se não for um prato de proteína)</label>
-            <select id="ff-tipo-proteina">
-              <option value="" ${!draft.tipo_proteina?"selected":""}>— sem tipo —</option>
-              ${TIPOS_PROTEINA.map(t => `<option value="${escapeHtml(t.id)}" ${draft.tipo_proteina===t.id?"selected":""}>${escapeHtml(t.nome)}</option>`).join("")}
-            </select>
-          </div>
-
           <div class="field"><label>Modo de preparo (opcional)</label><textarea id="ff-modo" rows="5" placeholder="Passo a passo para a cozinha seguir">${escapeHtml(draft.modo_preparo||"")}</textarea></div>
           ${id && fichas.get(id) ? `<div class="footnote">${ultimaAlteracaoTxt(fichas.get(id))}</div>` : ""}
 
@@ -4300,6 +4254,9 @@ function renderFichaModal(id, draft){
     const novo = document.getElementById("ff-grupo-novo");
     novo.hidden = e.target.value !== "__novo__";
     if(!novo.hidden) novo.focus();
+    const tpField = document.getElementById("ff-tipo-proteina-field");
+    tpField.hidden = e.target.value !== "PROTEÍNA";
+    if(tpField.hidden) document.getElementById("ff-tipo-proteina").value = "";
   });
 
   document.getElementById("add-line").onclick = () => { draft.ingredientes.push({insumo_id:null, ficha_id:null, nome:"", peso_bruto:0, peso_liquido:null, fator_correcao:null}); renderLines(); refreshTotals(); };
