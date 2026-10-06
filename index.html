@@ -3556,8 +3556,17 @@ function renderIncidencia(){
   const content = document.getElementById("content");
   const perfisOrdenados = [...perfisIncidencia.entries()].sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
 
-  const fichasSemTipo = [...fichas.entries()].filter(([,f]) => !f.tipo_proteina).sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
-  const fichasComTipo = [...fichas.entries()].filter(([,f]) => f.tipo_proteina).sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+  // Quantas vezes cada ficha já foi usada como Proteína 1/2 em algum cardápio real — usado pra priorizar
+  // a revisão (pratos que realmente entram no cardápio) em vez de obrigar a rolar as ~640 fichas cadastradas.
+  const usoProteina = new Map();
+  cardapiosAlmoco.forEach(row => (row.itens||[]).forEach(it => {
+    if(!it.ficha_id || !it.categoria || !it.categoria.startsWith("Proteína")) return;
+    usoProteina.set(it.ficha_id, (usoProteina.get(it.ficha_id)||0) + 1);
+  }));
+  const fichasUsadas = [...fichas.entries()].filter(([id]) => usoProteina.has(id));
+  const fichasUsadasSemTipo = fichasUsadas.filter(([,f]) => !f.tipo_proteina);
+  const fichasNuncaUsadas = [...fichas.entries()].filter(([id]) => !usoProteina.has(id));
+  const fichasSemTipoTotal = [...fichas.entries()].filter(([,f]) => !f.tipo_proteina).length;
 
   content.innerHTML = `
     <div class="footnote" style="margin-bottom:14px;">Cada <strong>perfil</strong> é o mapa de carnes de um grupo de contratos: quantos pratos de cada tipo de proteína entram em cada semana do mês (Semana 1 a 5) e quais dias da semana contam (Geral = seg–sex, RB = seg–sáb, por exemplo). Cada contrato ativo escolhe um perfil (campo "Perfil de incidência", na aba Contratos).</div>
@@ -3571,11 +3580,16 @@ function renderIncidencia(){
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h3>Classificação de proteína das fichas</h3><span class="hint">${fichasSemTipo.length} sem classificar de ${fichas.size}</span></div>
+      <div class="panel-head"><h3>Classificação de proteína das fichas</h3><span class="hint">${fichasSemTipoTotal} sem classificar de ${fichas.size} fichas no total</span></div>
       <div class="panel-body">
-        <div class="search-bar"><input type="text" id="inc-busca-ficha" placeholder="Buscar ficha…"></div>
+        <div class="footnote" style="margin-bottom:10px;">Pré-classifiquei em 06/10/2026, por padrão de nome, os pratos que já apareceram em algum cardápio real (histórico de 14 semanas) — revise/corrija abaixo. As demais ${fichasNuncaUsadas.length} fichas cadastradas nunca entraram como Proteína num cardápio, então não aparecem na lista por padrão (ligue "mostrar todas" se precisar).</div>
+        <div class="search-bar">
+          <input type="text" id="inc-busca-ficha" placeholder="Buscar ficha…">
+          <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted); white-space:nowrap;"><input type="checkbox" id="inc-mostrar-todas"> mostrar todas as fichas, não só as já usadas (${fichasNuncaUsadas.length})</label>
+          <span class="footnote" id="inc-count" style="align-self:center;"></span>
+        </div>
         <div class="table-wrap"><table>
-          <thead><tr><th>Ficha</th><th>Tipo de proteína</th></tr></thead>
+          <thead><tr><th>Ficha</th><th>Usos em cardápio</th><th>Tipo de proteína</th></tr></thead>
           <tbody id="inc-ficha-tbody"></tbody>
         </table></div>
       </div>
@@ -3595,17 +3609,28 @@ function renderIncidencia(){
   }).join("") || `<tr><td colspan="${3+TIPOS_PROTEINA.length}" class="empty-state">Nenhum perfil cadastrado.</td></tr>`;
   document.getElementById("inc-tbody").querySelectorAll("[data-open-perfil]").forEach(b => b.addEventListener("click", () => openPerfilModal(b.dataset.openPerfil)));
 
-  function renderFichaTbody(busca){
+  function renderFichaTbody(busca, mostrarTodas){
     const nb = normalizeText(busca||"");
-    const todas = [...fichasSemTipo, ...fichasComTipo].filter(([,f]) => !nb || normalizeText(f.nome).includes(nb));
-    document.getElementById("inc-ficha-tbody").innerHTML = todas.map(([id, f]) => `
+    const base = mostrarTodas ? [...fichas.entries()] : fichasUsadas;
+    let lista = base.filter(([,f]) => !nb || normalizeText(f.nome).includes(nb));
+    // prioriza: sem classificar primeiro, depois por nº de usos (mais usado primeiro), depois nome
+    lista.sort((a,b) => {
+      const semTipoA = a[1].tipo_proteina ? 1 : 0, semTipoB = b[1].tipo_proteina ? 1 : 0;
+      if(semTipoA !== semTipoB) return semTipoA - semTipoB;
+      const usoA = usoProteina.get(a[0])||0, usoB = usoProteina.get(b[0])||0;
+      if(usoA !== usoB) return usoB - usoA;
+      return normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome));
+    });
+    document.getElementById("inc-count").textContent = `${lista.length} ficha(s)`;
+    document.getElementById("inc-ficha-tbody").innerHTML = lista.map(([id, f]) => `
       <tr>
         <td class="name-cell">${escapeHtml(f.nome)}</td>
+        <td class="num-cell">${usoProteina.get(id) ? `${usoProteina.get(id)}×` : '<span style="color:var(--text-faint);">nunca usada</span>'}</td>
         <td><select class="inc-f-tipo" data-id="${id}" style="max-width:260px;">
           <option value="">— sem tipo —</option>
           ${TIPOS_PROTEINA.map(t => `<option value="${escapeHtml(t.id)}" ${f.tipo_proteina===t.id?"selected":""}>${escapeHtml(t.nome)}</option>`).join("")}
         </select></td>
-      </tr>`).join("") || `<tr><td colspan="2" class="empty-state">Nenhuma ficha encontrada.</td></tr>`;
+      </tr>`).join("") || `<tr><td colspan="3" class="empty-state">Nenhuma ficha encontrada.</td></tr>`;
     document.getElementById("inc-ficha-tbody").querySelectorAll(".inc-f-tipo").forEach(sel => sel.addEventListener("change", async () => {
       const { error } = await sb.from('fichas').update({ tipo_proteina: sel.value || null, ...carimbo() }).eq('id', sel.dataset.id);
       if(error){ showAlert("Erro ao salvar: " + (error.message||error.code||error)); return; }
@@ -3613,8 +3638,9 @@ function renderIncidencia(){
       renderIncidencia();
     }));
   }
-  renderFichaTbody("");
-  document.getElementById("inc-busca-ficha").addEventListener("input", e => renderFichaTbody(e.target.value));
+  renderFichaTbody("", false);
+  document.getElementById("inc-busca-ficha").addEventListener("input", e => renderFichaTbody(e.target.value, document.getElementById("inc-mostrar-todas").checked));
+  document.getElementById("inc-mostrar-todas").addEventListener("change", e => renderFichaTbody(document.getElementById("inc-busca-ficha").value, e.target.checked));
 }
 
 function diasResumoIncidencia(dias){
