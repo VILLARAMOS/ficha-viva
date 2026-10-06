@@ -3696,7 +3696,7 @@ function renderIncidencia(){
         <td class="num-cell">${usoGrupo.get(id) ? `${usoGrupo.get(id)}×` : '<span style="color:var(--text-faint);">nunca</span>'}</td>
         <td><select class="inc-f-grupo" data-id="${id}" style="max-width:220px;">
           <option value="">— sem grupo —</option>
-          ${GRUPOS_FICHA_BASE.map(g => `<option value="${escapeHtml(g)}" ${f.grupo===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}
+          ${gruposFichaCadastro().map(g => `<option value="${escapeHtml(g)}" ${f.grupo===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}
         </select></td>
       </tr>`).join("") || `<tr><td colspan="3" class="empty-state">Nenhuma ficha encontrada.</td></tr>`;
     document.getElementById("inc-grupo-tbody").querySelectorAll(".inc-f-grupo").forEach(sel => sel.addEventListener("change", async () => {
