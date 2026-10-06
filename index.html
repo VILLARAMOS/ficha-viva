@@ -230,6 +230,41 @@ tbody tr:hover{background:var(--surface-alt);}
 .pend-entrada-row{display:grid; grid-template-columns:1.6fr .8fr .8fr .9fr 1.4fr auto; gap:10px; align-items:center; padding:10px 0; border-bottom:1px solid var(--border);}
 .pend-entrada-row:last-child{border-bottom:none;}
 .pend-entrada-row input{width:100%;}
+/* ---------- v130: Estoque com cara de painel ---------- */
+.es-kpis{display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; margin-bottom:18px;}
+.es-kpis .vn-card{background:var(--surface); border:1px solid var(--border); box-shadow:var(--shadow);}
+.es-kpis.inner{margin-bottom:16px;}
+.es-kpis.inner .vn-card{background:var(--surface-alt); border:none; box-shadow:none;}
+.es-kpis .vn-card .vn-value{font-size:21px;}
+.es-nav{display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:10px;}
+.es-wrap .seg-toggle button{display:inline-flex; align-items:center; gap:7px; height:36px; padding:0 15px; font-weight:600;}
+.es-wrap .seg-toggle button + button{border-left:1px solid var(--border);}
+.es-wrap .seg-toggle button.active{border-left-color:var(--accent);}
+.es-nav .seg-toggle{max-width:100%; overflow-x:auto; scrollbar-width:none;}
+.es-wrap .seg-toggle button{white-space:nowrap; flex:none;}
+.es-wrap .ico{width:15px; height:15px; flex:none;}
+.es-badge{min-width:18px; height:18px; padding:0 6px; border-radius:100px; background:var(--warn-soft); color:var(--warn); font-size:11px; font-weight:700; display:inline-flex; align-items:center; justify-content:center;}
+.es-wrap .seg-toggle button.active .es-badge{background:rgba(255,255,255,.22); color:#fff;}
+.es-wrap .btn{display:inline-flex; align-items:center; justify-content:center; gap:7px; height:36px; padding:0 14px; white-space:nowrap;}
+.es-wrap .btn.small{height:30px; padding:0 11px; gap:5px;}
+.es-wrap .btn.small .ico{width:13px; height:13px;}
+.es-tools{display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
+.es-tools select, .es-wrap .search-bar select, .es-wrap .search-bar input{height:36px; padding:0 11px;}
+.es-tools select{font:inherit; color:var(--text); background:var(--surface); border:1px solid var(--border); border-radius:8px;}
+.es-count{align-self:center; background:var(--surface-alt); color:var(--text-muted);}
+.es-help{margin:0 0 12px;}
+.es-help summary{display:inline-flex; align-items:center; gap:6px;}
+.es-table{border-top:1px solid var(--border);}
+.es-table tbody tr:last-child td{border-bottom:none;}
+.es-qtd-input{width:100px; height:30px; text-align:right; font:inherit; font-family:'IBM Plex Mono',monospace; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:0 8px;}
+.es-qtd-input:focus{outline:none; border-color:var(--accent);}
+.pend-entrada-head{font-weight:600; font-size:11px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.04em; padding-top:0;}
+.pend-entrada-row input{height:32px; font:inherit; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:0 8px;}
+.es-split{display:grid; grid-template-columns:minmax(300px,400px) 1fr; gap:20px; align-items:start;}
+.es-split .panel{margin-bottom:0;}
+.es-split .table-wrap{border-top:none;}
+.es-form-actions{display:flex; justify-content:flex-end; gap:8px; margin-top:4px;}
+@media (max-width:980px){ .es-split{grid-template-columns:1fr;} .pend-entrada-row{grid-template-columns:1fr 1fr;} .pend-entrada-head{display:none;} }
 .ing-table{border:1px solid var(--border); border-radius:10px; overflow:hidden; font-size:12px;}
 .ing-header, .ing-line{display:grid; grid-template-columns:2fr .8fr .72fr .72fr .85fr .95fr 56px; gap:6px; align-items:center;}
 .ing-header{padding:6px 8px; background:var(--surface-alt); font-size:10px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.02em;}
@@ -1233,7 +1268,19 @@ function renderTabInsumoCadastro(){
   }));
 }
 
-/* ================= Estoque (dentro de Insumos) — painel + contagem + entradas pendentes + movimentação + baixa ================= */
+/* ================= Estoque (dentro de Insumos) — v130: layout de painel (KPIs em cartões, seções em painéis, botões padronizados, textos explicativos recolhíveis) ================= */
+let estoqueAjudaAberta = false; // "Como funciona" recolhido por padrão; lembra o estado entre re-renderizações
+const ESTOQUE_AJUDA = {
+  geral: `Saldo por kardex: toda entrada (de pedido aprovado, movimentação ou ajuste) soma e toda baixa (manual, movimentação de saída ou PCP) subtrai o saldo em tempo real. A contagem física continua existindo para <strong>auditar</strong> esse saldo — ao gerar ajustes, a diferença entre contado e calculado é lançada como um movimento de ajuste.`,
+  contagem: `Lance o que tem contado de cada insumo para UMA semana, de UMA unidade. Isso só audita o saldo — use "Gerar ajustes" para corrigir o saldo de estoque pela contagem (a Lista de compra do mês continua descontando automaticamente pela contagem mais recente, como antes).`,
+  entradas: `Toda conferência de recebimento de um pedido (aba Compras → Pedidos) entra aqui como pendente. Ajuste quantidade/custo se precisar e aprove para que o saldo de estoque seja atualizado — ou rejeite se o recebimento foi lançado por engano.`,
+  movimentar: `Transfere um insumo de uma unidade para outra — gera uma baixa na origem e uma entrada no destino, já aprovadas.`,
+  baixa: `Dá baixa manual no estoque (perda, quebra, consumo não previsto, etc.). A baixa por lista de PCP vai usar o mesmo lançamento quando o módulo de PCP existir — por enquanto, use a baixa manual.`
+};
+function estoqueKpiCard({tone="", label, value, sub=""}){
+  return `<div class="vn-card ${tone}"><div class="vn-label">${label}</div><div class="vn-value">${value}</div>${sub?`<div class="vn-sub">${sub}</div>`:""}</div>`;
+}
+
 function renderTabInsumoEstoque(){
   const body = document.getElementById("ins-body");
   const valorMatriz = valorEstoqueKardex("matriz");
@@ -1243,32 +1290,49 @@ function renderTabInsumoEstoque(){
   const ultimaContMatriz = valorEstoqueContadoPorGrupo(semanaRecente, "matriz");
   const ultimaContFilial = valorEstoqueContadoPorGrupo(semanaRecente, "filial");
   const pendentes = entradasPendentes();
+  const rotUlt = escapeHtml(rotuloSemanaCurto(semanaRecente));
+  const subUnidade = (v, c) => `<b>${v.nInsumos}</b> insumo(s) com saldo<br>Últ. contagem (${rotUlt}): <b>${c.nInsumosContados ? fmtMoney(c.total) : "—"}</b>`;
+
+  const subtabs = [
+    {id:"contagem",   nome:"Contagem",             ico:"clipboard-list"},
+    {id:"entradas",   nome:"Entradas pendentes",   ico:"package-check", badge: pendentes.length},
+    {id:"movimentar", nome:"Movimentação interna", ico:"arrow-left-right"},
+    {id:"baixa",      nome:"Baixa manual",         ico:"package-minus"}
+  ];
 
   body.innerHTML = `
-    <div class="two-col-num" style="margin-bottom:16px;">
-      <div class="stat-block"><div class="label">Valor do estoque atual · Matriz</div><div class="val">${fmtMoney(valorMatriz.total)}</div><div class="val small">${valorMatriz.nInsumos} insumo(s) com saldo</div></div>
-      <div class="stat-block"><div class="label">Valor do estoque atual · Filial</div><div class="val">${fmtMoney(valorFilial.total)}</div><div class="val small">${valorFilial.nInsumos} insumo(s) com saldo</div></div>
-      <div class="stat-block"><div class="label">Última contagem (${escapeHtml(rotuloSemana(semanaRecente))})</div><div class="val small">Matriz: <strong>${ultimaContMatriz.nInsumosContados?fmtMoney(ultimaContMatriz.total):"—"}</strong> · Filial: <strong>${ultimaContFilial.nInsumosContados?fmtMoney(ultimaContFilial.total):"—"}</strong></div><div class="val small">${pendentes.length ? pendentes.length+" entrada(s) pendente(s) de aprovação" : "sem entradas pendentes"}</div></div>
+    <div class="es-wrap">
+      <div class="es-kpis">
+        ${estoqueKpiCard({label:"Estoque total · Grupo", value: fmtMoney(valorMatriz.total + valorFilial.total), sub:`Matriz + Filial, saldo pelo kardex`})}
+        ${estoqueKpiCard({label:"Estoque · Matriz", value: fmtMoney(valorMatriz.total), sub: subUnidade(valorMatriz, ultimaContMatriz)})}
+        ${estoqueKpiCard({label:"Estoque · Filial", value: fmtMoney(valorFilial.total), sub: subUnidade(valorFilial, ultimaContFilial)})}
+        ${estoqueKpiCard({tone: pendentes.length ? "warn" : "ok", label:"Entradas pendentes", value: String(pendentes.length), sub: pendentes.length ? "aguardando aprovação" : "nada para aprovar"})}
+      </div>
+      <div class="es-nav">
+        <div class="seg-toggle" id="es-subtabs">
+          ${subtabs.map(t => `<button type="button" data-sub="${t.id}" class="${estoqueSubTab===t.id?"active":""}"><i class="ico" data-lucide="${t.ico}"></i>${t.nome}${t.badge?`<span class="es-badge">${t.badge}</span>`:""}</button>`).join("")}
+        </div>
+      </div>
+      <details class="painel-notas es-help" id="es-help" ${estoqueAjudaAberta?"open":""}>
+        <summary>Como funciona</summary>
+        <div class="footnote">${ESTOQUE_AJUDA.geral}</div>
+        <div class="footnote" style="margin-top:6px;">${ESTOQUE_AJUDA[estoqueSubTab] || ""}</div>
+      </details>
+      <div id="es-sub-body"></div>
     </div>
-    <div class="footnote" style="margin-bottom:14px;">Saldo por kardex: toda entrada (de pedido aprovado, movimentação ou ajuste) soma e toda baixa (manual, movimentação de saída ou PCP) subtrai o saldo em tempo real. A contagem física continua existindo para <strong>auditar</strong> esse saldo — ao gerar ajustes, a diferença entre contado e calculado é lançada como um movimento de ajuste.</div>
-    <div class="seg-toggle estoque-subtabs" id="es-subtabs">
-      <button type="button" data-sub="contagem" class="${estoqueSubTab==="contagem"?"active":""}">Contagem</button>
-      <button type="button" data-sub="entradas" class="${estoqueSubTab==="entradas"?"active":""}">Entradas pendentes${pendentes.length?` (${pendentes.length})`:""}</button>
-      <button type="button" data-sub="movimentar" class="${estoqueSubTab==="movimentar"?"active":""}">Movimentação interna</button>
-      <button type="button" data-sub="baixa" class="${estoqueSubTab==="baixa"?"active":""}">Baixa manual</button>
-    </div>
-    <div id="es-sub-body"></div>
   `;
   document.getElementById("es-subtabs").addEventListener("click", e => {
     const b = e.target.closest("button[data-sub]"); if(!b) return;
     estoqueSubTab = b.dataset.sub;
     renderTabInsumoEstoque();
   });
+  document.getElementById("es-help").addEventListener("toggle", e => { estoqueAjudaAberta = e.target.open; });
 
   if(estoqueSubTab === "contagem") renderEstoqueContagem();
   else if(estoqueSubTab === "entradas") renderEstoqueEntradasPendentes();
   else if(estoqueSubTab === "movimentar") renderEstoqueMovimentar();
   else renderEstoqueBaixaManual();
+  if(window.lucide) lucide.createIcons();
 }
 
 function renderEstoqueContagem(){
@@ -1285,31 +1349,41 @@ function renderEstoqueContagem(){
   const diasMaisAntigo = [...contagem.values()].reduce((max,row) => { const d = diasDesdeContagem(row.data_contagem); return d!==null && d>max ? d : max; }, 0);
   const desatualizado = diasMaisAntigo > ESTOQUE_DIAS_ALERTA;
   const grupos = blocosCadastro();
+  const nomeUn = nomeUnidadeCompra(estoqueUnidadeSel);
 
   const sub = document.getElementById("es-sub-body");
   sub.innerHTML = `
-    <div class="footnote" style="margin-bottom:14px;">Lance o que tem contado de cada insumo para UMA semana, de UMA unidade. Isso só audita o saldo — use "Gerar ajustes" para corrigir o saldo de estoque pela contagem (a Lista de compra do mês continua descontando automaticamente pela contagem mais recente, como antes).</div>
-    <div class="menu-controls">
-      <div class="seg-toggle" id="es-un-tabs">${UNIDADES_COMPRA.map(u => `<button type="button" data-esun="${u.id}" class="${estoqueUnidadeSel===u.id?"active":""}">${u.nome}</button>`).join("")}</div>
-      <select id="es-semana">${opcoesSemana.map(s=>`<option value="${s}" ${s===estoqueSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))}${s===semanaSugerida?" (próxima)":""}</option>`).join("")}</select>
-      <button class="btn" id="es-imprimir" style="margin-left:auto;">Imprimir lista</button>
-      <button class="btn primary" id="es-gerar-ajustes">Gerar ajustes desta contagem</button>
+    <div class="panel">
+      <div class="panel-head">
+        <h3><i class="ico" data-lucide="clipboard-list"></i>Contagem física</h3>
+        <div class="es-tools">
+          <button class="btn" id="es-imprimir"><i class="ico" data-lucide="printer"></i>Imprimir lista</button>
+          <button class="btn primary" id="es-gerar-ajustes"><i class="ico" data-lucide="refresh-cw"></i>Gerar ajustes</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="es-tools" style="margin-bottom:14px;">
+          <div class="seg-toggle" id="es-un-tabs">${UNIDADES_COMPRA.map(u => `<button type="button" data-esun="${u.id}" class="${estoqueUnidadeSel===u.id?"active":""}">${u.nome}</button>`).join("")}</div>
+          <select id="es-semana">${opcoesSemana.map(s=>`<option value="${s}" ${s===estoqueSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))}${s===semanaSugerida?" (próxima)":""}</option>`).join("")}</select>
+        </div>
+        <div class="es-kpis inner">
+          ${estoqueKpiCard({label:`Insumos contados · ${nomeUn}`, value: String(nInsumosContados)})}
+          ${estoqueKpiCard({label:`Valor contado · ${nomeUn}`, value: fmtMoney(valorTotal)})}
+          ${estoqueKpiCard({label:`Valor contado · ${nomeUnidadeCompra(outraUn)}`, value: resumoOutra.nInsumosContados ? fmtMoney(resumoOutra.total) : "—", sub: resumoOutra.nInsumosContados ? `${resumoOutra.nInsumosContados} itens` : "sem contagem nesta semana"})}
+          ${estoqueKpiCard({tone: nInsumosContados ? (desatualizado ? "warn" : "ok") : "", label:"Contagem mais antiga", value: nInsumosContados ? diasMaisAntigo+"d" : "—", sub: nInsumosContados && desatualizado ? `acima de ${ESTOQUE_DIAS_ALERTA} dias — reconte` : ""})}
+        </div>
+        ${nInsumosContados && desatualizado ? `<div class="insight-list" style="margin-bottom:14px;"><div class="insight-item warn"><span class="dot"></span><span>Pelo menos uma contagem desta semana tem mais de ${ESTOQUE_DIAS_ALERTA} dias — reconte antes de confiar no abatimento da Lista de compra.</span></div></div>` : ""}
+        <div class="search-bar" style="margin-bottom:0;">
+          <input type="text" id="es-search" placeholder="Buscar insumo…" value="${escapeHtml(estoqueFilter)}">
+          <select id="es-grupo"><option value="">Todos os grupos de compra</option>${grupos.map(g=>`<option value="${escapeHtml(g)}" ${estoqueGrupoFilter===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}</select>
+          <span class="pend-count es-count" id="es-count"></span>
+        </div>
+      </div>
+      <div class="table-wrap es-table"><table>
+        <thead><tr><th>Insumo</th><th>Grupo de compra</th><th>Unidade</th><th style="text-align:right;">Saldo (kardex)</th><th style="text-align:right;">Qtd. contada</th><th>Contado em</th></tr></thead>
+        <tbody id="es-tbody"></tbody>
+      </table></div>
     </div>
-    <div class="two-col-num" style="margin:10px 0;">
-      <div class="stat-block"><div class="label">Insumos contados · ${nomeUnidadeCompra(estoqueUnidadeSel)}</div><div class="val">${nInsumosContados}</div></div>
-      <div class="stat-block"><div class="label">Valor contado · ${nomeUnidadeCompra(estoqueUnidadeSel)}</div><div class="val">${fmtMoney(valorTotal)}</div><div class="val small">${nomeUnidadeCompra(outraUn)}: ${resumoOutra.nInsumosContados ? fmtMoney(resumoOutra.total) + " em " + resumoOutra.nInsumosContados + " itens" : "sem contagem nesta semana"}</div></div>
-      <div class="stat-block"><div class="label">Contagem mais antiga</div><div class="val">${nInsumosContados ? diasMaisAntigo+"d" : "—"}</div></div>
-    </div>
-    ${nInsumosContados && desatualizado ? `<div class="footnote" style="margin:0 0 10px; color:var(--critical);">⚠️ pelo menos uma contagem desta semana tem mais de ${ESTOQUE_DIAS_ALERTA} dias — reconte antes de confiar no abatimento da Lista de compra.</div>` : ""}
-    <div class="search-bar">
-      <input type="text" id="es-search" placeholder="Buscar insumo…" value="${escapeHtml(estoqueFilter)}">
-      <select id="es-grupo"><option value="">Todos os grupos de compra</option>${grupos.map(g=>`<option value="${escapeHtml(g)}" ${estoqueGrupoFilter===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}</select>
-      <span class="footnote" id="es-count" style="align-self:center;"></span>
-    </div>
-    <div class="panel"><div class="table-wrap"><table>
-      <thead><tr><th>Insumo</th><th>Grupo de compra</th><th>Unidade</th><th style="text-align:right;">Saldo (kardex)</th><th style="text-align:right;">Qtd. contada</th><th>Contado em</th></tr></thead>
-      <tbody id="es-tbody"></tbody>
-    </table></div></div>
   `;
   document.getElementById("es-un-tabs").addEventListener("click", e => {
     const b = e.target.closest("button[data-esun]"); if(!b) return;
@@ -1341,7 +1415,7 @@ function renderEstoqueContagem(){
         <td style="font-size:12.5px;">${escapeHtml(r.grupo_compra||"—")}</td>
         <td>${escapeHtml(r.unidade_medida||"—")}</td>
         <td class="num-cell">${fmtNum(saldo,3)}</td>
-        <td class="num-cell"><input type="number" min="0" step="0.001" class="es-qtd-input" data-id="${r.id}" value="${row?row.quantidade_contada:""}" placeholder="—" style="width:90px; text-align:right;"></td>
+        <td class="num-cell"><input type="number" min="0" step="0.001" class="es-qtd-input" data-id="${r.id}" value="${row?row.quantidade_contada:""}" placeholder="—"></td>
         <td>${row ? escapeHtml(fmtDataYMD(row.data_contagem)) : "—"}${alerta?` <span class="chip warn"><span class="dot"></span>há ${dias}d</span>`:""}</td>
       </tr>`;
     }).join("") || `<tr><td colspan="6" class="empty-state">Nenhum insumo encontrado com este filtro.</td></tr>`;
@@ -1355,6 +1429,7 @@ function renderEstoqueContagem(){
   updateTable();
   document.getElementById("es-search").addEventListener("input", e => { estoqueFilter = e.target.value; updateTable(); });
   document.getElementById("es-grupo").addEventListener("change", e => { estoqueGrupoFilter = e.target.value; updateTable(); });
+  if(window.lucide) lucide.createIcons();
 }
 
 // cabeçalho com o logo Villa Ramos, reaproveitado em todas as impressões. URL absoluta (resolvida a
@@ -1404,16 +1479,22 @@ function renderEstoqueEntradasPendentes(){
   const sub = document.getElementById("es-sub-body");
   const pendentes = entradasPendentes();
   sub.innerHTML = `
-    <div class="footnote" style="margin-bottom:14px;">Toda conferência de recebimento de um pedido (aba Compras → Pedidos) entra aqui como pendente. Ajuste quantidade/custo se precisar e aprove para que o saldo de estoque seja atualizado — ou rejeite se o recebimento foi lançado por engano.</div>
-    <div class="panel" id="pend-panel">
-      ${pendentes.length ? "" : `<div class="empty-state">Nenhuma entrada pendente de aprovação.</div>`}
+    <div class="panel">
+      <div class="panel-head">
+        <h3><i class="ico" data-lucide="package-check"></i>Entradas pendentes de aprovação</h3>
+        <span class="${pendentes.length ? "pend-count alerta" : "pend-count"}">${pendentes.length} ${pendentes.length===1?"item":"itens"}</span>
+      </div>
+      <div class="panel-body" id="pend-panel">
+        ${pendentes.length ? "" : `<div class="empty-state">Nenhuma entrada pendente de aprovação.</div>`}
+      </div>
     </div>
   `;
   const panel = document.getElementById("pend-panel");
+  if(window.lucide) lucide.createIcons();
   if(!pendentes.length) return;
   panel.innerHTML = `
-    <div class="pend-entrada-row" style="font-weight:600; font-size:12px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.04em;">
-      <div>Insumo</div><div>Unidade</div><div>Quantidade</div><div>Custo unit.</div><div>Origem</div><div></div>
+    <div class="pend-entrada-row pend-entrada-head">
+      <div>Insumo</div><div>Unidade</div><div>Quantidade</div><div>Custo unit.</div><div>Origem</div><div style="text-align:right;">Ações</div>
     </div>
     ${pendentes.map(([id,m]) => {
       const ins = insumos.get(m.insumo_id);
@@ -1421,17 +1502,18 @@ function renderEstoqueEntradasPendentes(){
       const origem = p ? `${escapeHtml(p.fornecedor||"—")} · ${fmtDataYMD(p.data_pedido)||"—"}` : "lançamento manual";
       return `<div class="pend-entrada-row" data-row="${id}">
         <div class="name-cell">${escapeHtml(ins?ins.nome:"(insumo removido)")}</div>
-        <div>${escapeHtml(nomeUnidadeCompra(m.unidade))}</div>
+        <div><span class="chip neutral">${escapeHtml(nomeUnidadeCompra(m.unidade))}</span></div>
         <div><input type="number" step="0.001" min="0" class="pend-qtd" value="${m.quantidade}"></div>
         <div><input type="number" step="0.0001" min="0" class="pend-custo" value="${m.custo_unitario!=null?m.custo_unitario:""}"></div>
-        <div class="footnote">${origem}</div>
-        <div style="display:flex; gap:6px; white-space:nowrap;">
-          <button class="btn small primary" data-aprovar="${id}">Aprovar</button>
-          <button class="btn small ghost" data-rejeitar="${id}" style="color:var(--critical);">Rejeitar</button>
+        <div class="footnote" style="margin:0;">${origem}</div>
+        <div class="es-tools" style="justify-content:flex-end; flex-wrap:nowrap;">
+          <button class="btn small primary" data-aprovar="${id}"><i class="ico" data-lucide="check"></i>Aprovar</button>
+          <button class="btn small danger" data-rejeitar="${id}"><i class="ico" data-lucide="x"></i>Rejeitar</button>
         </div>
       </div>`;
     }).join("")}
   `;
+  if(window.lucide) lucide.createIcons();
   panel.querySelectorAll("[data-aprovar]").forEach(btn => btn.addEventListener("click", async () => {
     const id = btn.dataset.aprovar;
     const row = panel.querySelector(`[data-row="${id}"]`);
@@ -1453,30 +1535,35 @@ function renderEstoqueMovimentar(){
   const rows = [...insumos.entries()].map(([id,d]) => ({id, ...d})).sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
   const recentes = [...estoqueMovimentos.entries()].filter(([,m]) => m.tipo === "movimentacao_saida").sort((a,b)=>(b[1].criado_em||"").localeCompare(a[1].criado_em||"")).slice(0,10);
   sub.innerHTML = `
-    <div class="footnote" style="margin-bottom:14px;">Transfere um insumo de uma unidade para outra — gera uma baixa na origem e uma entrada no destino, já aprovadas.</div>
-    <div class="panel" style="margin-bottom:20px;">
-      <div class="field-row">
-        <div class="field"><label>Insumo</label><select id="mv-insumo">${rows.map(r=>`<option value="${r.id}">${escapeHtml(r.nome)}</option>`).join("")}</select></div>
-        <div class="field"><label>De</label><select id="mv-origem">${UNIDADES_COMPRA.map(u=>`<option value="${u.id}">${u.nome}</option>`).join("")}</select></div>
-        <div class="field"><label>Para</label><select id="mv-destino">${UNIDADES_COMPRA.map(u=>`<option value="${u.id}" ${u.id!=="matriz"?"selected":""}>${u.nome}</option>`).join("")}</select></div>
+    <div class="es-split">
+      <div class="panel">
+        <div class="panel-head"><h3><i class="ico" data-lucide="arrow-left-right"></i>Nova movimentação</h3></div>
+        <div class="panel-body">
+          <div class="field"><label>Insumo</label><select id="mv-insumo">${rows.map(r=>`<option value="${r.id}">${escapeHtml(r.nome)}</option>`).join("")}</select></div>
+          <div class="field-row">
+            <div class="field"><label>De</label><select id="mv-origem">${UNIDADES_COMPRA.map(u=>`<option value="${u.id}">${u.nome}</option>`).join("")}</select></div>
+            <div class="field"><label>Para</label><select id="mv-destino">${UNIDADES_COMPRA.map(u=>`<option value="${u.id}" ${u.id!=="matriz"?"selected":""}>${u.nome}</option>`).join("")}</select></div>
+          </div>
+          <div class="field"><label>Quantidade</label><input type="number" step="0.001" min="0" id="mv-qtd"></div>
+          <div class="field"><label>Observação (opcional)</label><input type="text" id="mv-obs" placeholder="Ex.: transferência para evento tal"></div>
+          <div class="footnote" id="mv-err" style="color:var(--critical); margin:0 0 8px;"></div>
+          <div class="es-form-actions"><button class="btn primary" id="mv-salvar"><i class="ico" data-lucide="check"></i>Registrar movimentação</button></div>
+        </div>
       </div>
-      <div class="field-row">
-        <div class="field"><label>Quantidade</label><input type="number" step="0.001" min="0" id="mv-qtd"></div>
-        <div class="field" style="flex:2;"><label>Observação (opcional)</label><input type="text" id="mv-obs" placeholder="Ex.: transferência para evento tal"></div>
+      <div class="panel">
+        <div class="panel-head"><h3><i class="ico" data-lucide="history"></i>Últimas movimentações</h3><span class="pend-count">${recentes.length} ${recentes.length===1?"registro":"registros"}</span></div>
+        <div class="table-wrap es-table"><table>
+          <thead><tr><th>Data</th><th>Insumo</th><th>De → Para</th><th style="text-align:right;">Quantidade</th><th>Obs.</th></tr></thead>
+          <tbody>${recentes.map(([id,m]) => {
+            const destino = [...estoqueMovimentos.values()].find(d => d.grupo_movimentacao === m.grupo_movimentacao && d.tipo === "movimentacao_entrada");
+            const ins = insumos.get(m.insumo_id);
+            return `<tr><td>${fmtDataYMD(m.data)}</td><td class="name-cell">${escapeHtml(ins?ins.nome:"—")}</td><td>${escapeHtml(nomeUnidadeCompra(m.unidade))} → ${escapeHtml(nomeUnidadeCompra(destino?destino.unidade:""))}</td><td class="num-cell">${fmtNum(Math.abs(m.quantidade),3)}</td><td class="footnote" style="margin:0;">${escapeHtml(m.observacao||"—")}</td></tr>`;
+          }).join("") || `<tr><td colspan="5" class="empty-state">Nenhuma movimentação registrada ainda.</td></tr>`}</tbody>
+        </table></div>
       </div>
-      <div class="footnote" id="mv-err" style="color:var(--critical); margin-bottom:8px;"></div>
-      <button class="btn primary" id="mv-salvar">Registrar movimentação</button>
     </div>
-    <div class="footnote" style="margin-bottom:8px;">Últimas movimentações</div>
-    <div class="panel"><div class="table-wrap"><table>
-      <thead><tr><th>Data</th><th>Insumo</th><th>De → Para</th><th style="text-align:right;">Quantidade</th><th>Obs.</th></tr></thead>
-      <tbody>${recentes.map(([id,m]) => {
-        const destino = [...estoqueMovimentos.values()].find(d => d.grupo_movimentacao === m.grupo_movimentacao && d.tipo === "movimentacao_entrada");
-        const ins = insumos.get(m.insumo_id);
-        return `<tr><td>${fmtDataYMD(m.data)}</td><td class="name-cell">${escapeHtml(ins?ins.nome:"—")}</td><td>${escapeHtml(nomeUnidadeCompra(m.unidade))} → ${escapeHtml(nomeUnidadeCompra(destino?destino.unidade:""))}</td><td class="num-cell">${fmtNum(Math.abs(m.quantidade),3)}</td><td class="footnote">${escapeHtml(m.observacao||"—")}</td></tr>`;
-      }).join("") || `<tr><td colspan="5" class="empty-state">Nenhuma movimentação registrada ainda.</td></tr>`}</tbody>
-    </table></div></div>
   `;
+  if(window.lucide) lucide.createIcons();
   document.getElementById("mv-origem").addEventListener("change", () => {
     const o = document.getElementById("mv-origem").value;
     document.getElementById("mv-destino").value = o === "matriz" ? "filial" : "matriz";
@@ -1501,26 +1588,33 @@ function renderEstoqueBaixaManual(){
   const rows = [...insumos.entries()].map(([id,d]) => ({id, ...d})).sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
   const recentes = [...estoqueMovimentos.entries()].filter(([,m]) => m.tipo === "baixa_manual" || m.tipo === "baixa_pcp").sort((a,b)=>(b[1].criado_em||"").localeCompare(a[1].criado_em||"")).slice(0,10);
   sub.innerHTML = `
-    <div class="footnote" style="margin-bottom:14px;">Dá baixa manual no estoque (perda, quebra, consumo não previsto, etc.). A baixa por lista de PCP vai usar o mesmo lançamento quando o módulo de PCP existir — por enquanto, use a baixa manual.</div>
-    <div class="panel" style="margin-bottom:20px;">
-      <div class="field-row">
-        <div class="field"><label>Insumo</label><select id="bx-insumo">${rows.map(r=>`<option value="${r.id}">${escapeHtml(r.nome)}</option>`).join("")}</select></div>
-        <div class="field"><label>Unidade</label><select id="bx-unidade">${UNIDADES_COMPRA.map(u=>`<option value="${u.id}">${u.nome}</option>`).join("")}</select></div>
-        <div class="field"><label>Quantidade</label><input type="number" step="0.001" min="0" id="bx-qtd"></div>
+    <div class="es-split">
+      <div class="panel">
+        <div class="panel-head"><h3><i class="ico" data-lucide="package-minus"></i>Nova baixa</h3></div>
+        <div class="panel-body">
+          <div class="field"><label>Insumo</label><select id="bx-insumo">${rows.map(r=>`<option value="${r.id}">${escapeHtml(r.nome)}</option>`).join("")}</select></div>
+          <div class="field-row">
+            <div class="field"><label>Unidade</label><select id="bx-unidade">${UNIDADES_COMPRA.map(u=>`<option value="${u.id}">${u.nome}</option>`).join("")}</select></div>
+            <div class="field"><label>Quantidade</label><input type="number" step="0.001" min="0" id="bx-qtd"></div>
+          </div>
+          <div class="field"><label>Motivo</label><input type="text" id="bx-obs" placeholder="Ex.: produto vencido, quebra na câmara fria…"></div>
+          <div class="footnote" id="bx-err" style="color:var(--critical); margin:0 0 8px;"></div>
+          <div class="es-form-actions"><button class="btn primary" id="bx-salvar"><i class="ico" data-lucide="check"></i>Registrar baixa</button></div>
+        </div>
       </div>
-      <div class="field"><label>Motivo</label><input type="text" id="bx-obs" placeholder="Ex.: produto vencido, quebra na câmara fria…"></div>
-      <div class="footnote" id="bx-err" style="color:var(--critical); margin-bottom:8px;"></div>
-      <button class="btn primary" id="bx-salvar">Registrar baixa</button>
+      <div class="panel">
+        <div class="panel-head"><h3><i class="ico" data-lucide="history"></i>Últimas baixas</h3><span class="pend-count">${recentes.length} ${recentes.length===1?"registro":"registros"}</span></div>
+        <div class="table-wrap es-table"><table>
+          <thead><tr><th>Data</th><th>Insumo</th><th>Unidade</th><th style="text-align:right;">Quantidade</th><th>Motivo</th></tr></thead>
+          <tbody>${recentes.map(([id,m]) => {
+            const ins = insumos.get(m.insumo_id);
+            return `<tr><td>${fmtDataYMD(m.data)}</td><td class="name-cell">${escapeHtml(ins?ins.nome:"—")}</td><td>${escapeHtml(nomeUnidadeCompra(m.unidade))}</td><td class="num-cell">${fmtNum(Math.abs(m.quantidade),3)}</td><td class="footnote" style="margin:0;">${escapeHtml(m.observacao||"—")}</td></tr>`;
+          }).join("") || `<tr><td colspan="5" class="empty-state">Nenhuma baixa manual registrada ainda.</td></tr>`}</tbody>
+        </table></div>
+      </div>
     </div>
-    <div class="footnote" style="margin-bottom:8px;">Últimas baixas manuais</div>
-    <div class="panel"><div class="table-wrap"><table>
-      <thead><tr><th>Data</th><th>Insumo</th><th>Unidade</th><th style="text-align:right;">Quantidade</th><th>Motivo</th></tr></thead>
-      <tbody>${recentes.map(([id,m]) => {
-        const ins = insumos.get(m.insumo_id);
-        return `<tr><td>${fmtDataYMD(m.data)}</td><td class="name-cell">${escapeHtml(ins?ins.nome:"—")}</td><td>${escapeHtml(nomeUnidadeCompra(m.unidade))}</td><td class="num-cell">${fmtNum(Math.abs(m.quantidade),3)}</td><td class="footnote">${escapeHtml(m.observacao||"—")}</td></tr>`;
-      }).join("") || `<tr><td colspan="5" class="empty-state">Nenhuma baixa manual registrada ainda.</td></tr>`}</tbody>
-    </table></div></div>
   `;
+  if(window.lucide) lucide.createIcons();
   document.getElementById("bx-salvar").addEventListener("click", async () => {
     const errEl = document.getElementById("bx-err");
     const insumoId = document.getElementById("bx-insumo").value;
