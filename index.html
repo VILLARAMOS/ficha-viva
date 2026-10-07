@@ -2126,13 +2126,18 @@ function _escolherFicha(candidatos, {num, semanaAlvo, usadosNestaSemana, custoAc
 
 // Gera a sugestão pra uma semana inteira (Refeição ou Marmita). Retorna {draft, stats} — `draft` tem o
 // MESMO formato que `construirDraftAlmoco` devolve, pronto pra virar o `draftAlmoco` da tela.
-function gerarSugestaoSemana(grupo, num, semana, modo /* 'vazios' | 'sobrescrever' */){
+// `precoVenda` (R$) e `cmvDesejado` (fração, ex. 0.35) são perguntados ao usuário toda vez que uma
+// formulação é solicitada (decisão de 07/10/2026) — não dependem mais só da meta mensal cadastrada em
+// Cardápio (cardapio_metas), que é opcional e pensada pra acompanhamento, não pra alimentar o motor.
+// O teto de cada dia da semana sendo gerada vira preço × cmv — igual pra todos os dias, já que é a
+// mesma formulação sendo pedida de uma vez. Também grava esse preço de venda na linha "Preço de venda"
+// do rascunho (mesmo campo que já existia na grade), pra ficar consistente com o teto usado no sorteio.
+function gerarSugestaoSemana(grupo, num, semana, modo /* 'vazios' | 'sobrescrever' */, precoVenda, cmvDesejado){
   _indiceSugestaoAtual = construirIndiceSugestao();
   const draft = construirDraftAlmoco(num, semana);
   const mesId = mesDoDia(semana, "QUARTA");
   const infoSem = _infoSemana(semana);
   const semanaDoMes = infoSem ? infoSem.num : null;
-  const meta = metaDoCardapio(grupo, num, mesId);
   const perfis = perfisUsadosPorCardapio(grupo, num);
   const perfilUnico = perfis.length === 1 ? perfisIncidencia.get(perfis[0]) : null;
   const alvoDaSemana = (perfilUnico && semanaDoMes) ? (perfilUnico.semanas[semanaDoMes-1] || null) : null;
@@ -2144,6 +2149,10 @@ function gerarSugestaoSemana(grupo, num, semana, modo /* 'vazios' | 'sobrescreve
 
   const diasParaProcessar = DIAS_ORDEM.filter(dia => modo === 'sobrescrever' ||
     draft[dia].itens.some(it => categoriaEntraNoMotor(it.categoria) && !it.nome));
+
+  // aplica o preço de venda informado a todos os dias da formulação sendo gerada — é o mesmo valor
+  // perguntado no modal, então fica estranho a grade mostrar outro número depois de gerar a sugestão.
+  diasParaProcessar.forEach(dia => { draft[dia].precoVenda = precoVenda; });
 
   function slotsVazios(dia, categoriaPrefix){
     return draft[dia].itens
@@ -2178,12 +2187,8 @@ function gerarSugestaoSemana(grupo, num, semana, modo /* 'vazios' | 'sobrescreve
     }
   }));
 
-  function tetoDoDia(dia){
-    if(!meta) return null;
-    if(meta.tipo_meta === 'custo_refeicao') return meta.valor;
-    const pv = draft[dia].precoVenda;
-    return (pv != null && pv > 0) ? pv * meta.valor : null; // CMV% sem preço de venda do dia -> sem teto calculável
-  }
+  const tetoUnico = (precoVenda > 0 && cmvDesejado > 0) ? precoVenda * cmvDesejado : null;
+  function tetoDoDia(_dia){ return tetoUnico; }
 
   function preencherSlot(dia, ci, candidatos, chaveTrilha){
     const resultado = _escolherFicha(candidatos, {
@@ -2230,7 +2235,7 @@ function gerarSugestaoSemana(grupo, num, semana, modo /* 'vazios' | 'sobrescreve
   let custoSoma = 0, diasComAlgo = 0;
   DIAS_ORDEM.forEach(dia => { if(draft[dia].itens.some(it=>it.nome)){ diasComAlgo++; custoSoma += custoAcumuladoDia[dia]; } });
   stats.custoMedioDia = diasComAlgo ? custoSoma/diasComAlgo : null;
-  stats.metaTxt = meta ? (meta.tipo_meta === 'cmv_pct' ? `${fmtPct(meta.valor)} de CMV` : `${fmtMoney(meta.valor)}/refeição`) : null;
+  stats.metaTxt = tetoUnico != null ? `${fmtPct(cmvDesejado)} de CMV sobre ${fmtMoney(precoVenda)}` : null;
 
   return { draft, stats };
 }
@@ -2241,46 +2246,68 @@ function abrirSugestaoSemanaModal(grupo, num, semanaAtual){
   if(!semanasTodas.includes(semanaAtual)) semanasTodas.push(semanaAtual), semanasTodas.sort((a,b)=>a-b);
   let semana = semanaAtual, modo = 'vazios';
 
-  root.innerHTML = `
-    <div class="modal-overlay" id="sg-ov">
-      <div class="modal">
-        <div class="modal-head"><h2>🎲 Sugerir semana — ${escapeHtml(labelNumeroCardapio(grupo, num))}</h2><button class="close-x" id="sg-close">&times;</button></div>
-        <div class="modal-body">
-          <div class="footnote" style="margin-bottom:12px;">Preenche o rascunho desta semana a partir do histórico de uso, do alvo de incidência de proteína (quando só 1 perfil se aplica) e da meta de custo do mês. <strong>Não salva sozinho</strong> — a grade continua editável normalmente até clicar em "Salvar semana".</div>
-          <div class="field"><label>Semana</label>
-            <select id="sg-semana">${semanasTodas.map(s => `<option value="${s}" ${s===semana?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
+  function render(){
+    // Preço de venda e CMV desejado são perguntados toda vez que uma formulação é pedida (decisão de
+    // 07/10/2026) — pré-preenche com o que já estiver disponível só como ponto de partida (preço de
+    // venda já lançado em algum dia desta semana; CMV da meta do mês, se for em %), mas sempre exige
+    // confirmar. Recalculado a cada render() pra acompanhar a troca de semana no próprio modal.
+    const draftAtual = construirDraftAlmoco(num, semana);
+    const precoExistente = DIAS_ORDEM.map(d => draftAtual[d].precoVenda).find(v => v != null && v > 0) ?? null;
+    const metaMes = metaDoCardapio(grupo, num, mesDoDia(semana, "QUARTA"));
+    const cmvExistente = metaMes && metaMes.tipo_meta === 'cmv_pct' ? metaMes.valor * 100 : null;
+    root.innerHTML = `
+      <div class="modal-overlay" id="sg-ov">
+        <div class="modal">
+          <div class="modal-head"><h2>🎲 Sugerir semana — ${escapeHtml(labelNumeroCardapio(grupo, num))}</h2><button class="close-x" id="sg-close">&times;</button></div>
+          <div class="modal-body">
+            <div class="footnote" style="margin-bottom:12px;">Preenche o rascunho desta semana a partir do histórico de uso e do alvo de incidência de proteína (quando só 1 perfil se aplica). <strong>Não salva sozinho</strong> — a grade continua editável normalmente até clicar em "Salvar semana".</div>
+            <div class="field"><label>Semana</label>
+              <select id="sg-semana">${semanasTodas.map(s => `<option value="${s}" ${s===semana?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
+            </div>
+            <div class="field"><label>O que preencher</label>
+              <select id="sg-modo">
+                <option value="vazios" ${modo==='vazios'?"selected":""}>Só os dias/categorias vazios</option>
+                <option value="sobrescrever">Sobrescrever tudo (menos Extra)</option>
+              </select>
+            </div>
+            <div class="field"><label>Preço de venda (R$/dia)</label>
+              <input type="number" step="0.01" min="0" id="sg-preco" value="${precoExistente ?? ""}" placeholder="ex.: 14.90">
+            </div>
+            <div class="field"><label>CMV desejado (%)</label>
+              <input type="number" step="0.1" min="0" max="100" id="sg-cmv" value="${cmvExistente ?? ""}" placeholder="ex.: 35">
+            </div>
+            <div class="footnote" style="margin-top:-6px;">O motor usa preço × CMV como teto de custo do dia — quando um prato sorteado estoura, tenta alternativas mais baratas e, se não der, escolhe a mais barata disponível e avisa no resumo.</div>
+            <div class="footnote" id="sg-err" style="color:var(--critical);"></div>
           </div>
-          <div class="field"><label>O que preencher</label>
-            <select id="sg-modo">
-              <option value="vazios" ${modo==='vazios'?"selected":""}>Só os dias/categorias vazios</option>
-              <option value="sobrescrever">Sobrescrever tudo (menos Extra)</option>
-            </select>
+          <div class="modal-foot">
+            <button class="btn" id="sg-cancel">Cancelar</button>
+            <button class="btn primary" id="sg-gerar">Gerar sugestão</button>
           </div>
-          <div class="footnote" id="sg-err" style="color:var(--critical);"></div>
         </div>
-        <div class="modal-foot">
-          <button class="btn" id="sg-cancel">Cancelar</button>
-          <button class="btn primary" id="sg-gerar">Gerar sugestão</button>
-        </div>
-      </div>
-    </div>`;
-  document.getElementById("sg-close").onclick = () => root.innerHTML = "";
-  document.getElementById("sg-cancel").onclick = () => root.innerHTML = "";
-  document.getElementById("sg-ov").addEventListener("click", e => { if(e.target.id==="sg-ov") root.innerHTML=""; });
-  document.getElementById("sg-semana").addEventListener("change", e => { semana = Number(e.target.value); });
-  document.getElementById("sg-modo").addEventListener("change", e => { modo = e.target.value; });
-  document.getElementById("sg-gerar").onclick = async () => {
-    const errEl = document.getElementById("sg-err");
-    if(modo === 'sobrescrever' && !(await confirmDialog(`Sobrescrever tudo em ${escapeHtml(labelNumeroCardapio(grupo,num))} — ${escapeHtml(rotuloSemana(semana))}? Isso substitui qualquer prato já preenchido na grade (nada é salvo até você clicar em "Salvar semana").`))) return;
-    try{
-      const { draft, stats } = gerarSugestaoSemana(grupo, num, semana, modo);
-      root.innerHTML = "";
-      cardapioTabSel = grupo; cardapioNumSel = num; cardapioSemanaSel = semana; cardapioSemanaNovaPendente = null;
-      draftAlmocoOverridePendente = draft;
-      resumoSugestaoPendente = stats;
-      renderCardapio();
-    }catch(e){ errEl.textContent = "Erro ao gerar sugestão: " + (e.message || e.code || e); }
-  };
+      </div>`;
+    document.getElementById("sg-close").onclick = () => root.innerHTML = "";
+    document.getElementById("sg-cancel").onclick = () => root.innerHTML = "";
+    document.getElementById("sg-ov").addEventListener("click", e => { if(e.target.id==="sg-ov") root.innerHTML=""; });
+    document.getElementById("sg-semana").addEventListener("change", e => { semana = Number(e.target.value); render(); });
+    document.getElementById("sg-modo").addEventListener("change", e => { modo = e.target.value; });
+    document.getElementById("sg-gerar").onclick = async () => {
+      const errEl = document.getElementById("sg-err");
+      const precoVenda = parseFloat(document.getElementById("sg-preco").value);
+      const cmvPct = parseFloat(document.getElementById("sg-cmv").value);
+      if(!(precoVenda > 0)){ errEl.textContent = "Informe o preço de venda (R$)."; return; }
+      if(!(cmvPct > 0 && cmvPct <= 100)){ errEl.textContent = "Informe o CMV desejado (%), entre 0 e 100."; return; }
+      if(modo === 'sobrescrever' && !(await confirmDialog(`Sobrescrever tudo em ${escapeHtml(labelNumeroCardapio(grupo,num))} — ${escapeHtml(rotuloSemana(semana))}? Isso substitui qualquer prato já preenchido na grade (nada é salvo até você clicar em "Salvar semana").`))) return;
+      try{
+        const { draft, stats } = gerarSugestaoSemana(grupo, num, semana, modo, precoVenda, cmvPct/100);
+        root.innerHTML = "";
+        cardapioTabSel = grupo; cardapioNumSel = num; cardapioSemanaSel = semana; cardapioSemanaNovaPendente = null;
+        draftAlmocoOverridePendente = draft;
+        resumoSugestaoPendente = stats;
+        renderCardapio();
+      }catch(e){ errEl.textContent = "Erro ao gerar sugestão: " + (e.message || e.code || e); }
+    };
+  }
+  render();
 }
 
 function renderCardapio(){
