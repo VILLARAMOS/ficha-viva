@@ -359,6 +359,8 @@ table.cardapio-table .cel-search-btn:hover{background:var(--surface-alt); color:
 table.cardapio-table .cel-search-btn .ico{width:11px; height:11px;}
 table.cardapio-table .cel-sub-row{display:flex; align-items:center; gap:3px;}
 table.cardapio-table input.cel-gram, table.cardapio-table input.cel-preco{font:inherit; width:100%; font-size:9.5px; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:5px; padding:3px 4px; min-width:0; box-sizing:border-box;}
+table.cardapio-table .cel-preco-wrap{display:flex; align-items:center; gap:3px;}
+table.cardapio-table .cel-preco-prefix{flex:none; font-size:9.5px; color:var(--text-muted); font-weight:600;}
 table.cardapio-table .cel-custo{flex:none; font-family:'IBM Plex Mono',ui-monospace,monospace; font-size:9.5px; color:var(--text-faint); white-space:nowrap;}
 table.cardapio-table td.custo-dia{text-align:right; font-weight:600; font-size:11px; white-space:nowrap;}
 table.cardapio-table tr.row-total td{background:var(--surface-alt);}
@@ -1961,6 +1963,7 @@ function custoItemTxt(item){
 let draftAlmoco = null; // { [dia]: { id, precoVenda, itens:[20] } }
 let draftAlmocoOverridePendente = null; // usado pelo motor de sugestão pra injetar um rascunho já preenchido sem rebuildar do banco
 let resumoSugestaoPendente = null;      // estatísticas da última sugestão gerada, mostradas uma vez logo após o render
+let cardapioMostrarCategoriasVazias = false; // decisão de 07/10/2026: categorias sem nenhum prato na semana ficam ocultas por padrão
 let draftCafe = null;   // { id, linhas, itens: { [dia]: [...] } }
 
 /* Refeição = cardapio_num 1-5 · Marmita = cardapio_num 6-8 (mesma tabela `cardapios`, grade de 20
@@ -2033,6 +2036,9 @@ function mediana(valores){
   const mid = Math.floor(v.length/2);
   return v.length % 2 ? v[mid] : (v[mid-1]+v[mid])/2;
 }
+// a grade mostra gramagem com 3 casas decimais (decisão de 07/10/2026) — arredonda aqui pra não gerar um
+// valor "falso preciso" tipo 0,0953333 quando a mediana cai entre números quebrados.
+function arred3(n){ return (n==null || !isFinite(n)) ? null : Math.round(n*1000)/1000; }
 
 // Minera `cardapios.itens` (Refeição + Marmita, mesma tabela) pra montar, por ficha: a gramagem mediana
 // já usada e a última semana em que saiu em cada número de cardápio — exatamente a mesma técnica usada
@@ -2069,7 +2075,7 @@ function construirIndiceSugestao(){
     const custoKg = cc ? cc.custoKg : null;
     if(custoKg == null) return; // sem custo calculável — não dá pra sortear respeitando teto
     const gramagemPropria = mediana(gramagensPorFicha.get(id));
-    const gramagemPadrao = gramagemPropria ?? medianaPorGrupo.get(f.grupo) ?? null;
+    const gramagemPadrao = arred3(gramagemPropria ?? medianaPorGrupo.get(f.grupo) ?? null);
     if(!porGrupo.has(f.grupo)) porGrupo.set(f.grupo, []);
     porGrupo.get(f.grupo).push({ id, nome: f.nome, grupo: f.grupo, tipo_proteina: f.tipo_proteina || null, custoKg, gramagemPadrao, temHistoricoProprio: gramagemPropria != null });
   });
@@ -2132,14 +2138,27 @@ function _escolherFicha(candidatos, {num, semanaAlvo, usadosNestaSemana, custoAc
 // O teto de cada dia da semana sendo gerada vira preço × cmv — igual pra todos os dias, já que é a
 // mesma formulação sendo pedida de uma vez. Também grava esse preço de venda na linha "Preço de venda"
 // do rascunho (mesmo campo que já existia na grade), pra ficar consistente com o teto usado no sorteio.
-function gerarSugestaoSemana(grupo, num, semana, modo /* 'vazios' | 'sobrescrever' */, precoVenda, cmvDesejado){
+// `perfilIncidenciaId` decide qual perfil de incidência o motor segue (pergunta de 07/10/2026: como ele
+// escolhia isso antes não era visível pro usuário — detectava sozinho só quando exatamente 1 perfil
+// batia nos contratos ativos deste número de cardápio, e ficava mudo quando havia 0 ou vários). Agora é
+// sempre uma escolha explícita no modal: undefined/null = detectar automaticamente (mesma regra de
+// antes); "__nenhum__" = gerar sem nenhum alvo de proteína; um id = usa aquele perfil, ignorando o que
+// os contratos apontariam.
+function gerarSugestaoSemana(grupo, num, semana, modo /* 'vazios' | 'sobrescrever' */, precoVenda, cmvDesejado, perfilIncidenciaId){
   _indiceSugestaoAtual = construirIndiceSugestao();
   const draft = construirDraftAlmoco(num, semana);
   const mesId = mesDoDia(semana, "QUARTA");
   const infoSem = _infoSemana(semana);
   const semanaDoMes = infoSem ? infoSem.num : null;
-  const perfis = perfisUsadosPorCardapio(grupo, num);
-  const perfilUnico = perfis.length === 1 ? perfisIncidencia.get(perfis[0]) : null;
+  let perfilUnico;
+  if(perfilIncidenciaId === "__nenhum__"){
+    perfilUnico = null;
+  } else if(perfilIncidenciaId){
+    perfilUnico = perfisIncidencia.get(perfilIncidenciaId) || null;
+  } else {
+    const perfis = perfisUsadosPorCardapio(grupo, num);
+    perfilUnico = perfis.length === 1 ? perfisIncidencia.get(perfis[0]) : null;
+  }
   const alvoDaSemana = (perfilUnico && semanaDoMes) ? (perfilUnico.semanas[semanaDoMes-1] || null) : null;
 
   const usadosPorTrilha = new Map(); // chave (grupo ou tipo_proteina) -> Set(ficha_id) usados nesta geração
@@ -2236,6 +2255,7 @@ function gerarSugestaoSemana(grupo, num, semana, modo /* 'vazios' | 'sobrescreve
   DIAS_ORDEM.forEach(dia => { if(draft[dia].itens.some(it=>it.nome)){ diasComAlgo++; custoSoma += custoAcumuladoDia[dia]; } });
   stats.custoMedioDia = diasComAlgo ? custoSoma/diasComAlgo : null;
   stats.metaTxt = tetoUnico != null ? `${fmtPct(cmvDesejado)} de CMV sobre ${fmtMoney(precoVenda)}` : null;
+  stats.perfilTxt = perfilUnico ? `seguindo "${perfilUnico.nome}"` : "sem alvo de incidência de proteína";
 
   return { draft, stats };
 }
@@ -2244,7 +2264,7 @@ function abrirSugestaoSemanaModal(grupo, num, semanaAtual){
   const root = document.getElementById("modal-root");
   const semanasTodas = [...new Set([...cardapiosAlmoco.values()].map(r => r.semana))].sort((a,b)=>a-b);
   if(!semanasTodas.includes(semanaAtual)) semanasTodas.push(semanaAtual), semanasTodas.sort((a,b)=>a-b);
-  let semana = semanaAtual, modo = 'vazios';
+  let semana = semanaAtual, modo = 'vazios', perfilEscolhido = null; // null = "Automático" (mesma regra de detecção de sempre)
 
   function render(){
     // Preço de venda e CMV desejado são perguntados toda vez que uma formulação é pedida (decisão de
@@ -2255,12 +2275,25 @@ function abrirSugestaoSemanaModal(grupo, num, semanaAtual){
     const precoExistente = DIAS_ORDEM.map(d => draftAtual[d].precoVenda).find(v => v != null && v > 0) ?? null;
     const metaMes = metaDoCardapio(grupo, num, mesDoDia(semana, "QUARTA"));
     const cmvExistente = metaMes && metaMes.tipo_meta === 'cmv_pct' ? metaMes.valor * 100 : null;
+
+    // Qual perfil de incidência a opção "Automático" usaria — pergunta de 07/10/2026 sobre como isso era
+    // decidido: antes era silencioso (só funcionava quando exatamente 1 perfil batia nos contratos ativos
+    // deste número de cardápio). Agora mostra isso explicitamente e deixa escolher outro, se quiser.
+    const perfisDoCardapio = perfisUsadosPorCardapio(grupo, num);
+    const perfilAutoId = perfisDoCardapio.length === 1 ? perfisDoCardapio[0] : null;
+    const perfilAutoNome = perfilAutoId ? (perfisIncidencia.get(perfilAutoId)||{}).nome : null;
+    const perfisOrdenados = [...perfisIncidencia.entries()].sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+    let autoLabel;
+    if(perfilAutoNome) autoLabel = `Automático — "${perfilAutoNome}" (único perfil usado pelos contratos deste cardápio)`;
+    else if(perfisDoCardapio.length > 1) autoLabel = `Automático — ${perfisDoCardapio.length} perfis diferentes se aplicam, nenhum alvo será usado`;
+    else autoLabel = `Automático — nenhum contrato ativo com perfil de incidência usa este cardápio, sem alvo`;
+
     root.innerHTML = `
       <div class="modal-overlay" id="sg-ov">
         <div class="modal">
           <div class="modal-head"><h2>🎲 Sugerir semana — ${escapeHtml(labelNumeroCardapio(grupo, num))}</h2><button class="close-x" id="sg-close">&times;</button></div>
           <div class="modal-body">
-            <div class="footnote" style="margin-bottom:12px;">Preenche o rascunho desta semana a partir do histórico de uso e do alvo de incidência de proteína (quando só 1 perfil se aplica). <strong>Não salva sozinho</strong> — a grade continua editável normalmente até clicar em "Salvar semana".</div>
+            <div class="footnote" style="margin-bottom:12px;">Preenche o rascunho desta semana a partir do histórico de uso e do alvo de incidência de proteína escolhido abaixo. <strong>Não salva sozinho</strong> — a grade continua editável normalmente até clicar em "Salvar semana".</div>
             <div class="field"><label>Semana</label>
               <select id="sg-semana">${semanasTodas.map(s => `<option value="${s}" ${s===semana?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
             </div>
@@ -2268,6 +2301,13 @@ function abrirSugestaoSemanaModal(grupo, num, semanaAtual){
               <select id="sg-modo">
                 <option value="vazios" ${modo==='vazios'?"selected":""}>Só os dias/categorias vazios</option>
                 <option value="sobrescrever">Sobrescrever tudo (menos Extra)</option>
+              </select>
+            </div>
+            <div class="field"><label>Perfil de incidência a seguir</label>
+              <select id="sg-perfil">
+                <option value="" ${!perfilEscolhido?"selected":""}>${escapeHtml(autoLabel)}</option>
+                ${perfisOrdenados.map(([id,p]) => `<option value="${id}" ${perfilEscolhido===id?"selected":""}>${escapeHtml(p.nome)}</option>`).join("")}
+                <option value="__nenhum__" ${perfilEscolhido==="__nenhum__"?"selected":""}>Nenhum (sortear sem alvo de proteína)</option>
               </select>
             </div>
             <div class="field"><label>Preço de venda (R$/dia)</label>
@@ -2290,6 +2330,7 @@ function abrirSugestaoSemanaModal(grupo, num, semanaAtual){
     document.getElementById("sg-ov").addEventListener("click", e => { if(e.target.id==="sg-ov") root.innerHTML=""; });
     document.getElementById("sg-semana").addEventListener("change", e => { semana = Number(e.target.value); render(); });
     document.getElementById("sg-modo").addEventListener("change", e => { modo = e.target.value; });
+    document.getElementById("sg-perfil").addEventListener("change", e => { perfilEscolhido = e.target.value || null; });
     document.getElementById("sg-gerar").onclick = async () => {
       const errEl = document.getElementById("sg-err");
       const precoVenda = parseFloat(document.getElementById("sg-preco").value);
@@ -2298,7 +2339,7 @@ function abrirSugestaoSemanaModal(grupo, num, semanaAtual){
       if(!(cmvPct > 0 && cmvPct <= 100)){ errEl.textContent = "Informe o CMV desejado (%), entre 0 e 100."; return; }
       if(modo === 'sobrescrever' && !(await confirmDialog(`Sobrescrever tudo em ${escapeHtml(labelNumeroCardapio(grupo,num))} — ${escapeHtml(rotuloSemana(semana))}? Isso substitui qualquer prato já preenchido na grade (nada é salvo até você clicar em "Salvar semana").`))) return;
       try{
-        const { draft, stats } = gerarSugestaoSemana(grupo, num, semana, modo, precoVenda, cmvPct/100);
+        const { draft, stats } = gerarSugestaoSemana(grupo, num, semana, modo, precoVenda, cmvPct/100, perfilEscolhido);
         root.innerHTML = "";
         cardapioTabSel = grupo; cardapioNumSel = num; cardapioSemanaSel = semana; cardapioSemanaNovaPendente = null;
         draftAlmocoOverridePendente = draft;
@@ -2543,9 +2584,52 @@ function montarPainelCmv(grupo, num, semana){
 
   host.innerHTML = `<div class="cardapio-cmv-panel">${blocosHtml}</div>${incHtml}`;
   const linkInc = document.getElementById("card-abrir-incidencia");
-  if(linkInc) linkInc.addEventListener("click", e => { e.preventDefault(); goToView("incidencia"); });
+  if(linkInc) linkInc.addEventListener("click", e => { e.preventDefault(); abrirTabelaIncidenciaModal(); });
   const linkMeta = document.getElementById("card-editar-meta");
   if(linkMeta) linkMeta.addEventListener("click", e => { e.preventDefault(); abrirMetaModal(grupo, num, mesId, () => montarPainelCmv(grupo, num, semana)); });
+}
+
+// Decisão de 07/10/2026: abrir só a tabela de Perfis (o "mapa de carnes"), em modal, em vez de navegar
+// pra aba Incidência inteira — que também carrega o painel gigante de Classificação das ~640 fichas,
+// sem relação com o que se quer ver a partir do Cardápio. Editar um perfil (botão "abrir") ainda usa o
+// modal de sempre (openPerfilModal), que substitui este — mesmo padrão já usado em outros modais aninhados.
+function abrirTabelaIncidenciaModal(){
+  const root = document.getElementById("modal-root");
+  const perfisOrdenados = [...perfisIncidencia.entries()].sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+  root.innerHTML = `
+    <div class="modal-overlay" id="ti-ov">
+      <div class="modal modal-wide">
+        <div class="modal-head"><h2>Tabela de incidência — Perfis</h2><button class="close-x" id="ti-close">&times;</button></div>
+        <div class="modal-body">
+          <div class="footnote" style="margin-bottom:12px;">Quantos pratos de cada tipo de proteína cada perfil espera por semana do mês. Pra editar a classificação de proteína das fichas, use a aba Incidência completa.</div>
+          <div class="table-wrap">
+            <table class="tbl-compact">
+              <thead><tr><th>Perfil</th><th>Dias</th>${TIPOS_PROTEINA.map(t => `<th style="text-align:right;">${escapeHtml(t.curto)}/mês</th>`).join("")}<th>Usado por</th><th></th></tr></thead>
+              <tbody id="ti-tbody">${perfisOrdenados.map(([id, p]) => {
+                const uso = contratosDoPerfil(id);
+                const usoTxt = uso.length ? `${uso.slice(0,5).map(escapeHtml).join(", ")}${uso.length>5?` +${uso.length-5}`:""}` : '<span style="color:var(--text-faint);">nenhum contrato ativo</span>';
+                return `<tr>
+                  <td class="name-cell">${escapeHtml(p.nome)}</td>
+                  <td class="wrap-cell" style="max-width:150px;">${diasResumoIncidencia(p.dias)}</td>
+                  ${TIPOS_PROTEINA.map(t => `<td class="num-cell">${totalMensalPerfil(p, t.id)}</td>`).join("")}
+                  <td class="wrap-cell">${usoTxt}</td>
+                  <td style="text-align:right; white-space:nowrap;"><button class="btn small ghost" data-open-perfil="${id}">abrir</button></td>
+                </tr>`;
+              }).join("") || `<tr><td colspan="${3+TIPOS_PROTEINA.length}" class="empty-state">Nenhum perfil cadastrado.</td></tr>`}</tbody>
+            </table>
+          </div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" id="ti-novo-perfil" style="margin-right:auto;">+ Novo perfil</button>
+          <button class="btn" id="ti-fechar">Fechar</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById("ti-close").onclick = () => root.innerHTML = "";
+  document.getElementById("ti-fechar").onclick = () => root.innerHTML = "";
+  document.getElementById("ti-ov").addEventListener("click", e => { if(e.target.id==="ti-ov") root.innerHTML=""; });
+  document.getElementById("ti-novo-perfil").onclick = () => openPerfilModal(null, abrirTabelaIncidenciaModal);
+  document.getElementById("ti-tbody").querySelectorAll("[data-open-perfil]").forEach(b => b.addEventListener("click", () => openPerfilModal(b.dataset.openPerfil, abrirTabelaIncidenciaModal)));
 }
 
 /* ===== REFEIÇÃO / MARMITA — tabela editável (categorias × dias) =====
@@ -2583,8 +2667,24 @@ function montarTabelaAlmoco(num, semana){
     return s + (c!=null && l.gramagem_kg!=null ? c*l.gramagem_kg : 0);
   }, 0);
 
+  // Categorias sem nenhum prato em nenhum dia da semana ficam ocultas por padrão (decisão de 07/10/2026),
+  // com um link pra reaparecer quando precisar lançar algo nelas. Ressalva: numa semana totalmente vazia
+  // (recém-criada) isso esconderia a tabela inteira, o que travaria o cadastro — nesse caso específico
+  // mostra tudo mesmo, já que não há nada ainda pra "limpar" da visão.
+  const categoriaTemConteudo = ci => DIAS_ORDEM.some(dia => draftAlmoco[dia].itens[ci].nome);
+  const algumaCategoriaTemConteudo = CATEGORIAS_CARDAPIO.some((cat,ci) => categoriaTemConteudo(ci));
+  const categoriasOcultaveis = algumaCategoriaTemConteudo ? CATEGORIAS_CARDAPIO.filter((cat,ci) => !categoriaTemConteudo(ci)).length : 0;
+  const categoriasRender = CATEGORIAS_CARDAPIO
+    .map((cat,ci) => ({cat, ci}))
+    .filter(({ci}) => cardapioMostrarCategoriasVazias || !algumaCategoriaTemConteudo || categoriaTemConteudo(ci));
+
   const host = document.getElementById("card-week");
   host.innerHTML = `
+    ${categoriasOcultaveis > 0 ? `
+      <label class="footnote" style="display:inline-flex; align-items:center; gap:6px; margin-bottom:8px; cursor:pointer;">
+        <input type="checkbox" id="card-mostrar-vazias" ${cardapioMostrarCategoriasVazias?"checked":""}>
+        mostrar ${categoriasOcultaveis} categoria(s) sem preenchimento
+      </label>` : ""}
     <div class="table-scroll">
       <table class="cardapio-table">
         <thead><tr>
@@ -2592,7 +2692,7 @@ function montarTabelaAlmoco(num, semana){
           ${DIAS_ORDEM.map(dia => `<th><div class="th-dia-head"><span>${DIA_LABEL[dia]}</span><span class="th-date">${fmtData(dataDoDia(semana,dia))}</span><button type="button" class="th-del" data-del-dia="${dia}">limpar dia</button></div></th>`).join("")}
         </tr></thead>
         <tbody>
-          ${CATEGORIAS_CARDAPIO.map((cat,ci) => `
+          ${categoriasRender.map(({cat,ci}) => `
             <tr>
               <td class="cat-col">${escapeHtml(cat)}</td>
               ${DIAS_ORDEM.map(dia => `
@@ -2604,14 +2704,14 @@ function montarTabelaAlmoco(num, semana){
                     <button type="button" class="cel-search-btn" data-search-dia="${dia}" data-search-ci="${ci}" title="Buscar na lista de fichas/insumos"><i class="ico" data-lucide="search"></i></button>
                   </div>
                   <div class="cel-sub-row">
-                    <input type="number" step="0.001" class="cel-gram" data-dia="${dia}" data-ci="${ci}" value="${draftAlmoco[dia].itens[ci].gramagem_kg ?? ""}" placeholder="kg">
+                    <input type="number" step="0.001" class="cel-gram" data-dia="${dia}" data-ci="${ci}" value="${draftAlmoco[dia].itens[ci].gramagem_kg != null ? Number(draftAlmoco[dia].itens[ci].gramagem_kg).toFixed(3) : ""}" placeholder="kg">
                     <span class="cel-custo" data-custo-cel="${dia}|${ci}">${custoItemTxt(draftAlmoco[dia].itens[ci])}</span>
                   </div>
                 </td>`).join("")}
             </tr>`).join("")}
           <tr class="row-total">
-            <td class="cat-col">Preço de venda (R$)</td>
-            ${DIAS_ORDEM.map(dia => `<td><input type="number" step="0.01" class="cel-preco" data-dia="${dia}" value="${draftAlmoco[dia].precoVenda ?? ""}"></td>`).join("")}
+            <td class="cat-col">Preço de venda</td>
+            ${DIAS_ORDEM.map(dia => `<td><div class="cel-preco-wrap"><span class="cel-preco-prefix">R$</span><input type="number" step="0.01" class="cel-preco" data-dia="${dia}" value="${draftAlmoco[dia].precoVenda ?? ""}"></div></td>`).join("")}
           </tr>
           <tr class="row-total">
             <td class="cat-col">Custo calculado</td>
@@ -2627,9 +2727,12 @@ function montarTabelaAlmoco(num, semana){
   `;
   if(window.lucide) lucide.createIcons();
 
+  const toggleVazias = document.getElementById("card-mostrar-vazias");
+  if(toggleVazias) toggleVazias.addEventListener("change", e => { cardapioMostrarCategoriasVazias = e.target.checked; montarTabelaAlmoco(num, semana); });
+
   if(resumoSugestaoPendente){
     const st = resumoSugestaoPendente; resumoSugestaoPendente = null;
-    const partes = [`${st.preenchidos} célula(s) preenchida(s)`];
+    const partes = [`${st.preenchidos} célula(s) preenchida(s)`, st.perfilTxt];
     if(st.custoMedioDia != null) partes.push(`custo médio projetado ${fmtMoney(st.custoMedioDia)}/dia${st.metaTxt ? ` (meta: ${st.metaTxt})` : ""}`);
     if(st.acimaDoTeto) partes.push(`${st.acimaDoTeto} prato(s) estouraram o teto do dia e entraram pelo mais barato disponível`);
     if(st.repetidos) partes.push(`${st.repetidos} prato(s) repetido(s) por falta de opção sem repetir`);
@@ -2668,6 +2771,15 @@ function montarTabelaAlmoco(num, semana){
   function recomputarCustoCelula(dia, ci){
     const el = host.querySelector(`[data-custo-cel="${dia}|${ci}"]`);
     if(el) el.textContent = custoItemTxt(draftAlmoco[dia].itens[ci]);
+  }
+
+  // Enter move pra célula de baixo, na mesma coluna do dia (decisão de 07/10/2026) — a ordem no DOM já
+  // segue a ordem visual das linhas (categorias ocultas simplesmente não entram no querySelectorAll),
+  // então não precisa saber o índice de categoria, só a posição dentro da coluna.
+  function moverParaColunaAbaixo(selector, dia, atual){
+    const coluna = [...host.querySelectorAll(`${selector}[data-dia="${dia}"]`)];
+    const idx = coluna.indexOf(atual);
+    if(idx >= 0 && idx < coluna.length - 1){ const prox = coluna[idx+1]; prox.focus(); if(prox.select) prox.select(); }
   }
 
   host.querySelectorAll("[data-search-dia]").forEach(btn => btn.addEventListener("click", () => {
@@ -2715,10 +2827,13 @@ function montarTabelaAlmoco(num, semana){
       recomputarCustoDia(dia); recomputarCustoCelula(dia, ci);
     });
     inp.addEventListener("keydown", e => {
-      if(e.key === "Enter" && optsEl){
+      if(e.key !== "Enter") return;
+      if(optsEl){
         const first = optsEl.querySelector("[data-pick-insumo],[data-pick-ficha]");
-        if(first){ e.preventDefault(); first.dataset.pickInsumo ? escolher("insumo", first.dataset.pickInsumo) : escolher("ficha", first.dataset.pickFicha); }
+        if(first){ e.preventDefault(); first.dataset.pickInsumo ? escolher("insumo", first.dataset.pickInsumo) : escolher("ficha", first.dataset.pickFicha); return; }
       }
+      e.preventDefault();
+      moverParaColunaAbaixo(".cel-nome", dia, inp);
     });
     inp.addEventListener("blur", () => fecharOpts());
   });
@@ -2729,11 +2844,29 @@ function montarTabelaAlmoco(num, semana){
       draftAlmoco[dia].itens[ci].gramagem_kg = inp.value===""?null:parseFloat(inp.value);
       recomputarCustoDia(dia); recomputarCustoCelula(dia, ci);
     });
+    inp.addEventListener("keydown", e => {
+      if(e.key === "Enter"){ e.preventDefault(); moverParaColunaAbaixo(".cel-gram", dia, inp); }
+    });
+    // reformata pra 3 casas decimais ao sair do campo (decisão de 07/10/2026) — não reformata a cada
+    // tecla pra não atrapalhar quem ainda está digitando (ex.: apagar e trocar o valor).
+    inp.addEventListener("blur", () => {
+      const v = draftAlmoco[dia].itens[ci].gramagem_kg;
+      inp.value = v != null ? v.toFixed(3) : "";
+    });
   });
 
   host.querySelectorAll(".cel-preco").forEach(inp => {
     const dia = inp.dataset.dia;
     inp.addEventListener("input", () => { draftAlmoco[dia].precoVenda = inp.value===""?null:parseFloat(inp.value); atualizarResumoSemana(); });
+    // linha de preço de venda não tem "célula de baixo" — Enter anda pro dia seguinte, na horizontal
+    // (decisão de 07/10/2026), diferente das outras linhas da grade.
+    inp.addEventListener("keydown", e => {
+      if(e.key !== "Enter") return;
+      e.preventDefault();
+      const linha = [...host.querySelectorAll(".cel-preco")];
+      const idx = linha.indexOf(inp);
+      if(idx >= 0 && idx < linha.length - 1){ const prox = linha[idx+1]; prox.focus(); prox.select(); }
+    });
   });
 
   host.querySelectorAll("[data-del-dia]").forEach(b => b.addEventListener("click", async () => {
@@ -4003,16 +4136,19 @@ function diasResumoIncidencia(dias){
   return seq && idx.length > 1 ? `${ab[DIAS_ORDEM[idx[0]]]}–${ab[DIAS_ORDEM[idx[idx.length-1]]]}` : idx.map(i => ab[DIAS_ORDEM[i]]).join(", ");
 }
 
-function openPerfilModal(id){
+// `onSaved` roda depois de salvar/excluir, pra atualizar quem abriu o modal — por padrão renderiza a aba
+// Incidência completa (chamado a partir de lá), mas o modal "Tabela de incidência" do Cardápio (decisão de
+// 07/10/2026, pra não navegar a página inteira) passa o próprio refresh dele aqui.
+function openPerfilModal(id, onSaved){
   const existing = id ? perfisIncidencia.get(id) : null;
   const draft = existing ? JSON.parse(JSON.stringify(existing)) : {
     nome:"", dias:["SEGUNDA","TERCA","QUARTA","QUINTA","SEXTA"], semanas:[{},{},{},{},{}], observacoes:null
   };
   if(!Array.isArray(draft.semanas) || draft.semanas.length !== 5) draft.semanas = [{},{},{},{},{}];
-  renderPerfilModal(id, draft);
+  renderPerfilModal(id, draft, onSaved || renderIncidencia);
 }
 
-function renderPerfilModal(id, draft){
+function renderPerfilModal(id, draft, onSaved){
   const root = document.getElementById("modal-root");
   root.innerHTML = `
     <div class="modal-overlay" id="ov">
@@ -4058,7 +4194,7 @@ function renderPerfilModal(id, draft){
       if(error) throw error;
       await loadPerfisIncidencia();
       root.innerHTML="";
-      renderIncidencia();
+      onSaved();
     }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
   };
 
@@ -4091,7 +4227,7 @@ function renderPerfilModal(id, draft){
       }
       await loadPerfisIncidencia();
       root.innerHTML = "";
-      renderIncidencia();
+      onSaved();
     }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
   };
 }
