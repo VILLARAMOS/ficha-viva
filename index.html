@@ -366,6 +366,16 @@ table.cardapio-table .cel-preco-prefix{flex:none; font-size:9.5px; color:var(--t
 table.cardapio-table .cel-custo{flex:none; font-family:'IBM Plex Mono',ui-monospace,monospace; font-size:9.5px; color:var(--text-faint); white-space:nowrap;}
 table.cardapio-table td.custo-dia{text-align:right; font-weight:600; font-size:11px; white-space:nowrap;}
 table.cardapio-table tr.row-total td{background:var(--surface-alt);}
+/* ---------- grade de lançamento (Vendas) — versão mais compacta, colunas com largura fixa para
+   nunca deixar conteúdo de uma coluna sobrepor a vizinha (table-layout:fixed + colgroup). ---------- */
+table.cardapio-table.tbl-vendas-grade{table-layout:fixed; min-width:0; width:100%; font-size:10px;}
+table.cardapio-table.tbl-vendas-grade th, table.cardapio-table.tbl-vendas-grade td{padding:3px 3px; overflow:hidden;}
+table.cardapio-table.tbl-vendas-grade td.cat-col, table.cardapio-table.tbl-vendas-grade th.cat-col{min-width:0; max-width:none; text-overflow:ellipsis; overflow:hidden; white-space:nowrap;}
+table.cardapio-table.tbl-vendas-grade td.cel{min-width:0; max-width:none;}
+table.cardapio-table.tbl-vendas-grade td.num-cell{white-space:nowrap; font-size:9.5px; text-overflow:ellipsis;}
+table.cardapio-table.tbl-vendas-grade thead th{font-size:9px; padding:4px 3px;}
+table.cardapio-table.tbl-vendas-grade input.cel-gram, table.cardapio-table.tbl-vendas-grade input.cel-preco{font-size:9px; padding:2px 3px;}
+table.cardapio-table.tbl-vendas-grade .cel-preco-prefix{font-size:9px;}
 .th-dia-head{display:flex; flex-direction:column; gap:2px;}
 .th-dia-head .th-date{font-size:9px; color:var(--text-faint); font-weight:400;}
 .th-dia-head .th-del{background:none;border:none;color:var(--text-faint);cursor:pointer;font-size:9px;text-align:left;padding:0;}
@@ -5843,7 +5853,16 @@ function renderGradeLancamento(){
       </div>
       <div class="footnote" style="margin:0 0 8px;">Quantidade: até 4 casas decimais. Preço: cifrão + 2 casas — digite direto ou use o campo "%" ao lado (recalcula a partir do preço do contrato; some ao sair do campo). "Ajuste mín.": aparece com sugestão quando o enviado na semana fica abaixo do mínimo contratado (soma, não custa, não entra em compra/PCP).</div>
       <div class="table-wrap">
-        <table class="cardapio-table">
+        <table class="cardapio-table tbl-vendas-grade">
+          <colgroup>
+            <col style="width:92px;">
+            <col style="width:72px;">
+            ${DIAS_ORDEM.map(() => `<col style="width:48px;">`).join("")}
+            <col style="width:70px;">
+            <col style="width:68px;">
+            <col style="width:68px;">
+            <col style="width:68px;">
+          </colgroup>
           <thead><tr>
             <th class="cat-col">Item</th>
             <th style="text-align:right;">Preço unit.</th>
@@ -5932,18 +5951,19 @@ function renderGradeLancamento(){
       const sugestao = podeAjuste ? Math.max(0, minimoSemanaItem(item.produto_id) - enviadoSemanaItem(item.produto_id)) : 0;
       const sugestaoFmt = Number(sugestao.toFixed(4));
       return `<tr>
-        <td class="cat-col">${escapeHtml(item.nome)}</td>
+        <td class="cat-col" title="${escapeHtml(item.nome)}">${escapeHtml(item.nome)}</td>
         <td class="num-cell">
           <div class="cel-preco-wrap"><span class="cel-preco-prefix">R$</span><input type="number" step="0.01" min="0" class="cel-preco vd-preco-input" data-produto="${escapeHtml(item.produto_id||"")}" value="${precoEfetivo!=null?precoEfetivo.toFixed(2):""}" ${podeEditar?"":"disabled"}></div>
-          <div class="cel-sub-row">
-            <input type="number" step="0.1" class="vd-preco-pct" data-produto="${escapeHtml(item.produto_id||"")}" placeholder="%" title="ajuste rápido em %, sobre o preço do contrato" style="width:34px; font-size:9.5px; padding:3px 4px; border-radius:5px; border:1px solid var(--border); background:var(--bg); color:var(--text);" ${podeEditar?"":"disabled"}>
+          <div class="cel-preco-wrap" style="margin-top:2px;">
+            <span class="cel-preco-prefix">%</span>
+            <input type="number" step="0.1" class="cel-preco vd-preco-pct" data-produto="${escapeHtml(item.produto_id||"")}" placeholder="0" title="ajuste rápido em %, sobre o preço do contrato — some ao sair do campo" ${podeEditar?"":"disabled"}>
             ${precoCongelado!=null?`<span class="cel-custo">🔒</span>`:""}
           </div>
         </td>
         ${DIAS_ORDEM.map(dia => { const v = qtd(item.produto_id, dia); return `<td class="cel"><input type="number" step="any" min="0" class="cel-gram vd-qtd" data-produto="${escapeHtml(item.produto_id||"")}" data-dia="${dia}" value="${v!=null?Number(v.toFixed(4)):""}" ${podeEditar ? "" : "disabled"}></td>`; }).join("")}
         <td class="cel">${podeAjuste ? `
             <input type="number" step="any" min="0" class="cel-gram vd-ajuste-qtd" data-produto="${escapeHtml(item.produto_id)}" value="${ajusteVal?Number(ajusteVal.toFixed(4)):""}" ${podeEditar ? "" : "disabled"}>
-            ${sugestaoFmt>0 ? `<button type="button" class="btn ghost vd-ajuste-sug" data-produto="${escapeHtml(item.produto_id)}" data-sug="${sugestaoFmt}" title="preencher com a sugestão" style="margin-top:2px; font-size:9px; padding:1px 4px; width:100%;" ${podeEditar?"":"disabled"}>sug. ${sugestaoFmt}</button>` : ""}
+            ${sugestaoFmt>0 ? `<button type="button" class="btn ghost vd-ajuste-sug" data-produto="${escapeHtml(item.produto_id)}" data-sug="${sugestaoFmt}" title="preencher com a sugestão: ${sugestaoFmt}" style="margin-top:2px; font-size:8px; padding:1px 2px; width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" ${podeEditar?"":"disabled"}>sug. ${sugestaoFmt}</button>` : ""}
           ` : `<span class="cel-custo">—</span>`}</td>
         <td class="num-cell">${fmtMoney(receita)}</td>
         <td class="num-cell">${temCusto || custo ? fmtMoney(custo) : "—"}</td>
