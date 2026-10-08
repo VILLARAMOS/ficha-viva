@@ -4654,10 +4654,11 @@ function renderIncidencia(){
     <div class="panel">
       <div class="panel-head"><h3>Classificação das fichas</h3><span class="hint">${fichasPendentesTotal} sem classificar de ${fichas.size} fichas no total</span></div>
       <div class="panel-body">
-        <div class="footnote" style="margin-bottom:10px;">Uma lista só: grupo (Base, Guarnição de legumes/massas/secos, Salada, Sobremesa, Suco, Proteína ou Extra) e, só quando é Proteína, o tipo (Bovina/Peixe, Ave, Suína, Embutida). Classifiquei tudo em 06/10/2026 — pelo histórico de cardápio quando a ficha já foi usada, por nome quando nunca foi usada — revise/corrija abaixo. Desde a <strong>Nova ficha técnica</strong> esses dois campos já vêm pra preencher na hora de cadastrar, então essa lista tende a ficar cada vez mais curta.</div>
+        <div class="footnote" style="margin-bottom:10px;">Uma lista só: grupo (Base, Guarnição de legumes/massas/secos, Salada, Sobremesa, Suco, Proteína ou Extra) e, só quando é Proteína, o tipo (Bovina/Peixe, Ave, Suína, Embutida). Por padrão só aparece o que ainda está <strong>sem classificar</strong> — assim que você preenche, a ficha some da lista. Marque "mostrar já classificadas" se precisar corrigir alguma depois. Desde a <strong>Nova ficha técnica</strong> esses dois campos já vêm pra preencher na hora de cadastrar, então essa lista tende a ficar cada vez mais curta.</div>
         <div class="search-bar">
           <input type="text" id="inc-busca-ficha" placeholder="Buscar ficha…">
           <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted); white-space:nowrap;"><input type="checkbox" id="inc-mostrar-todas"> mostrar todas, não só as já usadas (${fichasNuncaUsadas.length})</label>
+          <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted); white-space:nowrap;"><input type="checkbox" id="inc-mostrar-classificadas"> mostrar já classificadas também</label>
           <span class="footnote" id="inc-count" style="align-self:center;"></span>
         </div>
         <div class="table-wrap"><table class="tbl-compact">
@@ -4681,10 +4682,11 @@ function renderIncidencia(){
   }).join("") || `<tr><td colspan="${3+TIPOS_PROTEINA.length}" class="empty-state">Nenhum perfil cadastrado.</td></tr>`;
   document.getElementById("inc-tbody").querySelectorAll("[data-open-perfil]").forEach(b => b.addEventListener("click", () => openPerfilModal(b.dataset.openPerfil)));
 
-  function renderFichaTbody(busca, mostrarTodas){
+  function renderFichaTbody(busca, mostrarTodas, mostrarClassificadas){
     const nb = normalizeText(busca||"");
     const base = mostrarTodas ? [...fichas.entries()] : fichasUsadas;
-    let lista = base.filter(([,f]) => !nb || normalizeText(f.nome).includes(nb));
+    // por padrão só mostra o que ainda está sem classificar — some da lista assim que for preenchida
+    let lista = base.filter(([,f]) => (!nb || normalizeText(f.nome).includes(nb)) && (mostrarClassificadas || fichaPendente(f)));
     // prioriza: pendente primeiro, depois por nº de usos (mais usado primeiro), depois nome
     lista.sort((a,b) => {
       const pendA = fichaPendente(a[1]) ? 0 : 1, pendB = fichaPendente(b[1]) ? 0 : 1;
@@ -4723,9 +4725,15 @@ function renderIncidencia(){
       renderIncidencia();
     }));
   }
-  renderFichaTbody("", false);
-  document.getElementById("inc-busca-ficha").addEventListener("input", e => renderFichaTbody(e.target.value, document.getElementById("inc-mostrar-todas").checked));
-  document.getElementById("inc-mostrar-todas").addEventListener("change", e => renderFichaTbody(document.getElementById("inc-busca-ficha").value, e.target.checked));
+  renderFichaTbody("", false, false);
+  const refiltrarFichas = () => renderFichaTbody(
+    document.getElementById("inc-busca-ficha").value,
+    document.getElementById("inc-mostrar-todas").checked,
+    document.getElementById("inc-mostrar-classificadas").checked
+  );
+  document.getElementById("inc-busca-ficha").addEventListener("input", refiltrarFichas);
+  document.getElementById("inc-mostrar-todas").addEventListener("change", refiltrarFichas);
+  document.getElementById("inc-mostrar-classificadas").addEventListener("change", refiltrarFichas);
 }
 
 function diasResumoIncidencia(dias){
@@ -4765,7 +4773,7 @@ function renderPerfilModal(id, draft, onSaved){
             <tbody>
               ${TIPOS_PROTEINA.map(t => `<tr>
                 <td class="name-cell">${escapeHtml(t.nome)}</td>
-                ${[0,1,2,3,4].map(w => `<td><input type="number" step="1" min="0" class="pf-cel" data-w="${w}" data-tipo="${escapeHtml(t.id)}" value="${(draft.semanas[w]||{})[t.id] ?? ""}"></td>`).join("")}
+                ${[0,1,2,3,4].map(w => `<td style="text-align:right;"><input type="number" step="1" min="0" class="pf-cel" data-w="${w}" data-tipo="${escapeHtml(t.id)}" value="${(draft.semanas[w]||{})[t.id] ?? ""}"></td>`).join("")}
               </tr>`).join("")}
             </tbody>
           </table></div>
