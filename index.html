@@ -545,7 +545,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadContratoEventos(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
   goToView(currentView);
 }
 
@@ -817,6 +817,19 @@ async function loadContratoItens(){
   contratoItens = new Map();
   if (error){ showAlert('Erro ao carregar itens contratados: ' + error.message); return; }
   (data || []).forEach(row => { const { id, ...rest } = row; contratoItens.set(id, rest); });
+}
+
+/* ---- eventos de contrato (lembrete de datas de eventos/almoços especiais por cliente — sem custo/faturamento,
+   diferente da tabela "eventos" de produção pontual faturada) ---- */
+let contratoEventos = new Map(); // id -> {contrato_id, nome, data, recorrente_anual, observacoes, alterado_em, alterado_por}
+async function loadContratoEventos(){
+  const { data, error } = await sb.from('contrato_eventos').select('*').order('data');
+  contratoEventos = new Map();
+  if (error){ showAlert('Erro ao carregar eventos de contrato: ' + error.message); return; }
+  (data || []).forEach(row => { const { id, ...rest } = row; contratoEventos.set(id, rest); });
+}
+function eventosDoContrato(contratoId){
+  return [...contratoEventos.entries()].filter(([,e]) => e.contrato_id === contratoId).sort((a,b) => (a[1].data||"").localeCompare(b[1].data||""));
 }
 
 /* ---- vendas (lançamento realizado por contrato/semana/dia) ---- */
@@ -3719,6 +3732,8 @@ function imprimirCardapioCompleto(grupo, num, semana){
    Previsão de Compra ou Pedidos — ficam para uma próxima etapa, combinado com o Marcelo. */
 let contratoFilters = { busca: "", status: "ativos" };
 let eventoFilters = { busca: "" };
+let contratoPainelModo = "mes"; // "mes" | "total" — v131, painel da aba Contratos
+let contratoPainelMesSel = null;
 
 function fmtDataBr(d){
   if(!d) return "—";
@@ -3726,14 +3741,94 @@ function fmtDataBr(d){
   return `${dd}/${m}/${y}`;
 }
 
+/* ---- v131: painel Grupo/Matriz/Filial da aba Contratos (contratos ativos/inativos, faturamento,
+   orçamento) com alternância Mês/Total — pedido do Marcelo (08/10/2026). Mesma convenção de escopo
+   já usada no Painel (apurarResumoMes/visaoNegocioBloco): "matriz"/"filial" batem só com
+   contratos.unidade exata, contrato sem unidade não entra em nenhum dos dois blocos (só no Grupo) —
+   por isso a tabela de clientes abaixo tem uma 3ª seção "Sem unidade definida" quando houver. */
+function mesesComDadoAteAgora(){
+  const atual = mesAtualId();
+  return MESES_REFERENCIA.filter(m => m.id <= atual);
+}
+function contratosPainelBloco(escopo, nome, modo, mesId, almocoIdx, cafeIdx){
+  const lista = [...contratos.entries()].filter(([,c]) => escopo === "todos" || c.unidade === escopo);
+  const ativos = lista.filter(([,c]) => c.ativo).length;
+  const inativos = lista.length - ativos;
+  let receita = 0, orcado = 0;
+  if(modo === "mes"){
+    receita = mesId ? apurarResumoMes(mesId, escopo, almocoIdx, cafeIdx).receita : 0;
+    orcado = mesId ? totalOrcadoMes(mesId, escopo) : 0;
+  } else {
+    mesesComDadoAteAgora().forEach(m => {
+      receita += apurarResumoMes(m.id, escopo, almocoIdx, cafeIdx).receita;
+      orcado += totalOrcadoMes(m.id, escopo);
+    });
+  }
+  return { nome, escopo, ativos, inativos, receita, orcado };
+}
+function contratosPainelBlocoHtml(b){
+  const subEscopo = b.escopo === "todos" ? "Matriz + Filial" : (b.escopo === "matriz" ? "Contratos da Matriz" : "Contratos da Filial");
+  return `<div class="vn-unidade">
+    <div class="vn-unidade-head"><h3>${escapeHtml(b.nome)}</h3><span class="vn-unidade-chip">${subEscopo}</span></div>
+    <div class="vn-grid" style="grid-template-columns:repeat(4, 1fr);">
+      <div class="vn-card"><div class="vn-label">Contratos ativos</div><div class="vn-value">${b.ativos}</div></div>
+      <div class="vn-card"><div class="vn-label">Contratos inativos</div><div class="vn-value">${b.inativos}</div></div>
+      <div class="vn-card"><div class="vn-label">Faturamento</div><div class="vn-value">${fmtMoney(b.receita)}</div></div>
+      <div class="vn-card"><div class="vn-label">Orçamento</div><div class="vn-value">${fmtMoney(b.orcado)}</div></div>
+    </div>
+  </div>`;
+}
+
+/* ---- v131: faturamento/CMV "total do contrato" (soma dentro da vigência data_inicio–data_fim,
+   clampado ao mês atual pra não somar meses futuros sem dado). Quando data_inicio não está
+   preenchida (hoje é o caso de quase todos os 23 contratos — só BERTOLINE e PB2 têm), cai no 1º mês
+   do sistema (set/2026) como fallback — na prática "total" fica igual a "todos os meses com dado"
+   até que as datas de vigência sejam preenchidas. Isso já é uma pendência conhecida (ver Painel). ---- */
+function apurarContratoVigenciaTotal(id, ct, almocoIdx, cafeIdx){
+  const atual = mesAtualId();
+  const primeiroDoSistema = MESES_REFERENCIA[0] ? MESES_REFERENCIA[0].id : atual;
+  const inicioId = ct.data_inicio ? ct.data_inicio.slice(0,7) : primeiroDoSistema;
+  const fimId = (ct.data_fim && ct.data_fim.slice(0,7) < atual) ? ct.data_fim.slice(0,7) : atual;
+  let receita = 0, custo = 0;
+  MESES_REFERENCIA.forEach(m => {
+    if(m.id < inicioId || m.id > fimId) return;
+    const ap = apurarContrato(id, ct, m.id, almocoIdx, cafeIdx);
+    receita += ap.receita; custo += ap.custoTotal;
+  });
+  return { receita, custo, cmv: receita > 0 ? custo/receita : null };
+}
+
 function renderContratos(){
   document.getElementById("page-title").textContent = "Contratos";
-  document.getElementById("page-desc").textContent = "Cadastro de clientes, cardápio de referência e itens contratados";
+  document.getElementById("page-desc").textContent = "Visão do negócio por cliente, cadastro de contratos, cardápio de referência e itens contratados";
   document.getElementById("topbar-actions").innerHTML = `<button class="btn primary" id="btn-novo-contrato">+ Novo contrato</button>`;
   document.getElementById("btn-novo-contrato").addEventListener("click", () => openContratoModal(null));
 
+  const almocoIdx = indiceCardapioAlmoco(), cafeIdx = indiceCafeSemana();
+  const meses = MESES_REFERENCIA;
+  if(contratoPainelMesSel === null || !meses.some(m => m.id === contratoPainelMesSel)) contratoPainelMesSel = meses.some(m => m.id === mesAtualId()) ? mesAtualId() : (meses[0] ? meses[0].id : null);
+
+  const blocos = [
+    contratosPainelBloco("todos", "Grupo", contratoPainelModo, contratoPainelMesSel, almocoIdx, cafeIdx),
+    contratosPainelBloco("matriz", "Matriz", contratoPainelModo, contratoPainelMesSel, almocoIdx, cafeIdx),
+    contratosPainelBloco("filial", "Filial", contratoPainelModo, contratoPainelMesSel, almocoIdx, cafeIdx),
+  ];
+
+  const semUnidade = [...contratos.entries()].filter(([,c]) => !c.unidade);
+
   const content = document.getElementById("content");
   content.innerHTML = `
+    <div class="menu-controls">
+      <div class="seg-toggle" id="kp-modo">
+        <button type="button" data-modo="mes" class="${contratoPainelModo==="mes"?"active":""}">Mês</button>
+        <button type="button" data-modo="total" class="${contratoPainelModo==="total"?"active":""}">Total</button>
+      </div>
+      ${contratoPainelModo === "mes" ? `<select id="kp-mes">${meses.map(m => `<option value="${m.id}" ${m.id===contratoPainelMesSel?"selected":""}>${escapeHtml(m.nome)}</option>`).join("")}</select>` : `<span class="footnote" style="align-self:center;">Soma dentro da vigência de cada contrato (datas de início/fim), clampada ao mês atual</span>`}
+    </div>
+    <div class="vn-wrap" style="margin-bottom:18px;">
+      ${blocos.map(contratosPainelBlocoHtml).join("")}
+    </div>
+
     <div class="search-bar">
       <input type="text" id="k-busca" placeholder="Buscar cliente…" value="${escapeHtml(contratoFilters.busca)}">
       <select id="k-status">
@@ -3743,17 +3838,53 @@ function renderContratos(){
       </select>
       <span class="footnote" id="k-count" style="align-self:center;"></span>
     </div>
-    <div class="panel">
+
+    ${["matriz","filial"].map(un => `
+    <div class="panel" style="margin-bottom:16px;">
+      <div class="panel-head"><h3>${un==="matriz"?"Matriz":"Filial"}</h3></div>
       <div class="table-wrap">
         <table>
           <thead><tr>
-            <th>Cliente</th><th>Unidade</th><th>Faturamento</th><th>Cardápio de referência</th><th>Vigência</th><th></th>
+            <th>Cliente</th><th style="text-align:right;">Faturamento do contrato</th><th style="text-align:right;">Faturamento do mês</th><th style="text-align:right;">Custo planejado do mês</th><th style="text-align:right;">CMV médio</th><th>Vigência</th><th></th>
           </tr></thead>
-          <tbody id="k-tbody"></tbody>
+          <tbody id="k-tbody-${un}"></tbody>
         </table>
       </div>
-    </div>
+    </div>`).join("")}
+
+    ${semUnidade.length ? `
+    <div class="panel" style="margin-bottom:16px;">
+      <div class="panel-head"><h3>Sem unidade definida</h3></div>
+      <div class="footnote" style="padding:0 20px 10px;">Não entra nos blocos Matriz/Filial acima nem na soma de faturamento/orçamento por unidade — só no Grupo.</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Cliente</th><th style="text-align:right;">Faturamento do contrato</th><th style="text-align:right;">Faturamento do mês</th><th style="text-align:right;">Custo planejado do mês</th><th style="text-align:right;">CMV médio</th><th>Vigência</th><th></th>
+          </tr></thead>
+          <tbody id="k-tbody-sem"></tbody>
+        </table>
+      </div>
+    </div>` : ""}
+
+    <div class="footnote" style="margin-top:4px;">"Custo planejado do mês" é a projeção de custo deste contrato para o mês selecionado (mesmo motor de previsão usado no Painel) — não é o Orçamento de compras, que neste sistema existe só por Matriz/Filial, não por cliente. "Faturamento do contrato" soma dentro da vigência (data_inicio–data_fim); sem essas datas preenchidas, cai no 1º mês do sistema como início.</div>
   `;
+
+  function linhaCliente(id, c){
+    const vig = apurarContratoVigenciaTotal(id, c, almocoIdx, cafeIdx);
+    const apMes = contratoPainelMesSel ? apurarContrato(id, c, contratoPainelMesSel, almocoIdx, cafeIdx) : null;
+    const plMes = contratoPainelMesSel ? apurarPlanejadoContrato(id, c, contratoPainelMesSel, almocoIdx, cafeIdx) : null;
+    const vigTxt = (c.data_inicio || c.data_fim) ? `${fmtDataBr(c.data_inicio)} – ${fmtDataBr(c.data_fim)}` : '<span style="color:var(--text-faint);">—</span>';
+    return `
+            <tr>
+              <td class="name-cell">${escapeHtml(c.nome_cliente)}${!c.ativo ? ' <span class="chip neutral">inativo</span>' : ''}</td>
+              <td class="num-cell">${fmtMoney(vig.receita)}</td>
+              <td class="num-cell">${apMes ? fmtMoney(apMes.receita) : "—"}</td>
+              <td class="num-cell">${plMes ? fmtMoney(plMes.custo) : "—"}</td>
+              <td class="num-cell">${vig.cmv!==null ? fmtPct(vig.cmv) : "—"}</td>
+              <td style="font-size:12.5px; white-space:nowrap;">${vigTxt}</td>
+              <td style="text-align:right; white-space:nowrap;"><button class="btn small ghost" data-open="${id}">abrir</button></td>
+            </tr>`;
+  }
 
   function updateTable(){
     let rows = [...contratos.entries()];
@@ -3766,30 +3897,23 @@ function renderContratos(){
     rows.sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)));
 
     document.getElementById("k-count").textContent = `${rows.length} de ${contratos.size} contratos`;
-    const tbody = document.getElementById("k-tbody");
-    tbody.innerHTML = rows.map(([id,c]) => {
-      const refTxt = [
-        c.cardapio_refeicao_num ? labelNumeroCardapio("refeicao", c.cardapio_refeicao_num) : null,
-        c.cardapio_marmita_num ? labelNumeroCardapio("marmita", c.cardapio_marmita_num) + (c.marmita_especial_ativo ? " (+especial)" : "") : null,
-        c.cardapio_cafe_num ? labelNumeroCardapio("cafe", c.cardapio_cafe_num) + (c.cafe_especial_ativo ? " (+especial)" : "") : null,
-      ].filter(Boolean).join(" · ") || '<span style="color:var(--text-faint);">não definido</span>';
-      const vigTxt = (c.data_inicio || c.data_fim) ? `${fmtDataBr(c.data_inicio)} – ${fmtDataBr(c.data_fim)}` : '<span style="color:var(--text-faint);">—</span>';
-      return `
-            <tr>
-              <td class="name-cell">${escapeHtml(c.nome_cliente)}${!c.ativo ? ' <span class="chip neutral">inativo</span>' : ''}</td>
-              <td class="tag-sheet">${c.unidade === "filial" ? "Filial" : c.unidade === "matriz" ? "Matriz" : '<span style="color:var(--text-faint);">não definida</span>'}</td>
-              <td>${c.modelo_faturamento === "fixo" ? `Fixo · ${fmtMoney(c.valor_fixo_mensal||0)}/mês` : c.modelo_faturamento === "franquia" ? `Franquia · ${fmtMoney(c.valor_fixo_mensal||0)}/mês + excedente` : "Itemizado"}</td>
-              <td style="font-size:12.5px;">${refTxt}</td>
-              <td style="font-size:12.5px; white-space:nowrap;">${vigTxt}</td>
-              <td style="text-align:right; white-space:nowrap;"><button class="btn small ghost" data-open="${id}">abrir</button></td>
-            </tr>`;
-    }).join("") || `<tr><td colspan="6" class="empty-state">Nenhum contrato encontrado.</td></tr>`;
-    tbody.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", () => openContratoModal(b.dataset.open)));
+    const porUnidade = { matriz: [], filial: [], sem: [] };
+    rows.forEach(r => { (porUnidade[r[1].unidade === "filial" ? "filial" : r[1].unidade === "matriz" ? "matriz" : "sem"]).push(r); });
+
+    document.getElementById("k-tbody-matriz").innerHTML = porUnidade.matriz.map(([id,c]) => linhaCliente(id,c)).join("") || `<tr><td colspan="7" class="empty-state">Nenhum contrato encontrado.</td></tr>`;
+    document.getElementById("k-tbody-filial").innerHTML = porUnidade.filial.map(([id,c]) => linhaCliente(id,c)).join("") || `<tr><td colspan="7" class="empty-state">Nenhum contrato encontrado.</td></tr>`;
+    const tbodySem = document.getElementById("k-tbody-sem");
+    if(tbodySem) tbodySem.innerHTML = porUnidade.sem.map(([id,c]) => linhaCliente(id,c)).join("") || `<tr><td colspan="7" class="empty-state">Nenhum contrato encontrado.</td></tr>`;
+
+    content.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", () => openContratoModal(b.dataset.open)));
   }
 
   updateTable();
   document.getElementById("k-busca").addEventListener("input", e => { contratoFilters.busca = e.target.value; updateTable(); });
   document.getElementById("k-status").addEventListener("change", e => { contratoFilters.status = e.target.value; updateTable(); });
+  document.querySelectorAll("#kp-modo button").forEach(b => b.addEventListener("click", () => { contratoPainelModo = b.dataset.modo; renderContratos(); }));
+  const kpMes = document.getElementById("kp-mes");
+  if(kpMes) kpMes.addEventListener("change", e => { contratoPainelMesSel = e.target.value; renderContratos(); });
 }
 
 function openContratoModal(id){
@@ -3918,6 +4042,39 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
           <div class="ing-table" id="kk-custom-wrap"></div>
           <button class="btn small" id="kk-add-custom" style="margin-top:10px;">+ adicionar item específico</button>
 
+          <h3 style="font-size:14px; margin:18px 0 8px;">Cópia do contrato assinado</h3>
+          ${id ? `
+          <div class="field-row" style="align-items:center;">
+            <div class="field" style="flex:2;" id="kk-anexo-info-wrap">
+              <div class="footnote" id="kk-anexo-info">${draft.anexo_contrato_path ? `Arquivo: <b>${escapeHtml(draft.anexo_contrato_nome||"")}</b> · enviado em ${draft.anexo_contrato_enviado_em ? fmtDataBr(draft.anexo_contrato_enviado_em.slice(0,10)) : "—"}` : "Nenhum arquivo enviado ainda."}</div>
+            </div>
+            <div class="field" style="flex:1; display:flex; gap:8px;" id="kk-anexo-botoes">
+              ${draft.anexo_contrato_path ? `<button type="button" class="btn small" id="kk-anexo-baixar">Baixar</button><button type="button" class="btn small ghost" id="kk-anexo-remover" style="color:var(--critical);">Remover</button>` : ""}
+            </div>
+          </div>
+          <div class="field"><input type="file" id="kk-anexo-file" accept="application/pdf,image/*"></div>
+          <div class="footnote" id="kk-anexo-err" style="color:var(--critical);"></div>
+          ` : `<div class="footnote">Salve o contrato primeiro para poder anexar o arquivo assinado.</div>`}
+
+          <h3 style="font-size:14px; margin:18px 0 8px;">Eventos do contrato</h3>
+          <div class="footnote" style="margin-bottom:10px;">Planejamento de eventos/almoços especiais deste cliente — lembrete de data, sem cálculo de custo ou faturamento.</div>
+          ${id ? `
+          <div class="table-wrap" style="margin-bottom:10px;">
+            <table>
+              <thead><tr><th>Evento</th><th>Data</th><th>Recorrente anual</th><th>Observações</th><th></th></tr></thead>
+              <tbody id="kk-eventos-tbody"></tbody>
+            </table>
+          </div>
+          <div class="field-row" style="align-items:flex-end;">
+            <div class="field" style="flex:1.6;"><label>Evento</label><input type="text" id="kk-ev-nome" placeholder="Ex.: Festa Junina"></div>
+            <div class="field"><label>Data</label><input type="date" id="kk-ev-data"></div>
+            <div class="field"><label><input type="checkbox" id="kk-ev-anual" style="width:auto; display:inline-block; margin-right:6px;" checked> Recorrente anual</label></div>
+            <div class="field" style="flex:1.6;"><label>Observações</label><input type="text" id="kk-ev-obs"></div>
+            <button class="btn small" id="kk-ev-add" type="button">+ adicionar</button>
+          </div>
+          <div class="footnote" id="kk-ev-err" style="color:var(--critical);"></div>
+          ` : `<div class="footnote">Salve o contrato primeiro para poder adicionar eventos.</div>`}
+
           <div class="field" style="margin-top:16px;"><label>Observações</label><textarea id="kk-obs" rows="3">${escapeHtml(draft.observacoes||"")}</textarea></div>
           <div class="footnote" id="kk-err" style="color:var(--critical); margin-top:10px;"></div>
         </div>
@@ -3951,6 +4108,106 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
 
   // chips de dias da semana na grade de itens do catálogo (toggle visual simples; lidos do DOM no salvar)
   root.querySelectorAll(".kk-dias-chips .chip-dia").forEach(b => b.addEventListener("click", () => b.classList.toggle("on")));
+
+  // v131: anexo do contrato assinado (storage privado, bucket "contratos-anexos" — 1 arquivo por cliente,
+  // novo envio substitui o anterior) e eventos do contrato (lembrete de data — tabela contrato_eventos).
+  // Ambos só ficam disponíveis com o contrato já salvo (precisam do id) — persistem na hora, fora do
+  // botão "Salvar" principal, pra não se perder se o resto do formulário for cancelado.
+  if(id){
+    const anexoFile = document.getElementById("kk-anexo-file");
+    const anexoErr = document.getElementById("kk-anexo-err");
+    function refreshAnexoUI(){
+      document.getElementById("kk-anexo-info").innerHTML = draft.anexo_contrato_path
+        ? `Arquivo: <b>${escapeHtml(draft.anexo_contrato_nome||"")}</b> · enviado em ${draft.anexo_contrato_enviado_em ? fmtDataBr(draft.anexo_contrato_enviado_em.slice(0,10)) : "—"}`
+        : "Nenhum arquivo enviado ainda.";
+      document.getElementById("kk-anexo-botoes").innerHTML = draft.anexo_contrato_path
+        ? `<button type="button" class="btn small" id="kk-anexo-baixar">Baixar</button><button type="button" class="btn small ghost" id="kk-anexo-remover" style="color:var(--critical);">Remover</button>`
+        : "";
+      if(draft.anexo_contrato_path){
+        document.getElementById("kk-anexo-baixar").addEventListener("click", async () => {
+          anexoErr.textContent = "";
+          const { data, error } = await sb.storage.from('contratos-anexos').createSignedUrl(draft.anexo_contrato_path, 60);
+          if(error){ anexoErr.textContent = "Erro ao gerar link: " + error.message; return; }
+          window.open(data.signedUrl, "_blank");
+        });
+        document.getElementById("kk-anexo-remover").addEventListener("click", async () => {
+          if(!(await confirmDialog("Remover o arquivo do contrato assinado deste cliente?"))) return;
+          anexoErr.textContent = "";
+          const path = draft.anexo_contrato_path;
+          const { error: rmErr } = await sb.storage.from('contratos-anexos').remove([path]);
+          if(rmErr){ anexoErr.textContent = "Erro ao remover arquivo: " + rmErr.message; return; }
+          const { error: updErr } = await sb.from('contratos').update({ anexo_contrato_path: null, anexo_contrato_nome: null, anexo_contrato_tamanho: null, anexo_contrato_enviado_em: null, anexo_contrato_enviado_por: null, ...carimbo() }).eq('id', id);
+          if(updErr){ anexoErr.textContent = "Erro ao salvar: " + updErr.message; return; }
+          draft.anexo_contrato_path = null; draft.anexo_contrato_nome = null; draft.anexo_contrato_enviado_em = null;
+          await loadContratos();
+          refreshAnexoUI();
+        });
+      }
+    }
+    anexoFile.addEventListener("change", async () => {
+      const file = anexoFile.files[0];
+      if(!file) return;
+      anexoErr.textContent = "Enviando…";
+      const ext = (file.name.split(".").pop() || "bin").toLowerCase();
+      const path = `${id}/contrato-assinado.${ext}`;
+      const { error: upErr } = await sb.storage.from('contratos-anexos').upload(path, file, { upsert: true });
+      if(upErr){ anexoErr.textContent = "Erro ao enviar arquivo: " + upErr.message; return; }
+      const payloadAnexo = { anexo_contrato_path: path, anexo_contrato_nome: file.name, anexo_contrato_tamanho: file.size, anexo_contrato_enviado_em: new Date().toISOString(), anexo_contrato_enviado_por: usuarioId || null, ...carimbo() };
+      const { error: updErr } = await sb.from('contratos').update(payloadAnexo).eq('id', id);
+      if(updErr){ anexoErr.textContent = "Erro ao salvar: " + updErr.message; return; }
+      Object.assign(draft, payloadAnexo);
+      await loadContratos();
+      anexoErr.textContent = "";
+      anexoFile.value = "";
+      refreshAnexoUI();
+    });
+
+    // eventos do contrato
+    const evErr = document.getElementById("kk-ev-err");
+    function renderEventosContratoTbody(){
+      const tbody = document.getElementById("kk-eventos-tbody");
+      const linhas = eventosDoContrato(id);
+      tbody.innerHTML = linhas.map(([evId, e]) => `
+        <tr>
+          <td>${escapeHtml(e.nome)}</td>
+          <td style="white-space:nowrap;">${fmtDataBr(e.data)}</td>
+          <td>${e.recorrente_anual ? "Sim" : "Não"}</td>
+          <td style="font-size:12.5px;">${escapeHtml(e.observacoes||"")}</td>
+          <td style="text-align:right;"><button type="button" class="btn small ghost" data-rm-evento="${evId}" style="color:var(--critical);">remover</button></td>
+        </tr>`).join("") || `<tr><td colspan="5" class="empty-state">Nenhum evento cadastrado.</td></tr>`;
+      tbody.querySelectorAll("[data-rm-evento]").forEach(b => b.addEventListener("click", async () => {
+        if(!(await confirmDialog("Remover este evento do contrato?"))) return;
+        const { error } = await sb.from('contrato_eventos').delete().eq('id', b.dataset.rmEvento);
+        if(error){ evErr.textContent = "Erro ao remover: " + error.message; return; }
+        await loadContratoEventos();
+        evErr.textContent = "";
+        renderEventosContratoTbody();
+      }));
+    }
+    renderEventosContratoTbody();
+    document.getElementById("kk-ev-add").addEventListener("click", async () => {
+      const nome = document.getElementById("kk-ev-nome").value.trim();
+      const data = document.getElementById("kk-ev-data").value;
+      if(!nome || !data){ evErr.textContent = "Informe nome e data do evento."; return; }
+      const payload = {
+        contrato_id: id, nome, data,
+        recorrente_anual: document.getElementById("kk-ev-anual").checked,
+        observacoes: document.getElementById("kk-ev-obs").value.trim() || null,
+        ...carimbo(),
+      };
+      const { error } = await sb.from('contrato_eventos').insert(payload);
+      if(error){ evErr.textContent = "Erro ao salvar: " + error.message; return; }
+      await loadContratoEventos();
+      evErr.textContent = "";
+      document.getElementById("kk-ev-nome").value = "";
+      document.getElementById("kk-ev-data").value = "";
+      document.getElementById("kk-ev-obs").value = "";
+      document.getElementById("kk-ev-anual").checked = true;
+      renderEventosContratoTbody();
+    });
+
+    refreshAnexoUI();
+  }
 
   // faixas de franquia (modelo_faturamento === "franquia")
   const produtoOptions = [...catalogoItens.entries()].filter(([,c]) => c.produto_id).sort((a,b) => a[1].ordem - b[1].ordem).map(([,c]) => ({ produto_id: c.produto_id, nome: c.nome }));
@@ -3994,11 +4251,12 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
   document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
 
   if(id) document.getElementById("del-m").onclick = async () => {
-    if(!(await confirmDialog(`Excluir o contrato de "${draft.nome_cliente}"? Os itens contratados também serão removidos.`))) return;
+    if(!(await confirmDialog(`Excluir o contrato de "${draft.nome_cliente}"? Os itens contratados e os eventos do contrato também serão removidos.`))) return;
     try{
+      if(draft.anexo_contrato_path) await sb.storage.from('contratos-anexos').remove([draft.anexo_contrato_path]);
       const { error } = await sb.from('contratos').delete().eq('id', id);
       if(error) throw error;
-      await Promise.all([loadContratos(), loadContratoItens()]);
+      await Promise.all([loadContratos(), loadContratoItens(), loadContratoEventos()]);
       root.innerHTML="";
       renderContratos();
     }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
