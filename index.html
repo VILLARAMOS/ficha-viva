@@ -630,7 +630,7 @@ function blocosCadastro(){
 }
 // categorias de receita — mesma família de grupos usada na grade de cardápio (Proteína/Base/Guarnição/Salada/Sobremesa/Suco/Extra).
 // Suco dividido em SIMPLES/NATURAL em 07/10/2026 (12 fichas reclassificadas) — antes era um grupo único "SUCO".
-const GRUPOS_FICHA_BASE = ["PROTEÍNA","BASE","GUARNIÇÃO DE LEGUMES","GUARNIÇÃO DE MASSAS","GUARNIÇÃO DE SECOS","SALADA","SOBREMESA","SUCO SIMPLES","SUCO NATURAL","EXTRA"];
+const GRUPOS_FICHA_BASE = ["PROTEÍNA","BASE","BASE ARROZ","BASE FEIJÃO","GUARNIÇÃO DE LEGUMES","GUARNIÇÃO DE MASSAS","GUARNIÇÃO DE SECOS","SALADA","SOBREMESA","SUCO SIMPLES","SUCO NATURAL","EXTRA"];
 function gruposFichaCadastro(){
   const extras = [...new Set([...fichas.values()].map(f => f.grupo).filter(g => g && !GRUPOS_FICHA_BASE.includes(g)))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
   return [...GRUPOS_FICHA_BASE, ...extras];
@@ -2081,9 +2081,13 @@ async function excluirNumeroCardapioExtra(grupo, num){
    da porção. Fallback escolhido: usa a mediana de gramagem já usada por fichas do MESMO GRUPO (ex.:
    mediana de todas as Proteínas já lançadas em algum cardápio). É só uma estimativa pra não deixar o
    motor cego ao teto — a gramagem continua editável na célula como sempre foi. */
-const SUGESTAO_GRUPOS_ALVO = ["PROTEÍNA","BASE","GUARNIÇÃO DE LEGUMES","GUARNIÇÃO DE MASSAS","GUARNIÇÃO DE SECOS","SALADA","SOBREMESA","SUCO SIMPLES","SUCO NATURAL"];
+const SUGESTAO_GRUPOS_ALVO = ["PROTEÍNA","BASE ARROZ","BASE FEIJÃO","GUARNIÇÃO DE LEGUMES","GUARNIÇÃO DE MASSAS","GUARNIÇÃO DE SECOS","SALADA","SOBREMESA","SUCO SIMPLES","SUCO NATURAL"];
 const GUARNICAO_SUBGRUPOS = ["GUARNIÇÃO DE LEGUMES","GUARNIÇÃO DE MASSAS","GUARNIÇÃO DE SECOS"];
 const SUCO_SUBGRUPOS = ["SUCO SIMPLES","SUCO NATURAL"]; // dividido em 07/10/2026 — antes era um grupo único "SUCO"
+const BASE_SUBGRUPOS = ["BASE ARROZ","BASE FEIJÃO"]; // dividido em 08/10/2026 — Base 1 sempre Arroz, Base 2 sempre Feijão
+  // (antes vinha tudo de um grupo único "BASE", podendo sair feijão nos dois slots do mesmo dia).
+  // GALINHADA IND. ficou de fora dos dois de propósito (prato misto arroz+frango) — continua em
+  // grupo "BASE" simples, por isso nunca é sorteada pelo motor, só lançada à mão.
 const JANELA_NAO_REPETIR_SEMANAS = 2; // "últimas 2-3 semanas" (decisão de 06/10/2026) — usa o piso da janela
 
 function categoriaBase(cat){ return (cat||"").replace(/\s*\d+$/, ""); } // "Proteína 1" -> "Proteína"
@@ -2317,13 +2321,23 @@ function gerarSugestaoSemana(grupo, num, semana, modo /* 'vazios' | 'sobrescreve
     preencherSlot(dia, ci, doTipo.length ? doTipo : todasProteinas, "PROTEÍNA");
   });
 
-  // 2) Base / Salada / Sobremesa — direto por grupo, mesmo sorteio ponderado por não-repetição. Respeita a
+  // 2) Salada / Sobremesa — direto por grupo, mesmo sorteio ponderado por não-repetição. Respeita a
   // quantidade/dia da estrutura (se houver) via slotsVazios — o resto da vaga fica em branco.
-  [["Base","BASE"], ["Salada","SALADA"], ["Sobremesa","SOBREMESA"]].forEach(([prefix, grp]) => {
+  [["Salada","SALADA"], ["Sobremesa","SOBREMESA"]].forEach(([prefix, grp]) => {
     diasParaProcessar.forEach(dia => slotsVazios(dia, prefix).forEach(s => {
       preencherSlot(dia, s.ci, _indiceSugestaoAtual.porGrupo.get(grp) || [], grp);
     }));
   });
+
+  // 2b) Base — dividida em 08/10/2026: Base 1 sempre sorteia de BASE ARROZ, Base 2 sempre de BASE
+  // FEIJÃO (pelo número ordinal da categoria), em vez de ambas saírem do mesmo pool — evita repetir
+  // feijão nos dois slots do mesmo dia. Uma 3ª vaga de Base eventual (fora do padrão de 2) cai de
+  // volta no Arroz, só pra nunca deixar a célula sem candidato.
+  diasParaProcessar.forEach(dia => slotsVazios(dia, "Base").forEach(s => {
+    const ordinal = categoriaOrdinal(draft[dia].itens[s.ci].categoria);
+    const subgrupo = ordinal === 2 ? "BASE FEIJÃO" : "BASE ARROZ";
+    preencherSlot(dia, s.ci, _indiceSugestaoAtual.porGrupo.get(subgrupo) || [], subgrupo);
+  }));
 
   // 3) Guarnição — varia entre os 3 subgrupos (Legumes/Massas/Secos) nos slots do dia
   diasParaProcessar.forEach(dia => {
