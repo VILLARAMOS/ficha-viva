@@ -5817,6 +5817,8 @@ function renderGradeLancamento(){
     return "";
   }
 
+  const totalCols = 6 + DIAS_ORDEM.length; // Item, Preço, 7 dias, Ajuste mín., Receita, Custo, Margem
+
   wrap.innerHTML = `
     <div class="panel" style="margin-bottom:16px;">
       ${cabecalho}
@@ -5825,13 +5827,14 @@ function renderGradeLancamento(){
         ${!travado ? `<button type="button" class="btn ghost" id="vd-fechar-cliente">🔒 Fechar só este cliente</button>` : ""}
         <button class="btn primary" id="vd-salvar" style="margin-left:auto;" ${travado ? "disabled" : ""}>Salvar semana</button>
       </div>
-      <div class="footnote" style="margin:10px 0;">Itens com custo <strong>"—"</strong> ainda não têm base de custo cadastrada (ex.: itens "fixo" do catálogo sem <code>custo_unitario</code> preenchido) — a margem desses itens fica subestimada até o custo ser preenchido. Preço: digite direto ou use o campo "%" para recalcular a partir do preço do contrato (Enter/sair do campo aplica); vale só pra este item, nesta semana.</div>
+      <div class="footnote" style="margin:0 0 8px;">Quantidade: até 4 casas decimais. Preço: cifrão + 2 casas — digite direto ou use o campo "%" ao lado (recalcula a partir do preço do contrato; some ao sair do campo). "Ajuste mín.": aparece com sugestão quando o enviado na semana fica abaixo do mínimo contratado (soma, não custa, não entra em compra/PCP).</div>
       <div class="table-wrap">
         <table class="cardapio-table">
           <thead><tr>
             <th class="cat-col">Item</th>
             <th style="text-align:right;">Preço unit.</th>
-            ${DIAS_ORDEM.map(dia => `<th>${DIA_LABEL[dia]}</th>`).join("")}
+            ${DIAS_ORDEM.map(dia => `<th>${DIA_LABEL[dia].slice(0,3)}</th>`).join("")}
+            <th style="text-align:right;">Ajuste mín.</th>
             <th style="text-align:right;">Receita sem.</th>
             <th style="text-align:right;">Custo sem.</th>
             <th style="text-align:right;">Margem sem.</th>
@@ -5841,28 +5844,21 @@ function renderGradeLancamento(){
         </table>
       </div>
     </div>
-    <div class="panel" style="margin-bottom:16px;">
-      <div class="panel-head"><h3>Ajuste de mínimo da semana</h3><span class="hint">cliente contratou X/dia, enviamos menos — a diferença fatura, sem gerar custo/compra/PCP</span></div>
-      <div class="table-wrap">
-        <table>
-          <thead><tr><th class="cat-col">Item</th><th style="text-align:right;">Preço unit.</th><th style="text-align:right;">Qtde ajuste (semana)</th><th style="text-align:right;">Receita do ajuste</th></tr></thead>
-          <tbody id="vd-ajuste-tbody"></tbody>
-        </table>
-      </div>
-    </div>
     <div class="panel">
-      <div class="panel-head"><h3>Imprimir (espelho para NF)</h3></div>
-      <div class="footnote" style="margin:0 0 10px;">Escolha o período (semana/quinzena/mês aberto, ou datas livres) e, se quiser, desmarque dias que não entram. Ajuste de mínimo só entra se a semana inteira dele estiver selecionada.</div>
-      <div class="menu-controls" style="flex-wrap:wrap;">
-        <button type="button" class="btn ghost" id="vd-pr-semana">Semana aberta</button>
-        <button type="button" class="btn ghost" id="vd-pr-quinzena">Quinzena (14 dias)</button>
-        <button type="button" class="btn ghost" id="vd-pr-mes">Mês aberto</button>
-        <input type="date" id="vd-pr-ini">
-        <span class="footnote">a</span>
-        <input type="date" id="vd-pr-fim">
-        <button type="button" class="btn primary" id="vd-pr-ir" style="margin-left:auto;">🖨️ Imprimir</button>
+      <div class="panel-head"><h3>Imprimir</h3><button type="button" class="btn ghost small" id="vd-pr-toggle">🖨️ Imprimir (espelho para NF)</button></div>
+      <div id="vd-pr-painel" style="display:none; padding:0 20px 18px;">
+        <div class="footnote" style="margin:0 0 10px;">Escolha o período (semana/quinzena/mês aberto, ou datas livres) e, se quiser, desmarque dias que não entram. Ajuste de mínimo só entra se a semana inteira dele estiver selecionada.</div>
+        <div class="menu-controls" style="flex-wrap:wrap;">
+          <button type="button" class="btn ghost" id="vd-pr-semana">Semana aberta</button>
+          <button type="button" class="btn ghost" id="vd-pr-quinzena">Quinzena (14 dias)</button>
+          <button type="button" class="btn ghost" id="vd-pr-mes">Mês aberto</button>
+          <input type="date" id="vd-pr-ini">
+          <span class="footnote">a</span>
+          <input type="date" id="vd-pr-fim">
+          <button type="button" class="btn primary" id="vd-pr-ir" style="margin-left:auto;">🖨️ Imprimir agora</button>
+        </div>
+        <div id="vd-pr-dias" style="margin-top:10px;"></div>
       </div>
-      <div id="vd-pr-dias" style="margin-top:10px;"></div>
     </div>
   `;
 
@@ -5871,10 +5867,19 @@ function renderGradeLancamento(){
   const contrato = cliente;
   const itens = itensDoContratoVenda(vendaContratoSel);
   const itensPorProduto = new Map(itens.filter(i => i.produto_id).map(i => [i.produto_id, i]));
+  // ajuste de mínimo só se aplica a contratos itemizados (fixo/franquia já cobrem o mínimo pelo
+  // próprio valor fixo — mesma regra do sistema antigo, v99).
+  const elegivelAjuste = contrato && contrato.modelo_faturamento !== "fixo" && contrato.modelo_faturamento !== "franquia";
 
   function qtd(produtoId, dia){
     const v = draftVendas[dia]?.[produtoId];
     return (v === undefined || v === null) ? null : Number(v);
+  }
+  function minimoSemanaItem(produtoId){
+    return DIAS_ORDEM.reduce((s,d) => s + (quantidadeContratadaDia(vendaContratoSel, produtoId, d) || 0), 0);
+  }
+  function enviadoSemanaItem(produtoId){
+    return DIAS_ORDEM.reduce((s,d) => s + (qtd(produtoId, d) || 0), 0);
   }
   // preço efetivo de exibição/cálculo: manual (digitado agora) > congelado (já gravado num
   // fechamento anterior) > preço ao vivo do contrato — nessa ordem de prioridade.
@@ -5896,43 +5901,53 @@ function renderGradeLancamento(){
       const cu = item.produto_id ? custoUnidadeItemVenda(almocoIdx, cafeIdx, item.produto_id, contrato, vendaContratoSel, vendaSemanaSel, dia) : null;
       if(cu != null){ custo += q * cu; temCusto = true; }
     });
-    return { receita, custo, temCusto, precoCongelado: congelado, precoEfetivo: efetivo };
+    const podeAjuste = item.produto_id && elegivelAjuste;
+    const ajusteVal = podeAjuste ? (draftAjusteMinimo[item.produto_id] || 0) : 0;
+    const receitaAjuste = (ajusteVal && efetivo != null) ? ajusteVal * efetivo : 0;
+    receita += receitaAjuste; // ajuste é só receita, sem custo — mesma regra de sempre
+    return { receita, custo, temCusto, precoCongelado: congelado, precoEfetivo: efetivo, podeAjuste, ajusteVal };
   }
 
   function redraw(){
     const tbody = document.getElementById("vd-tbody");
     let totReceita = 0, totCusto = 0;
     tbody.innerHTML = itens.map(item => {
-      const { receita, custo, temCusto, precoCongelado, precoEfetivo } = totaisItem(item);
+      const { receita, custo, temCusto, precoCongelado, precoEfetivo, podeAjuste, ajusteVal } = totaisItem(item);
       totReceita += receita; totCusto += custo;
       const podeEditar = item.produto_id && !travado;
-      const difereDoContrato = item.produto_id && precoEfetivo != null && item.preco_venda != null && Math.abs(precoEfetivo - item.preco_venda) > 0.004;
+      const sugestao = podeAjuste ? Math.max(0, minimoSemanaItem(item.produto_id) - enviadoSemanaItem(item.produto_id)) : 0;
+      const sugestaoFmt = Number(sugestao.toFixed(4));
       return `<tr>
         <td class="cat-col">${escapeHtml(item.nome)}</td>
         <td class="num-cell">
-          <div style="display:flex; gap:4px; justify-content:flex-end; align-items:center;">
-            <input type="number" step="0.01" min="0" class="vd-preco-input" data-produto="${escapeHtml(item.produto_id||"")}" value="${precoEfetivo ?? ""}" style="width:76px; text-align:right;" ${podeEditar?"":"disabled"}>
-            <input type="number" step="0.1" class="vd-preco-pct" data-produto="${escapeHtml(item.produto_id||"")}" placeholder="%" title="ajuste rápido em %, sobre o preço do contrato" style="width:46px; text-align:right;" ${podeEditar?"":"disabled"}>
+          <div class="cel-preco-wrap"><span class="cel-preco-prefix">R$</span><input type="number" step="0.01" min="0" class="cel-preco vd-preco-input" data-produto="${escapeHtml(item.produto_id||"")}" value="${precoEfetivo!=null?precoEfetivo.toFixed(2):""}" ${podeEditar?"":"disabled"}></div>
+          <div class="cel-sub-row">
+            <input type="number" step="0.1" class="vd-preco-pct" data-produto="${escapeHtml(item.produto_id||"")}" placeholder="%" title="ajuste rápido em %, sobre o preço do contrato" style="width:34px; font-size:9.5px; padding:3px 4px; border-radius:5px; border:1px solid var(--border); background:var(--bg); color:var(--text);" ${podeEditar?"":"disabled"}>
+            ${precoCongelado!=null?`<span class="cel-custo">🔒</span>`:""}
           </div>
-          ${precoCongelado!=null?`<div class="footnote">🔒 congelado</div>`:(difereDoContrato?`<div class="footnote">contrato ${fmtMoney(item.preco_venda)}</div>`:"")}
         </td>
-        ${DIAS_ORDEM.map(dia => `<td class="cel"><input type="number" step="1" min="0" class="cel-gram vd-qtd" data-produto="${escapeHtml(item.produto_id||"")}" data-dia="${dia}" value="${qtd(item.produto_id, dia) ?? ""}" ${podeEditar ? "" : "disabled"}></td>`).join("")}
+        ${DIAS_ORDEM.map(dia => { const v = qtd(item.produto_id, dia); return `<td class="cel"><input type="number" step="any" min="0" class="cel-gram vd-qtd" data-produto="${escapeHtml(item.produto_id||"")}" data-dia="${dia}" value="${v!=null?Number(v.toFixed(4)):""}" ${podeEditar ? "" : "disabled"}></td>`; }).join("")}
+        <td class="cel">${podeAjuste ? `
+            <input type="number" step="any" min="0" class="cel-gram vd-ajuste-qtd" data-produto="${escapeHtml(item.produto_id)}" value="${ajusteVal?Number(ajusteVal.toFixed(4)):""}" ${podeEditar ? "" : "disabled"}>
+            ${sugestaoFmt>0 ? `<button type="button" class="btn ghost vd-ajuste-sug" data-produto="${escapeHtml(item.produto_id)}" data-sug="${sugestaoFmt}" title="preencher com a sugestão" style="margin-top:2px; font-size:9px; padding:1px 4px; width:100%;" ${podeEditar?"":"disabled"}>sug. ${sugestaoFmt}</button>` : ""}
+          ` : `<span class="cel-custo">—</span>`}</td>
         <td class="num-cell">${fmtMoney(receita)}</td>
         <td class="num-cell">${temCusto || custo ? fmtMoney(custo) : "—"}</td>
         <td class="num-cell">${temCusto || custo ? fmtMoney(receita - custo) : "—"}</td>
       </tr>`;
-    }).join("") || `<tr><td colspan="${3+DIAS_ORDEM.length}" class="empty-state">Este contrato não tem itens cadastrados.</td></tr>`;
+    }).join("") || `<tr><td colspan="${totalCols}" class="empty-state">Este contrato não tem itens cadastrados.</td></tr>`;
 
     document.getElementById("vd-tfoot").innerHTML = `<tr class="row-total">
       <td class="cat-col">Total da semana</td><td></td>
       ${DIAS_ORDEM.map(()=> `<td></td>`).join("")}
+      <td></td>
       <td class="num-cell">${fmtMoney(totReceita)}</td>
       <td class="num-cell">${fmtMoney(totCusto)}</td>
       <td class="num-cell">${fmtMoney(totReceita - totCusto)}</td>
     </tr>`;
 
-    // Enter pula para o próximo item da mesma coluna (mesmo dia) — decisão de 08/10/2026; pedido
-    // novo, substitui o "Enter pro lado" do sistema antigo (v99), que não tinha sido portado pra cá.
+    // Enter pula para o próximo item da mesma coluna (mesmo dia) — pedido de 08/10/2026; não havia
+    // nenhum Enter cadastrado em Vendas neste protótipo (não é reversão de nada antigo).
     tbody.querySelectorAll(".vd-qtd").forEach(inp => {
       inp.addEventListener("input", () => {
         const produtoId = inp.dataset.produto, dia = inp.dataset.dia;
@@ -5943,6 +5958,14 @@ function renderGradeLancamento(){
         redraw();
         document.querySelector(`.vd-qtd[data-produto="${CSS.escape(produtoId)}"][data-dia="${dia}"]`)?.focus();
       });
+      // arredonda pra no máx. 4 casas decimais ao sair do campo — não a cada tecla, pra não
+      // atrapalhar quem ainda está digitando.
+      inp.addEventListener("blur", () => {
+        const produtoId = inp.dataset.produto, dia = inp.dataset.dia;
+        if(!produtoId || draftVendas[dia]?.[produtoId] === undefined) return;
+        draftVendas[dia][produtoId] = Number(Number(draftVendas[dia][produtoId]).toFixed(4));
+        redraw();
+      });
       inp.addEventListener("keydown", e => {
         if(e.key !== "Enter") return;
         e.preventDefault();
@@ -5952,12 +5975,46 @@ function renderGradeLancamento(){
         if(idx >= 0 && idx < coluna.length - 1){ const prox = coluna[idx+1]; prox.focus(); prox.select?.(); }
       });
     });
-    tbody.querySelectorAll(".vd-preco-input").forEach(inp => inp.addEventListener("input", () => {
-      const produtoId = inp.dataset.produto;
-      draftPrecoUnitario[produtoId] = inp.value === "" ? null : Number(inp.value);
+    tbody.querySelectorAll(".vd-ajuste-qtd").forEach(inp => {
+      inp.addEventListener("input", () => {
+        const produtoId = inp.dataset.produto;
+        const val = inp.value === "" ? null : Number(inp.value);
+        if(val === null || val === 0) delete draftAjusteMinimo[produtoId]; else draftAjusteMinimo[produtoId] = val;
+        redraw();
+        document.querySelector(`.vd-ajuste-qtd[data-produto="${CSS.escape(produtoId)}"]`)?.focus();
+      });
+      inp.addEventListener("blur", () => {
+        const produtoId = inp.dataset.produto;
+        if(draftAjusteMinimo[produtoId] === undefined) return;
+        draftAjusteMinimo[produtoId] = Number(Number(draftAjusteMinimo[produtoId]).toFixed(4));
+        redraw();
+      });
+      inp.addEventListener("keydown", e => {
+        if(e.key !== "Enter") return;
+        e.preventDefault();
+        const coluna = [...tbody.querySelectorAll(".vd-ajuste-qtd")];
+        const idx = coluna.indexOf(inp);
+        if(idx >= 0 && idx < coluna.length - 1){ const prox = coluna[idx+1]; prox.focus(); prox.select?.(); }
+      });
+    });
+    tbody.querySelectorAll(".vd-ajuste-sug").forEach(btn => btn.addEventListener("click", () => {
+      draftAjusteMinimo[btn.dataset.produto] = Number(btn.dataset.sug);
       redraw();
-      document.querySelector(`.vd-preco-input[data-produto="${CSS.escape(produtoId)}"]`)?.focus();
     }));
+    tbody.querySelectorAll(".vd-preco-input").forEach(inp => {
+      inp.addEventListener("input", () => {
+        const produtoId = inp.dataset.produto;
+        draftPrecoUnitario[produtoId] = inp.value === "" ? null : Number(inp.value);
+        redraw();
+        document.querySelector(`.vd-preco-input[data-produto="${CSS.escape(produtoId)}"]`)?.focus();
+      });
+      inp.addEventListener("blur", () => {
+        const produtoId = inp.dataset.produto;
+        if(draftPrecoUnitario[produtoId] === undefined || draftPrecoUnitario[produtoId] === null) return;
+        draftPrecoUnitario[produtoId] = Number(Number(draftPrecoUnitario[produtoId]).toFixed(2));
+        redraw();
+      });
+    });
     tbody.querySelectorAll(".vd-preco-pct").forEach(inp => inp.addEventListener("change", () => {
       const produtoId = inp.dataset.produto;
       const pct = inp.value === "" ? null : Number(inp.value);
@@ -5967,28 +6024,6 @@ function renderGradeLancamento(){
     }));
   }
   redraw();
-
-  function redrawAjuste(){
-    const tbody = document.getElementById("vd-ajuste-tbody");
-    tbody.innerHTML = itens.filter(item => item.produto_id).map(item => {
-      const q = draftAjusteMinimo[item.produto_id] ?? null;
-      const receita = (q && item.preco_venda != null) ? q * item.preco_venda : 0;
-      return `<tr>
-        <td class="cat-col">${escapeHtml(item.nome)}</td>
-        <td class="num-cell">${fmtMoney(item.preco_venda)}</td>
-        <td class="num-cell"><input type="number" step="1" class="vd-ajuste-qtd" data-produto="${escapeHtml(item.produto_id)}" value="${q ?? ""}" style="width:90px; text-align:right;" ${travado ? "disabled" : ""}></td>
-        <td class="num-cell">${receita ? fmtMoney(receita) : "—"}</td>
-      </tr>`;
-    }).join("") || `<tr><td colspan="4" class="empty-state">Este contrato não tem itens cadastrados.</td></tr>`;
-    tbody.querySelectorAll(".vd-ajuste-qtd").forEach(inp => inp.addEventListener("input", () => {
-      const produtoId = inp.dataset.produto;
-      const val = inp.value === "" ? null : Number(inp.value);
-      if(val === null || val === 0) delete draftAjusteMinimo[produtoId]; else draftAjusteMinimo[produtoId] = val;
-      redrawAjuste();
-      document.querySelector(`.vd-ajuste-qtd[data-produto="${CSS.escape(produtoId)}"]`)?.focus();
-    }));
-  }
-  redrawAjuste();
 
   document.getElementById("vd-fechar-grade").addEventListener("click", () => { vendaAberto = false; renderTabLancamento(); });
   document.getElementById("vd-mes").addEventListener("change", e => { vendaMesSel = e.target.value; vendaSemanaSel = null; renderGradeLancamento(); });
@@ -6046,7 +6081,12 @@ function renderGradeLancamento(){
 
   /* ---- impressão por período (espelho para NF) — v133, construída do zero: o protótipo novo
      (GitHub Pages + Supabase) ainda não tinha nenhuma impressão em Vendas; o que existia (v114/v119)
-     ficou só no sistema antigo (Firestore), não foi portado. */
+     ficou só no sistema antigo (Firestore), não foi portado. Painel de seleção de dias fica oculto
+     por padrão (v134) e só abre ao clicar no botão de imprimir. */
+  document.getElementById("vd-pr-toggle").addEventListener("click", () => {
+    const p = document.getElementById("vd-pr-painel");
+    p.style.display = p.style.display === "none" ? "block" : "none";
+  });
   function ymdLocal(date){ return date.toISOString().slice(0,10); }
   function setPeriodo(iniYMD, fimYMD){
     document.getElementById("vd-pr-ini").value = iniYMD;
