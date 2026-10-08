@@ -132,6 +132,8 @@ table{width:100%;border-collapse:collapse;font-size:13px;}
 th,td{padding:10px 14px;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap;}
 th{font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-faint);font-weight:600;background:var(--surface-alt);position:sticky;top:0;}
 tbody tr:hover{background:var(--surface-alt);}
+.vd-grade-row:hover{background:transparent;}
+.vd-grade-row>td{white-space:normal;}
 .num-cell{font-family:'IBM Plex Mono',monospace;text-align:right;font-variant-numeric:tabular-nums;}
 .name-cell{max-width:340px;white-space:normal;}
 .tag-sheet{font-size:11px;color:var(--text-faint);font-family:'IBM Plex Mono',monospace;}
@@ -5735,17 +5737,29 @@ function renderTabLancamento(){
       </div>
     </div>` : ""}
     <div class="footnote" style="margin-top:4px;">"Custo projetado do mês" usa o mesmo motor de projeção do Painel/Contratos (cardápio planejado × preço), não o custo já realizado nem o Orçamento de compras real — para o que já foi efetivamente apurado, veja Faturamento apurado.</div>
-    <div id="vd-grade-wrap" style="margin-top:18px;"></div>
   `;
 
+  /* ---- v135: a grade de lançamento abre como uma linha extra dentro da própria tabela de clientes,
+     logo abaixo do cliente selecionado (em vez de um bloco único fixo no fim da página) — assim o
+     usuário não perde a referência de qual cliente está editando quando a lista tem muitos nomes. */
+  function linhasComGrade(rows){
+    if(!rows.length) return `<tr><td colspan="5" class="empty-state">Nenhum contrato.</td></tr>`;
+    return rows.map(([id,c]) => {
+      const linha = linhaClienteVenda(id, c, vendaPainelMesSel, almocoIdx, cafeIdx);
+      if(vendaAberto && vendaContratoSel === id){
+        return linha + `<tr class="vd-grade-row"><td colspan="5" style="padding:14px 0 10px;"><div id="vd-grade-wrap"></div></td></tr>`;
+      }
+      return linha;
+    }).join("");
+  }
   function atualizarTabelasClientes(){
     const porUnidade = { matriz: [], filial: [], sem: [] };
     todosContratos.forEach(r => { (porUnidade[r[1].unidade === "filial" ? "filial" : r[1].unidade === "matriz" ? "matriz" : "sem"]).push(r); });
     ["matriz","filial"].forEach(un => {
-      document.getElementById(`vp-tbody-${un}`).innerHTML = porUnidade[un].map(([id,c]) => linhaClienteVenda(id, c, vendaPainelMesSel, almocoIdx, cafeIdx)).join("") || `<tr><td colspan="5" class="empty-state">Nenhum contrato.</td></tr>`;
+      document.getElementById(`vp-tbody-${un}`).innerHTML = linhasComGrade(porUnidade[un]);
     });
     const tbodySem = document.getElementById("vp-tbody-sem");
-    if(tbodySem) tbodySem.innerHTML = porUnidade.sem.map(([id,c]) => linhaClienteVenda(id, c, vendaPainelMesSel, almocoIdx, cafeIdx)).join("");
+    if(tbodySem) tbodySem.innerHTML = linhasComGrade(porUnidade.sem);
     body.querySelectorAll("[data-abrir-venda]").forEach(b => b.addEventListener("click", () => {
       const id = b.dataset.abrirVenda;
       if(vendaAberto && vendaContratoSel === id){ vendaAberto = false; }
