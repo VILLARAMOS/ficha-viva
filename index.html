@@ -545,7 +545,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadContratoEventos(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
   goToView(currentView);
 }
 
@@ -830,6 +830,18 @@ async function loadContratoEventos(){
 }
 function eventosDoContrato(contratoId){
   return [...contratoEventos.entries()].filter(([,e]) => e.contrato_id === contratoId).sort((a,b) => (a[1].data||"").localeCompare(b[1].data||""));
+}
+
+/* ---- faturamento histórico manual (meses anteriores ao início do sistema — só valor, sem custo) ---- */
+let contratoFaturamentoHistorico = new Map(); // id -> {contrato_id, mes:"YYYY-MM", valor_faturado, observacoes, alterado_em, alterado_por}
+async function loadContratoFaturamentoHistorico(){
+  const { data, error } = await sb.from('contrato_faturamento_historico').select('*').order('mes');
+  contratoFaturamentoHistorico = new Map();
+  if (error){ showAlert('Erro ao carregar faturamento histórico de contrato: ' + error.message); return; }
+  (data || []).forEach(row => { const { id, ...rest } = row; contratoFaturamentoHistorico.set(id, rest); });
+}
+function faturamentoHistoricoDoContrato(contratoId){
+  return [...contratoFaturamentoHistorico.entries()].filter(([,h]) => h.contrato_id === contratoId).sort((a,b) => (a[1].mes||"").localeCompare(b[1].mes||""));
 }
 
 /* ---- vendas (lançamento realizado por contrato/semana/dia) ---- */
@@ -3779,23 +3791,34 @@ function contratosPainelBlocoHtml(b){
   </div>`;
 }
 
-/* ---- v131: faturamento/CMV "total do contrato" (soma dentro da vigência data_inicio–data_fim,
+/* ---- v131/v132: faturamento/CMV "total do contrato" (soma dentro da vigência data_inicio–data_fim,
    clampado ao mês atual pra não somar meses futuros sem dado). Quando data_inicio não está
    preenchida (hoje é o caso de quase todos os 23 contratos — só BERTOLINE e PB2 têm), cai no 1º mês
-   do sistema (set/2026) como fallback — na prática "total" fica igual a "todos os meses com dado"
-   até que as datas de vigência sejam preenchidas. Isso já é uma pendência conhecida (ver Painel). ---- */
+   do sistema (set/2026) como fallback. Meses de data_inicio ANTERIORES ao 1º mês do sistema (sem
+   semana/cardápio modelado pro motor calcular) usam o faturamento lançado manualmente em
+   contrato_faturamento_historico — pedido do Marcelo (08/10/2026), que já tem esses valores fora do
+   sistema. Só entra receita (sem custo), por isso o CMV médio continua calculado só com os meses que
+   o sistema realmente apura (receitaSistema/custo) — misturar receita manual sem custo equivalente
+   distorceria o CMV pra baixo. ---- */
 function apurarContratoVigenciaTotal(id, ct, almocoIdx, cafeIdx){
   const atual = mesAtualId();
   const primeiroDoSistema = MESES_REFERENCIA[0] ? MESES_REFERENCIA[0].id : atual;
   const inicioId = ct.data_inicio ? ct.data_inicio.slice(0,7) : primeiroDoSistema;
   const fimId = (ct.data_fim && ct.data_fim.slice(0,7) < atual) ? ct.data_fim.slice(0,7) : atual;
-  let receita = 0, custo = 0;
+  // lançamento manual conta sempre que existir (independe de data_inicio preenchida ou não — o
+  // próprio lançamento já é evidência de que o contrato existia naquele mês), desde que seja um mês
+  // anterior ao sistema (senão o cálculo automático abaixo já cobre) e dentro do fim de vigência.
+  let receitaManual = 0;
+  faturamentoHistoricoDoContrato(id).forEach(([,h]) => {
+    if(h.mes < primeiroDoSistema && h.mes <= fimId) receitaManual += Number(h.valor_faturado) || 0;
+  });
+  let receitaSistema = 0, custo = 0;
   MESES_REFERENCIA.forEach(m => {
     if(m.id < inicioId || m.id > fimId) return;
     const ap = apurarContrato(id, ct, m.id, almocoIdx, cafeIdx);
-    receita += ap.receita; custo += ap.custoTotal;
+    receitaSistema += ap.receita; custo += ap.custoTotal;
   });
-  return { receita, custo, cmv: receita > 0 ? custo/receita : null };
+  return { receita: receitaSistema + receitaManual, receitaManual, receitaSistema, custo, cmv: receitaSistema > 0 ? custo/receitaSistema : null };
 }
 
 function renderContratos(){
@@ -3845,7 +3868,7 @@ function renderContratos(){
       <div class="table-wrap">
         <table>
           <thead><tr>
-            <th>Cliente</th><th style="text-align:right;">Faturamento do contrato</th><th style="text-align:right;">Faturamento do mês</th><th style="text-align:right;">Custo planejado do mês</th><th style="text-align:right;">CMV médio</th><th>Vigência</th><th></th>
+            <th>Cliente</th><th style="text-align:right;">Faturamento do contrato</th><th style="text-align:right;">Faturamento do mês</th><th style="text-align:right;">Orçamento do mês</th><th style="text-align:right;">CMV médio</th><th>Vigência</th><th></th>
           </tr></thead>
           <tbody id="k-tbody-${un}"></tbody>
         </table>
@@ -3859,14 +3882,14 @@ function renderContratos(){
       <div class="table-wrap">
         <table>
           <thead><tr>
-            <th>Cliente</th><th style="text-align:right;">Faturamento do contrato</th><th style="text-align:right;">Faturamento do mês</th><th style="text-align:right;">Custo planejado do mês</th><th style="text-align:right;">CMV médio</th><th>Vigência</th><th></th>
+            <th>Cliente</th><th style="text-align:right;">Faturamento do contrato</th><th style="text-align:right;">Faturamento do mês</th><th style="text-align:right;">Orçamento do mês</th><th style="text-align:right;">CMV médio</th><th>Vigência</th><th></th>
           </tr></thead>
           <tbody id="k-tbody-sem"></tbody>
         </table>
       </div>
     </div>` : ""}
 
-    <div class="footnote" style="margin-top:4px;">"Custo planejado do mês" é a projeção de custo deste contrato para o mês selecionado (mesmo motor de previsão usado no Painel) — não é o Orçamento de compras, que neste sistema existe só por Matriz/Filial, não por cliente. "Faturamento do contrato" soma dentro da vigência (data_inicio–data_fim); sem essas datas preenchidas, cai no 1º mês do sistema como início.</div>
+    <div class="footnote" style="margin-top:4px;">"Orçamento do mês" é calculado por cliente a partir da quantidade de atendimento prevista (contratada), do preço de venda e do custo do cardápio planejado (mesmo motor de previsão usado no Painel) — diferente do Orçamento de compras do painel acima, que é por Matriz/Filial/bloco de insumo, não por cliente. "Faturamento do contrato" soma dentro da vigência (data_inicio–data_fim); meses anteriores ao início do sistema (antes de set/2026) usam o valor lançado em "Vendas passadas", dentro do cadastro do cliente.</div>
   `;
 
   function linhaCliente(id, c){
@@ -4075,6 +4098,24 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
           <div class="footnote" id="kk-ev-err" style="color:var(--critical);"></div>
           ` : `<div class="footnote">Salve o contrato primeiro para poder adicionar eventos.</div>`}
 
+          <h3 style="font-size:14px; margin:18px 0 8px;">Vendas passadas (faturamento mensal manual)</h3>
+          <div class="footnote" style="margin-bottom:10px;">Faturamento de meses anteriores ao início do sistema (antes de ${MESES_REFERENCIA[0] ? escapeHtml(MESES_REFERENCIA[0].nome) : "set/2026"}) — pra esses meses o motor não tem semana/cardápio modelado pra calcular sozinho. De ${MESES_REFERENCIA[0] ? escapeHtml(MESES_REFERENCIA[0].nome) : "set/2026"} em diante o sistema já calcula automaticamente a partir de Vendas; não lance aqui por cima.</div>
+          ${id ? `
+          <div class="table-wrap" style="margin-bottom:10px;">
+            <table>
+              <thead><tr><th>Mês</th><th style="text-align:right;">Faturamento (R$)</th><th>Observações</th><th></th></tr></thead>
+              <tbody id="kk-fathist-tbody"></tbody>
+            </table>
+          </div>
+          <div class="field-row" style="align-items:flex-end;">
+            <div class="field"><label>Mês</label><input type="month" id="kk-fh-mes"></div>
+            <div class="field"><label>Faturamento (R$)</label><input type="number" step="0.01" id="kk-fh-valor"></div>
+            <div class="field" style="flex:1.6;"><label>Observações</label><input type="text" id="kk-fh-obs"></div>
+            <button class="btn small" id="kk-fh-add" type="button">+ adicionar/atualizar</button>
+          </div>
+          <div class="footnote" id="kk-fh-err" style="color:var(--critical);"></div>
+          ` : `<div class="footnote">Salve o contrato primeiro para lançar vendas passadas.</div>`}
+
           <div class="field" style="margin-top:16px;"><label>Observações</label><textarea id="kk-obs" rows="3">${escapeHtml(draft.observacoes||"")}</textarea></div>
           <div class="footnote" id="kk-err" style="color:var(--critical); margin-top:10px;"></div>
         </div>
@@ -4206,6 +4247,49 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
       renderEventosContratoTbody();
     });
 
+    // v132: faturamento histórico manual (meses anteriores ao início do sistema)
+    const fhErr = document.getElementById("kk-fh-err");
+    const primeiroMesSistema = MESES_REFERENCIA[0] ? MESES_REFERENCIA[0].id : mesAtualId();
+    function renderFatHistTbody(){
+      const tbody = document.getElementById("kk-fathist-tbody");
+      const linhas = faturamentoHistoricoDoContrato(id);
+      tbody.innerHTML = linhas.map(([hId, h]) => `
+        <tr>
+          <td style="white-space:nowrap;">${escapeHtml(h.mes)}</td>
+          <td class="num-cell">${fmtMoney(h.valor_faturado)}</td>
+          <td style="font-size:12.5px;">${escapeHtml(h.observacoes||"")}</td>
+          <td style="text-align:right;"><button type="button" class="btn small ghost" data-rm-fh="${hId}" style="color:var(--critical);">remover</button></td>
+        </tr>`).join("") || `<tr><td colspan="4" class="empty-state">Nenhum lançamento ainda.</td></tr>`;
+      tbody.querySelectorAll("[data-rm-fh]").forEach(b => b.addEventListener("click", async () => {
+        if(!(await confirmDialog("Remover este lançamento de faturamento histórico?"))) return;
+        const { error } = await sb.from('contrato_faturamento_historico').delete().eq('id', b.dataset.rmFh);
+        if(error){ fhErr.textContent = "Erro ao remover: " + error.message; return; }
+        await loadContratoFaturamentoHistorico();
+        fhErr.textContent = "";
+        renderFatHistTbody();
+      }));
+    }
+    renderFatHistTbody();
+    document.getElementById("kk-fh-add").addEventListener("click", async () => {
+      const mes = document.getElementById("kk-fh-mes").value;
+      const valorStr = document.getElementById("kk-fh-valor").value;
+      if(!mes || valorStr === ""){ fhErr.textContent = "Informe o mês e o valor faturado."; return; }
+      if(mes >= primeiroMesSistema){ fhErr.textContent = `Use isto só para meses antes de ${MESES_REFERENCIA[0] ? MESES_REFERENCIA[0].nome : primeiroMesSistema} — de lá em diante o sistema já calcula sozinho.`; return; }
+      const payload = {
+        contrato_id: id, mes, valor_faturado: parseFloat(valorStr),
+        observacoes: document.getElementById("kk-fh-obs").value.trim() || null,
+        ...carimbo(),
+      };
+      const { error } = await sb.from('contrato_faturamento_historico').upsert(payload, { onConflict: 'contrato_id,mes' });
+      if(error){ fhErr.textContent = "Erro ao salvar: " + error.message; return; }
+      await loadContratoFaturamentoHistorico();
+      fhErr.textContent = "";
+      document.getElementById("kk-fh-mes").value = "";
+      document.getElementById("kk-fh-valor").value = "";
+      document.getElementById("kk-fh-obs").value = "";
+      renderFatHistTbody();
+    });
+
     refreshAnexoUI();
   }
 
@@ -4256,7 +4340,7 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
       if(draft.anexo_contrato_path) await sb.storage.from('contratos-anexos').remove([draft.anexo_contrato_path]);
       const { error } = await sb.from('contratos').delete().eq('id', id);
       if(error) throw error;
-      await Promise.all([loadContratos(), loadContratoItens(), loadContratoEventos()]);
+      await Promise.all([loadContratos(), loadContratoItens(), loadContratoEventos(), loadContratoFaturamentoHistorico()]);
       root.innerHTML="";
       renderContratos();
     }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
