@@ -2696,6 +2696,7 @@ function montarPainelCmv(grupo, num, semana){
       estrutura.qtd_salada!=null ? `${estrutura.qtd_salada} salada(s)/dia` : null,
       estrutura.qtd_sobremesa!=null ? `${estrutura.qtd_sobremesa} sobremesa(s)/dia` : null,
       (estrutura.qtd_suco_simples!=null || estrutura.qtd_suco_natural!=null) ? `suco ${estrutura.qtd_suco_simples??0} simples + ${estrutura.qtd_suco_natural??0} natural/dia` : null,
+      estrutura.gramagem_proteina_principal_g!=null ? `proteína principal ${estrutura.gramagem_proteina_principal_g}g (alvo)` : null,
     ].filter(Boolean).join(" · ") : "";
     estHtml = `<div class="footnote" style="margin:-6px 0 2px;">Estrutura deste cardápio (vagas/dia que o motor preenche)${estrutura && resumo ? `: ${resumo}` : ": sem restrição — preenche todas as vagas da grade"}</div>
       <a href="#" id="card-editar-estrutura" class="footnote" style="display:inline-block; margin:-10px 0 14px;">Editar estrutura deste cardápio →</a>`;
@@ -3492,6 +3493,9 @@ function abrirEstruturaCardapioModal(grupo, num, onSaved){
           ${campo("es-suco-simples", "Suco simples", 2, atual?.qtd_suco_simples)}
           ${campo("es-suco-natural", "Suco natural", 2, atual?.qtd_suco_natural)}
           <div class="footnote" style="margin-top:-6px;">Suco simples + natural não deve passar de 2/dia (só existem 2 vagas de Suco na grade).</div>
+          <div class="field"><label>Gramagem-alvo — Proteína principal (g) <span class="footnote">(referência; não trava a célula, continua editável na grade)</span></label>
+            <input type="number" step="1" min="0" id="es-gramagem" value="${atual?.gramagem_proteina_principal_g ?? ""}" placeholder="sem alvo definido">
+          </div>
           <div class="field"><label>Observações</label><input type="text" id="es-obs" value="${escapeHtml(atual?.observacoes||"")}" placeholder="opcional"></div>
           <div class="footnote" id="es-err" style="color:var(--critical);"></div>
         </div>
@@ -3525,10 +3529,14 @@ function abrirEstruturaCardapioModal(grupo, num, onSaved){
     const sucoSimples = lerQtd("es-suco-simples", 2), sucoNatural = lerQtd("es-suco-natural", 2);
     if(guarnicao.erro || salada.erro || sobremesa.erro || sucoSimples.erro || sucoNatural.erro){ errEl.textContent = "Alguma quantidade está fora do limite físico da grade (veja ao lado de cada campo)."; return; }
     if((sucoSimples.valor||0) + (sucoNatural.valor||0) > 2){ errEl.textContent = "Suco simples + natural não pode passar de 2/dia (só há 2 vagas de Suco na grade)."; return; }
+    const gramagemRaw = document.getElementById("es-gramagem").value;
+    const gramagem = gramagemRaw === "" ? null : parseInt(gramagemRaw, 10);
+    if(gramagemRaw !== "" && !(gramagem >= 0)){ errEl.textContent = "Gramagem-alvo inválida."; return; }
     try{
       await salvarEstruturaCardapio(grupo, num, {
         qtd_guarnicao: guarnicao.valor, qtd_salada: salada.valor, qtd_sobremesa: sobremesa.valor,
         qtd_suco_simples: sucoSimples.valor, qtd_suco_natural: sucoNatural.valor,
+        gramagem_proteina_principal_g: gramagem,
         observacoes: document.getElementById("es-obs").value.trim() || null,
       });
       root.innerHTML = "";
