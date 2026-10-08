@@ -2300,8 +2300,17 @@ function gerarSugestaoSemana(grupo, num, semana, modo /* 'vazios' | 'sobrescreve
     if(acimaDoTeto) stats.acimaDoTeto++;
   }
 
-  // 1) Proteína — segue a bolsa de tipos (ou sorteia livre, sem alvo de incidência)
-  const todasProteinas = _indiceSugestaoAtual.porGrupo.get("PROTEÍNA") || [];
+  // 1) Proteína — segue a bolsa de tipos (ou sorteia livre, sem alvo de incidência). Quando o modelo
+  // deste número de cardápio tem gramagem-alvo cadastrada (cardapio_estrutura.gramagem_proteina_principal_g —
+  // decisão de 08/10/2026, parte do pacote Premium/Ultra/Ultra Plus/Leve), ela substitui a mediana
+  // histórica da ficha só pra decidir o peso da porção; o custo e o teto do dia já saem calculados com
+  // esse peso. Sem alvo cadastrado, continua igual a sempre (mediana da própria ficha/grupo).
+  const gramagemAlvoProteina = estrutura && estrutura.gramagem_proteina_principal_g != null
+    ? estrutura.gramagem_proteina_principal_g / 1000 : null;
+  const todasProteinasBase = _indiceSugestaoAtual.porGrupo.get("PROTEÍNA") || [];
+  const todasProteinas = gramagemAlvoProteina != null
+    ? todasProteinasBase.map(c => ({ ...c, gramagemPadrao: gramagemAlvoProteina }))
+    : todasProteinasBase;
   slotsProteina.forEach(({dia, ci}, idx) => {
     const tipo = bolsaTipos[idx] || null;
     const doTipo = tipo ? todasProteinas.filter(c => c.tipo_proteina === tipo) : [];
