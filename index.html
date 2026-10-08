@@ -545,7 +545,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
   goToView(currentView);
 }
 
@@ -628,8 +628,9 @@ function blocosCadastro(){
   const extras = [...new Set([...insumos.values()].map(d => d.grupo_compra).filter(g => g && !ORDEM_GRUPO_COMPRA_BASE.includes(g)))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
   return [...ORDEM_GRUPO_COMPRA_BASE, ...extras];
 }
-// categorias de receita — mesma família de 7 grupos usada na grade de cardápio (Proteína/Base/Guarnição/Salada/Sobremesa/Suco/Extra)
-const GRUPOS_FICHA_BASE = ["PROTEÍNA","BASE","GUARNIÇÃO DE LEGUMES","GUARNIÇÃO DE MASSAS","GUARNIÇÃO DE SECOS","SALADA","SOBREMESA","SUCO","EXTRA"];
+// categorias de receita — mesma família de grupos usada na grade de cardápio (Proteína/Base/Guarnição/Salada/Sobremesa/Suco/Extra).
+// Suco dividido em SIMPLES/NATURAL em 07/10/2026 (12 fichas reclassificadas) — antes era um grupo único "SUCO".
+const GRUPOS_FICHA_BASE = ["PROTEÍNA","BASE","GUARNIÇÃO DE LEGUMES","GUARNIÇÃO DE MASSAS","GUARNIÇÃO DE SECOS","SALADA","SOBREMESA","SUCO SIMPLES","SUCO NATURAL","EXTRA"];
 function gruposFichaCadastro(){
   const extras = [...new Set([...fichas.values()].map(f => f.grupo).filter(g => g && !GRUPOS_FICHA_BASE.includes(g)))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
   return [...GRUPOS_FICHA_BASE, ...extras];
@@ -740,6 +741,35 @@ async function excluirMetaCardapio(grupo, num, mesId){
   const { error } = await sb.from('cardapio_metas').delete().eq('id', existente.id);
   if(error) throw error;
   await loadCardapioMetas();
+}
+
+/* ---- estrutura do cardápio (quantas vagas de guarnição/salada/sobremesa/suco o motor preenche por dia) ----
+   Uma linha por (grupo, num); sem linha = sem restrição, comportamento igual ao de antes de 07/10/2026
+   (preenche todas as vagas existentes na grade). Café não usa — não tem motor de sugestão. */
+let cardapioEstrutura = new Map();   // "grupo|num" -> {id, grupo, num, qtd_guarnicao, qtd_salada, qtd_sobremesa, qtd_suco_simples, qtd_suco_natural, observacoes}
+
+async function loadCardapioEstrutura(){
+  const { data, error } = await sb.from('cardapio_estrutura').select('*');
+  cardapioEstrutura = new Map();
+  if (error) return;
+  (data || []).forEach(r => cardapioEstrutura.set(`${r.grupo}|${r.num}`, r));
+}
+function estruturaDoCardapio(grupo, num){ return cardapioEstrutura.get(`${grupo}|${num}`) || null; }
+async function salvarEstruturaCardapio(grupo, num, payload){
+  const existente = estruturaDoCardapio(grupo, num);
+  const data = { grupo, num, ...payload, ...carimbo() };
+  let error;
+  if(existente){ ({error} = await sb.from('cardapio_estrutura').update(data).eq('id', existente.id)); }
+  else { ({error} = await sb.from('cardapio_estrutura').insert(data)); }
+  if(error) throw error;
+  await loadCardapioEstrutura();
+}
+async function excluirEstruturaCardapio(grupo, num){
+  const existente = estruturaDoCardapio(grupo, num);
+  if(!existente) return;
+  const { error } = await sb.from('cardapio_estrutura').delete().eq('id', existente.id);
+  if(error) throw error;
+  await loadCardapioEstrutura();
 }
 
 async function loadCardapios(){
@@ -2023,12 +2053,14 @@ async function criarNovoCardapioNumero(grupo, label){
    da porção. Fallback escolhido: usa a mediana de gramagem já usada por fichas do MESMO GRUPO (ex.:
    mediana de todas as Proteínas já lançadas em algum cardápio). É só uma estimativa pra não deixar o
    motor cego ao teto — a gramagem continua editável na célula como sempre foi. */
-const SUGESTAO_GRUPOS_ALVO = ["PROTEÍNA","BASE","GUARNIÇÃO DE LEGUMES","GUARNIÇÃO DE MASSAS","GUARNIÇÃO DE SECOS","SALADA","SOBREMESA","SUCO"];
+const SUGESTAO_GRUPOS_ALVO = ["PROTEÍNA","BASE","GUARNIÇÃO DE LEGUMES","GUARNIÇÃO DE MASSAS","GUARNIÇÃO DE SECOS","SALADA","SOBREMESA","SUCO SIMPLES","SUCO NATURAL"];
 const GUARNICAO_SUBGRUPOS = ["GUARNIÇÃO DE LEGUMES","GUARNIÇÃO DE MASSAS","GUARNIÇÃO DE SECOS"];
+const SUCO_SUBGRUPOS = ["SUCO SIMPLES","SUCO NATURAL"]; // dividido em 07/10/2026 — antes era um grupo único "SUCO"
 const JANELA_NAO_REPETIR_SEMANAS = 2; // "últimas 2-3 semanas" (decisão de 06/10/2026) — usa o piso da janela
 
 function categoriaBase(cat){ return (cat||"").replace(/\s*\d+$/, ""); } // "Proteína 1" -> "Proteína"
 function categoriaEntraNoMotor(cat){ return categoriaBase(cat) !== "Extra"; }
+function categoriaOrdinal(cat){ const m = /(\d+)\s*$/.exec(cat||""); return m ? parseInt(m[1],10) : null; } // "Guarnição 3" -> 3
 
 function mediana(valores){
   const v = (valores||[]).filter(x => x != null && isFinite(x)).sort((a,b)=>a-b);
@@ -2161,6 +2193,19 @@ function gerarSugestaoSemana(grupo, num, semana, modo /* 'vazios' | 'sobrescreve
   }
   const alvoDaSemana = (perfilUnico && semanaDoMes) ? (perfilUnico.semanas[semanaDoMes-1] || null) : null;
 
+  // `estrutura` decide QUANTAS vagas de Guarnição/Salada/Sobremesa/Suco o motor preenche por dia (decisão
+  // de 07/10/2026) — sem linha cadastrada pra este (grupo, num), sem limite (preenche tudo, igual sempre
+  // foi). O que passa da quantidade fica em branco na grade (some da visão pelo toggle "mostrar categorias
+  // sem preenchimento" que já existe, já que nunca ganha conteúdo).
+  const estrutura = estruturaDoCardapio(grupo, num);
+  function limiteCategoria(prefix){
+    if(!estrutura) return null;
+    if(prefix === "Guarnição") return estrutura.qtd_guarnicao ?? null;
+    if(prefix === "Salada") return estrutura.qtd_salada ?? null;
+    if(prefix === "Sobremesa") return estrutura.qtd_sobremesa ?? null;
+    return null;
+  }
+
   const usadosPorTrilha = new Map(); // chave (grupo ou tipo_proteina) -> Set(ficha_id) usados nesta geração
   const trilha = chave => { if(!usadosPorTrilha.has(chave)) usadosPorTrilha.set(chave, new Set()); return usadosPorTrilha.get(chave); };
 
@@ -2174,9 +2219,12 @@ function gerarSugestaoSemana(grupo, num, semana, modo /* 'vazios' | 'sobrescreve
   diasParaProcessar.forEach(dia => { draft[dia].precoVenda = precoVenda; });
 
   function slotsVazios(dia, categoriaPrefix){
+    const limite = limiteCategoria(categoriaPrefix);
     return draft[dia].itens
       .map((it, ci) => ({it, ci}))
-      .filter(({it}) => categoriaBase(it.categoria) === categoriaPrefix && (modo === 'sobrescrever' || !it.nome));
+      .filter(({it}) => categoriaBase(it.categoria) === categoriaPrefix
+        && (modo === 'sobrescrever' || !it.nome)
+        && (limite == null || (categoriaOrdinal(it.categoria) || 999) <= limite));
   }
 
   // bolsa de tipos de proteína pra semana inteira, distribuída pelo alvo de incidência (se houver 1 perfil)
@@ -2232,8 +2280,9 @@ function gerarSugestaoSemana(grupo, num, semana, modo /* 'vazios' | 'sobrescreve
     preencherSlot(dia, ci, doTipo.length ? doTipo : todasProteinas, "PROTEÍNA");
   });
 
-  // 2) Base / Salada / Sobremesa / Suco — direto por grupo, mesmo sorteio ponderado por não-repetição
-  [["Base","BASE"], ["Salada","SALADA"], ["Sobremesa","SOBREMESA"], ["Suco","SUCO"]].forEach(([prefix, grp]) => {
+  // 2) Base / Salada / Sobremesa — direto por grupo, mesmo sorteio ponderado por não-repetição. Respeita a
+  // quantidade/dia da estrutura (se houver) via slotsVazios — o resto da vaga fica em branco.
+  [["Base","BASE"], ["Salada","SALADA"], ["Sobremesa","SOBREMESA"]].forEach(([prefix, grp]) => {
     diasParaProcessar.forEach(dia => slotsVazios(dia, prefix).forEach(s => {
       preencherSlot(dia, s.ci, _indiceSugestaoAtual.porGrupo.get(grp) || [], grp);
     }));
@@ -2251,11 +2300,45 @@ function gerarSugestaoSemana(grupo, num, semana, modo /* 'vazios' | 'sobrescreve
     });
   });
 
+  // 4) Suco — dividido em SIMPLES/NATURAL (decisão de 07/10/2026). Se a estrutura define as duas
+  // quantidades (simples e natural) explicitamente, monta uma bolsa exata do tamanho delas e só preenche
+  // até ali (o resto da(s) vaga(s) de Suco do dia fica em branco); senão sorteia livre entre os dois tipos
+  // em todas as vagas vazias — mesmo comportamento de antes de existir essa divisão, só que agora escolhe
+  // o subtipo também (antes caía tudo num único grupo "SUCO").
+  diasParaProcessar.forEach(dia => {
+    const slots = slotsVazios(dia, "Suco"); // "Suco" não tem limite por categoriaOrdinal — a bolsa abaixo é quem corta
+    const metaSimples = estrutura ? estrutura.qtd_suco_simples : null;
+    const metaNatural = estrutura ? estrutura.qtd_suco_natural : null;
+    let ordemSubgrupos;
+    if(metaSimples != null && metaNatural != null){
+      const bolsa = [];
+      for(let i=0;i<metaSimples;i++) bolsa.push("SUCO SIMPLES");
+      for(let i=0;i<metaNatural;i++) bolsa.push("SUCO NATURAL");
+      for(let i=bolsa.length-1;i>0;i--){ const j = Math.floor(Math.random()*(i+1)); [bolsa[i],bolsa[j]] = [bolsa[j],bolsa[i]]; }
+      slots.splice(bolsa.length); // vagas além da bolsa exata ficam em branco
+      ordemSubgrupos = bolsa;
+    } else {
+      ordemSubgrupos = [...SUCO_SUBGRUPOS];
+      for(let i=ordemSubgrupos.length-1;i>0;i--){ const j = Math.floor(Math.random()*(i+1)); [ordemSubgrupos[i],ordemSubgrupos[j]] = [ordemSubgrupos[j],ordemSubgrupos[i]]; }
+    }
+    slots.forEach((s, idx) => {
+      const subgrupo = ordemSubgrupos[idx % ordemSubgrupos.length] || SUCO_SUBGRUPOS[0];
+      const candidatos = _indiceSugestaoAtual.porGrupo.get(subgrupo) || [];
+      preencherSlot(dia, s.ci, candidatos.length ? candidatos : SUCO_SUBGRUPOS.flatMap(g => _indiceSugestaoAtual.porGrupo.get(g) || []), subgrupo);
+    });
+  });
+
   let custoSoma = 0, diasComAlgo = 0;
   DIAS_ORDEM.forEach(dia => { if(draft[dia].itens.some(it=>it.nome)){ diasComAlgo++; custoSoma += custoAcumuladoDia[dia]; } });
   stats.custoMedioDia = diasComAlgo ? custoSoma/diasComAlgo : null;
   stats.metaTxt = tetoUnico != null ? `${fmtPct(cmvDesejado)} de CMV sobre ${fmtMoney(precoVenda)}` : null;
   stats.perfilTxt = perfilUnico ? `seguindo "${perfilUnico.nome}"` : "sem alvo de incidência de proteína";
+  stats.estruturaTxt = estrutura ? [
+    estrutura.qtd_guarnicao!=null ? `${estrutura.qtd_guarnicao} guarnição(ões)/dia` : null,
+    estrutura.qtd_salada!=null ? `${estrutura.qtd_salada} salada(s)/dia` : null,
+    estrutura.qtd_sobremesa!=null ? `${estrutura.qtd_sobremesa} sobremesa(s)/dia` : null,
+    (estrutura.qtd_suco_simples!=null && estrutura.qtd_suco_natural!=null) ? `suco ${estrutura.qtd_suco_simples} simples + ${estrutura.qtd_suco_natural} natural/dia` : null,
+  ].filter(Boolean).join(", ") || null : null;
 
   return { draft, stats };
 }
@@ -2582,11 +2665,28 @@ function montarPainelCmv(grupo, num, semana){
       <a href="#" id="card-abrir-incidencia" class="footnote" style="display:inline-block; margin:-10px 0 14px;">Abrir Tabela de incidência completa →</a>`;
   }
 
-  host.innerHTML = `<div class="cardapio-cmv-panel">${blocosHtml}</div>${incHtml}`;
+  // Estrutura (quantas vagas/dia de guarnição/salada/sobremesa/suco o motor preenche) — decisão de
+  // 07/10/2026. Sem linha cadastrada = sem restrição, mesmo texto já deixa isso explícito.
+  let estHtml = "";
+  if(grupo !== "cafe"){
+    const estrutura = estruturaDoCardapio(grupo, num);
+    const resumo = estrutura ? [
+      estrutura.qtd_guarnicao!=null ? `${estrutura.qtd_guarnicao} guarnição(ões)/dia` : null,
+      estrutura.qtd_salada!=null ? `${estrutura.qtd_salada} salada(s)/dia` : null,
+      estrutura.qtd_sobremesa!=null ? `${estrutura.qtd_sobremesa} sobremesa(s)/dia` : null,
+      (estrutura.qtd_suco_simples!=null || estrutura.qtd_suco_natural!=null) ? `suco ${estrutura.qtd_suco_simples??0} simples + ${estrutura.qtd_suco_natural??0} natural/dia` : null,
+    ].filter(Boolean).join(" · ") : "";
+    estHtml = `<div class="footnote" style="margin:-6px 0 2px;">Estrutura deste cardápio (vagas/dia que o motor preenche)${estrutura && resumo ? `: ${resumo}` : ": sem restrição — preenche todas as vagas da grade"}</div>
+      <a href="#" id="card-editar-estrutura" class="footnote" style="display:inline-block; margin:-10px 0 14px;">Editar estrutura deste cardápio →</a>`;
+  }
+
+  host.innerHTML = `<div class="cardapio-cmv-panel">${blocosHtml}</div>${incHtml}${estHtml}`;
   const linkInc = document.getElementById("card-abrir-incidencia");
   if(linkInc) linkInc.addEventListener("click", e => { e.preventDefault(); abrirTabelaIncidenciaModal(); });
   const linkMeta = document.getElementById("card-editar-meta");
   if(linkMeta) linkMeta.addEventListener("click", e => { e.preventDefault(); abrirMetaModal(grupo, num, mesId, () => montarPainelCmv(grupo, num, semana)); });
+  const linkEstrutura = document.getElementById("card-editar-estrutura");
+  if(linkEstrutura) linkEstrutura.addEventListener("click", e => { e.preventDefault(); abrirEstruturaCardapioModal(grupo, num, () => montarPainelCmv(grupo, num, semana)); });
 }
 
 // Decisão de 07/10/2026: abrir só a tabela de Perfis (o "mapa de carnes"), em modal, em vez de navegar
@@ -2733,6 +2833,7 @@ function montarTabelaAlmoco(num, semana){
   if(resumoSugestaoPendente){
     const st = resumoSugestaoPendente; resumoSugestaoPendente = null;
     const partes = [`${st.preenchidos} célula(s) preenchida(s)`, st.perfilTxt];
+    if(st.estruturaTxt) partes.push(`estrutura: ${st.estruturaTxt}`);
     if(st.custoMedioDia != null) partes.push(`custo médio projetado ${fmtMoney(st.custoMedioDia)}/dia${st.metaTxt ? ` (meta: ${st.metaTxt})` : ""}`);
     if(st.acimaDoTeto) partes.push(`${st.acimaDoTeto} prato(s) estouraram o teto do dia e entraram pelo mais barato disponível`);
     if(st.repetidos) partes.push(`${st.repetidos} prato(s) repetido(s) por falta de opção sem repetir`);
@@ -3341,6 +3442,74 @@ function abrirMetaModal(grupo, num, mesId, onSaved){
     const valor = tipo === "cmv_pct" ? valorDigitado/100 : valorDigitado;
     try{
       await salvarMetaCardapio(grupo, num, mesId, tipo, valor);
+      root.innerHTML = "";
+      onSaved && onSaved();
+    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+  };
+}
+
+// Decisão de 07/10/2026: quantas vagas de Guarnição/Salada/Sobremesa/Suco o motor de sugestão preenche por
+// dia, por número de cardápio. Campo em branco = sem restrição naquela categoria (preenche todas as vagas
+// da grade, igual sempre foi — ver estruturaDoCardapio/limiteCategoria em gerarSugestaoSemana). Os máximos
+// abaixo são físicos: batem com a quantidade de linhas de cada categoria em CATEGORIAS_CARDAPIO.
+function abrirEstruturaCardapioModal(grupo, num, onSaved){
+  const root = document.getElementById("modal-root");
+  const atual = estruturaDoCardapio(grupo, num);
+  const campo = (id, label, max, valor) => `
+    <div class="field"><label>${escapeHtml(label)} <span class="footnote">(0 a ${max}/dia — em branco = sem limite)</span></label>
+      <input type="number" step="1" min="0" max="${max}" id="${id}" value="${valor ?? ""}" placeholder="sem limite">
+    </div>`;
+  root.innerHTML = `
+    <div class="modal-overlay" id="es-ov">
+      <div class="modal">
+        <div class="modal-head"><h2>Estrutura do cardápio — ${escapeHtml(labelNumeroCardapio(grupo, num))}</h2><button class="close-x" id="es-close">&times;</button></div>
+        <div class="modal-body">
+          <div class="footnote" style="margin-bottom:12px;">Limita quantas vagas de cada categoria o <strong>🎲 Sugerir semana</strong> preenche por dia — o resto da vaga fica em branco (e some da grade pelo "mostrar categorias sem preenchimento", já que nunca recebe conteúdo). Não afeta o que já estiver lançado manualmente, nem reduz a grade em si — só o que o motor vai preencher.</div>
+          ${campo("es-guarnicao", "Guarnições", 4, atual?.qtd_guarnicao)}
+          ${campo("es-salada", "Saladas", 4, atual?.qtd_salada)}
+          ${campo("es-sobremesa", "Sobremesas", 2, atual?.qtd_sobremesa)}
+          ${campo("es-suco-simples", "Suco simples", 2, atual?.qtd_suco_simples)}
+          ${campo("es-suco-natural", "Suco natural", 2, atual?.qtd_suco_natural)}
+          <div class="footnote" style="margin-top:-6px;">Suco simples + natural não deve passar de 2/dia (só existem 2 vagas de Suco na grade).</div>
+          <div class="field"><label>Observações</label><input type="text" id="es-obs" value="${escapeHtml(atual?.observacoes||"")}" placeholder="opcional"></div>
+          <div class="footnote" id="es-err" style="color:var(--critical);"></div>
+        </div>
+        <div class="modal-foot">
+          ${atual ? `<button class="btn danger" id="es-excluir" style="margin-right:auto;">Excluir estrutura</button>` : ""}
+          <button class="btn" id="es-cancel">Cancelar</button>
+          <button class="btn primary" id="es-salvar">Salvar</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById("es-close").onclick = () => root.innerHTML = "";
+  document.getElementById("es-cancel").onclick = () => root.innerHTML = "";
+  document.getElementById("es-ov").addEventListener("click", e => { if(e.target.id==="es-ov") root.innerHTML=""; });
+  if(atual){
+    document.getElementById("es-excluir").onclick = async () => {
+      if(!(await confirmDialog("Excluir a estrutura deste cardápio? O motor volta a preencher todas as vagas da grade, sem limite."))) return;
+      try{ await excluirEstruturaCardapio(grupo, num); root.innerHTML = ""; onSaved && onSaved(); }
+      catch(e){ showAlert("Erro ao excluir: " + (e.message || e.code || e)); }
+    };
+  }
+  document.getElementById("es-salvar").onclick = async () => {
+    const errEl = document.getElementById("es-err");
+    const lerQtd = (id, max) => {
+      const raw = document.getElementById(id).value;
+      if(raw === "") return { valor: null };
+      const n = parseInt(raw, 10);
+      if(!(n >= 0 && n <= max)) return { erro: true };
+      return { valor: n };
+    };
+    const guarnicao = lerQtd("es-guarnicao", 4), salada = lerQtd("es-salada", 4), sobremesa = lerQtd("es-sobremesa", 2);
+    const sucoSimples = lerQtd("es-suco-simples", 2), sucoNatural = lerQtd("es-suco-natural", 2);
+    if(guarnicao.erro || salada.erro || sobremesa.erro || sucoSimples.erro || sucoNatural.erro){ errEl.textContent = "Alguma quantidade está fora do limite físico da grade (veja ao lado de cada campo)."; return; }
+    if((sucoSimples.valor||0) + (sucoNatural.valor||0) > 2){ errEl.textContent = "Suco simples + natural não pode passar de 2/dia (só há 2 vagas de Suco na grade)."; return; }
+    try{
+      await salvarEstruturaCardapio(grupo, num, {
+        qtd_guarnicao: guarnicao.valor, qtd_salada: salada.valor, qtd_sobremesa: sobremesa.valor,
+        qtd_suco_simples: sucoSimples.valor, qtd_suco_natural: sucoNatural.valor,
+        observacoes: document.getElementById("es-obs").value.trim() || null,
+      });
       root.innerHTML = "";
       onSaved && onSaved();
     }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
