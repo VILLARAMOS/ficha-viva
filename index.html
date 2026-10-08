@@ -2040,6 +2040,24 @@ async function criarNovoCardapioNumero(grupo, label){
   return novo;
 }
 
+// Remove apenas o REGISTRO do número extra (cardapio_numeros_extra / cafe_config) — nunca apaga
+// o conteúdo já lançado em `cardapios`/`cafe_semanas` sob esse número, pra não arriscar derrubar
+// dado real (ex.: números de Refeição/Marmita compartilham a mesma tabela `cardapios`, então um
+// número "extra" mal cadastrado pode coincidir com conteúdo de outro grupo). Só disponível pra
+// números fora da faixa base (REFEICAO_NUMS/MARMITA_NUMS/CAFE_NUMS) — a faixa base nunca aparece
+// com esse botão.
+async function excluirNumeroCardapioExtra(grupo, num){
+  const nomeGrupo = grupo === 'cafe' ? 'café' : (grupo === 'marmita' ? 'marmita' : 'cardápio');
+  if(!(await confirmDialog(`Excluir o número "${escapeHtml(labelNumeroCardapio(grupo, num))}" da lista de ${nomeGrupo}? Isso remove só o registro do número — se já existir algum cardápio lançado sob ele, o conteúdo não é apagado, só deixa de aparecer aqui até o número ser recriado.`))) return;
+  let error;
+  if(grupo === 'cafe'){ ({ error } = await sb.from('cafe_config').delete().eq('cardapio_num', num)); }
+  else { ({ error } = await sb.from('cardapio_numeros_extra').delete().eq('grupo', grupo).eq('num', num)); }
+  if(error){ showAlert('Erro ao excluir número: ' + error.message); return; }
+  if(grupo === 'cafe') await loadCafeConfig(); else await loadCardapioNumerosExtra();
+  cardapioNumSel = null; cardapioSemanaSel = null;
+  renderCardapio();
+}
+
 /* ===================================================================== MOTOR DE SUGESTÃO DE CARDÁPIO
    Preenche o rascunho em memória (draftAlmoco) — nunca grava no banco sozinho, só quem clica
    "Salvar semana" grava. Refeição e Marmita usam o mesmo motor (mesmo índice de elegibilidade), Café
@@ -2463,6 +2481,7 @@ function renderCardapio(){
     <div class="menu-controls">
       <select id="card-num">${numerosPorGrupo.map(n => `<option value="${n}" ${n===cardapioNumSel?"selected":""}>${labelNumeroCardapio(grupo, n)}</option>`).join("")}</select>
       <button class="btn" id="btn-novo-cardapio" title="Criar novo número de ${grupo==='cafe'?'café':grupo==='marmita'?'marmita':'cardápio'}">+ Novo cardápio</button>
+      ${!(grupo==='cafe'?CAFE_NUMS:(grupo==='marmita'?MARMITA_NUMS:REFEICAO_NUMS)).includes(cardapioNumSel) ? `<button class="btn danger" id="btn-excluir-numero" title="Excluir este número (só remove o registro, não o conteúdo já lançado)">🗑 Excluir número</button>` : ""}
       <select id="card-semana">${semanasDisponiveis.map(s => `<option value="${s}" ${s===cardapioSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
       <button class="btn" id="btn-nova-semana" title="Criar nova semana para este cardápio">+ Nova semana</button>
       <div class="seg-toggle">
@@ -2486,6 +2505,8 @@ function renderCardapio(){
   content.querySelectorAll(".seg-toggle button").forEach(b => b.addEventListener("click", () => { cardapioTabSel = b.dataset.tab; cardapioNumSel = null; cardapioSemanaSel = null; cardapioSemanaNovaPendente = null; renderCardapio(); }));
 
   document.getElementById("btn-novo-cardapio").addEventListener("click", () => fluxoNovoCardapio(grupo));
+  const btnExcluirNumero = document.getElementById("btn-excluir-numero");
+  if(btnExcluirNumero) btnExcluirNumero.addEventListener("click", () => excluirNumeroCardapioExtra(grupo, cardapioNumSel));
   document.getElementById("btn-nova-semana").addEventListener("click", () => fluxoNovaSemana(grupo, cardapioNumSel));
   const btnSugerir = document.getElementById("btn-sugerir-semana");
   if(btnSugerir) btnSugerir.addEventListener("click", () => abrirSugestaoSemanaModal(grupo, cardapioNumSel, cardapioSemanaSel));
