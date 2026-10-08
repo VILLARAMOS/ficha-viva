@@ -2322,12 +2322,37 @@ function gerarSugestaoSemana(grupo, num, semana, modo /* 'vazios' | 'sobrescreve
   });
 
   // 2) Salada / Sobremesa — direto por grupo, mesmo sorteio ponderado por não-repetição. Respeita a
-  // quantidade/dia da estrutura (se houver) via slotsVazios — o resto da vaga fica em branco.
-  [["Salada","SALADA"], ["Sobremesa","SOBREMESA"]].forEach(([prefix, grp]) => {
-    diasParaProcessar.forEach(dia => slotsVazios(dia, prefix).forEach(s => {
-      preencherSlot(dia, s.ci, _indiceSugestaoAtual.porGrupo.get(grp) || [], grp);
-    }));
-  });
+  // quantidade/dia da estrutura (se houver) via slotsVazios — o resto da vaga fica em branco. Quando a
+  // estrutura define fichas fixas (salada_fixa_ids/sobremesa_fixa_ids — decisão de 08/10/2026, ex.:
+  // Premium = Alface+Tomate sempre e Fruta-RB sempre; Ultra Plus/Ultra Plus 2 = gelatina sempre), elas
+  // ocupam os primeiros slots (pela ordem Salada 1, 2... / Sobremesa 1, 2...) todo dia da formulação;
+  // só as vagas que sobrarem sorteiam como sempre. Sem fixo cadastrado, comportamento idêntico a antes.
+  function preencherCategoriaComFixos(prefix, grp, fixaIds){
+    const candidatosGrupo = _indiceSugestaoAtual.porGrupo.get(grp) || [];
+    const porId = new Map(candidatosGrupo.map(c => [c.id, c]));
+    diasParaProcessar.forEach(dia => {
+      const slots = slotsVazios(dia, prefix).slice().sort((a,b) =>
+        (categoriaOrdinal(draft[dia].itens[a.ci].categoria)||0) - (categoriaOrdinal(draft[dia].itens[b.ci].categoria)||0));
+      let idx = 0;
+      (fixaIds||[]).forEach(fichaId => {
+        if(idx >= slots.length) return;
+        const f = fichas.get(fichaId);
+        if(!f) return; // ficha fixa foi excluída/não existe mais — pula, vaga sorteia normal abaixo
+        const s = slots[idx]; idx++;
+        const cand = porId.get(fichaId);
+        const gram = cand ? cand.gramagemPadrao : null;
+        const custo = (cand && gram != null) ? cand.custoKg * gram : null;
+        draft[dia].itens[s.ci] = { categoria: draft[dia].itens[s.ci].categoria, nome: f.nome, ficha_id: fichaId, insumo_id: null, gramagem_kg: gram };
+        custoAcumuladoDia[dia] += (custo || 0);
+        stats.preenchidos++;
+      });
+      for(; idx < slots.length; idx++){
+        preencherSlot(dia, slots[idx].ci, candidatosGrupo, grp);
+      }
+    });
+  }
+  preencherCategoriaComFixos("Salada", "SALADA", estrutura ? estrutura.salada_fixa_ids : null);
+  preencherCategoriaComFixos("Sobremesa", "SOBREMESA", estrutura ? estrutura.sobremesa_fixa_ids : null);
 
   // 2b) Base — dividida em 08/10/2026: Base 1 sempre sorteia de BASE ARROZ, Base 2 sempre de BASE
   // FEIJÃO (pelo número ordinal da categoria), em vez de ambas saírem do mesmo pool — evita repetir
@@ -2730,6 +2755,8 @@ function montarPainelCmv(grupo, num, semana){
       estrutura.qtd_sobremesa!=null ? `${estrutura.qtd_sobremesa} sobremesa(s)/dia` : null,
       (estrutura.qtd_suco_simples!=null || estrutura.qtd_suco_natural!=null) ? `suco ${estrutura.qtd_suco_simples??0} simples + ${estrutura.qtd_suco_natural??0} natural/dia` : null,
       estrutura.gramagem_proteina_principal_g!=null ? `proteína principal ${estrutura.gramagem_proteina_principal_g}g (alvo)` : null,
+      (estrutura.salada_fixa_ids||[]).length ? `salada fixa: ${estrutura.salada_fixa_ids.map(id => fichas.get(id)?.nome || "?").join(" + ")}` : null,
+      (estrutura.sobremesa_fixa_ids||[]).length ? `sobremesa fixa: ${estrutura.sobremesa_fixa_ids.map(id => fichas.get(id)?.nome || "?").join(" + ")}` : null,
     ].filter(Boolean).join(" · ") : "";
     estHtml = `<div class="footnote" style="margin:-6px 0 2px;">Estrutura deste cardápio (vagas/dia que o motor preenche)${estrutura && resumo ? `: ${resumo}` : ": sem restrição — preenche todas as vagas da grade"}</div>
       <a href="#" id="card-editar-estrutura" class="footnote" style="display:inline-block; margin:-10px 0 14px;">Editar estrutura deste cardápio →</a>`;
