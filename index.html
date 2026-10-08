@@ -2019,8 +2019,18 @@ function numerosPorGrupoAtual(grupo){
     return [...CAFE_NUMS, ...extrasCafe.sort((a,b)=>a-b)];
   }
   const base = grupo === "marmita" ? MARMITA_NUMS : REFEICAO_NUMS;
-  const extras = cardapioNumsExtra.filter(e => e.grupo === grupo).map(e => e.num).sort((a,b)=>a-b);
-  return [...base, ...extras.filter(n => !base.includes(n))];
+  const extrasRows = cardapioNumsExtra.filter(e => e.grupo === grupo);
+  const extras = extrasRows.map(e => e.num).sort((a,b)=>a-b);
+  const todos = [...base, ...extras.filter(n => !base.includes(n))];
+  // ordem de exibição: números com "ordem" cadastrado (cardapio_numeros_extra.ordem) aparecem nessa
+  // ordem (ex.: Premium/Ultra/Ultra Plus/Ultra Plus 2/Leve, mesmo fora da sequência numérica); os
+  // demais (sem ordem definida) ficam depois, na ordem numérica de sempre.
+  const ordemPorNum = new Map(extrasRows.filter(e => e.ordem != null).map(e => [e.num, e.ordem]));
+  return todos.slice().sort((a, b) => {
+    const oa = ordemPorNum.has(a) ? ordemPorNum.get(a) : 1000 + a;
+    const ob = ordemPorNum.has(b) ? ordemPorNum.get(b) : 1000 + b;
+    return oa - ob;
+  });
 }
 async function criarNovoCardapioNumero(grupo, label){
   if(grupo === "cafe"){
