@@ -5579,6 +5579,89 @@ function carregarDraftVendas(contratoId, semana){
   return d;
 }
 
+/* ---- v133 (08/10/2026): painel Grupo/Matriz/Filial + preço manual/% + impressão por período —
+   mesAnteriorId e semanaDiaDaData/precoFixadoSemana são usados tanto pela grade de lançamento
+   quanto pela impressão nova (imprimirVendasPeriodo), por isso ficam como funções compartilhadas,
+   não fechadas dentro de renderTabLancamento. */
+function mesAnteriorId(mesId){
+  const idx = MESES_REFERENCIA.findIndex(m => m.id === mesId);
+  return idx > 0 ? MESES_REFERENCIA[idx-1].id : null;
+}
+// data (AAAA-MM-DD) -> {semana, dia} usando o mesmo marco (31/08/2026 = semana 1, segunda) de
+// dataDoDia/mesDoDia — permite escolher um período por datas reais (inclusive atravessando meses)
+// em vez de só por número de semana.
+function semanaDiaDaData(ymd){
+  const [y,m,d] = ymd.split("-").map(Number);
+  const diffDias = Math.round((Date.UTC(y, m-1, d) - CALENDARIO_BASE_MS) / 86400000);
+  if(diffDias < 0) return null;
+  return { semana: Math.floor(diffDias / 7) + 1, dia: DIAS_ORDEM[diffDias % 7] };
+}
+function datasEntre(iniYMD, fimYMD){
+  const out = [];
+  if(!iniYMD || !fimYMD || fimYMD < iniYMD) return out;
+  let d = new Date(iniYMD + "T00:00:00Z");
+  const fim = new Date(fimYMD + "T00:00:00Z");
+  while(d <= fim){ out.push(d.toISOString().slice(0,10)); d = new Date(d.getTime() + 86400000); }
+  return out;
+}
+// preço próprio já gravado no item (congelado num fechamento anterior) nessa semana, se houver —
+// mesma regra de precoItemVendaApurado, mas pesquisando o lançamento em vez de recebê-lo pronto.
+function precoFixadoSemana(contratoId, semana, produtoId){
+  for(const dia of DIAS_ORDEM){
+    const row = vendas.get(`${contratoId}|${semana}|${dia}`);
+    const it = (row?.itens || []).find(x => x.produto_id === produtoId);
+    if(it && it.preco_unitario != null) return it.preco_unitario;
+  }
+  return null;
+}
+
+let vendaPainelMesSel = null; // mês em questão do painel + tabela de clientes (topo da aba)
+let vendaMesSel = null;       // mês escolhido no cabeçalho da grade de lançamento (filtra o seletor de semana)
+let vendaAberto = false;      // se a grade de um cliente está expandida abaixo da tabela
+let draftPrecoUnitario = {};  // { [produto_id]: valor } — preço manual digitado nesta sessão de edição (semana aberta)
+
+/* ---- painel Grupo/Matriz/Filial da aba Vendas (mesmo padrão visual da v131 de Contratos: vn-unidade/
+   vn-grid/vn-card). "Custo do mês" é sempre PROJETADO (apurarPlanejadoContrato, mesmo motor do Painel
+   e de Contratos) — rotulado assim de propósito, pra não confundir com o Orçamento de compras real
+   nem com custo já realizado (que fica subapurado nos primeiros dias do mês). */
+function vendasPainelBloco(escopo, nome, mesId, almocoIdx, cafeIdx){
+  const lista = [...contratos.entries()].filter(([,c]) => escopo === "todos" || c.unidade === escopo);
+  const ativos = lista.filter(([,c]) => c.ativo).length;
+  const mesAnt = mesAnteriorId(mesId);
+  const faturadoAnterior = mesAnt ? (apurarResumoMes(mesAnt, escopo, almocoIdx, cafeIdx)?.receita || 0) : 0;
+  let projReceita = 0, projCusto = 0;
+  if(mesId) lista.forEach(([id,ct]) => {
+    const pl = apurarPlanejadoContrato(id, ct, mesId, almocoIdx, cafeIdx);
+    projReceita += pl.receita; projCusto += pl.custo;
+  });
+  return { nome, escopo, ativos, faturadoAnterior, projReceita, projCusto };
+}
+function vendasPainelBlocoHtml(b){
+  const subEscopo = b.escopo === "todos" ? "Matriz + Filial" : (b.escopo === "matriz" ? "Contratos da Matriz" : "Contratos da Filial");
+  return `<div class="vn-unidade">
+    <div class="vn-unidade-head"><h3>${escapeHtml(b.nome)}</h3><span class="vn-unidade-chip">${subEscopo}</span></div>
+    <div class="vn-grid" style="grid-template-columns:repeat(4, 1fr);">
+      <div class="vn-card"><div class="vn-label">Clientes ativos</div><div class="vn-value">${b.ativos}</div></div>
+      <div class="vn-card"><div class="vn-label">Faturado mês anterior</div><div class="vn-value">${fmtMoney(b.faturadoAnterior)}</div></div>
+      <div class="vn-card"><div class="vn-label">Projeção do mês</div><div class="vn-value">${fmtMoney(b.projReceita)}</div></div>
+      <div class="vn-card"><div class="vn-label">Custo projetado do mês</div><div class="vn-value">${fmtMoney(b.projCusto)}</div></div>
+    </div>
+  </div>`;
+}
+function linhaClienteVenda(id, c, mesId, almocoIdx, cafeIdx){
+  const mesAnt = mesAnteriorId(mesId);
+  const anterior = mesAnt ? apurarContrato(id, c, mesAnt, almocoIdx, cafeIdx).receita : 0;
+  const pl = mesId ? apurarPlanejadoContrato(id, c, mesId, almocoIdx, cafeIdx) : null;
+  const aberto = vendaAberto && vendaContratoSel === id;
+  return `<tr>
+    <td class="name-cell">${escapeHtml(c.nome_cliente)}${!c.ativo ? ' <span class="chip neutral">inativo</span>' : ''}</td>
+    <td class="num-cell">${fmtMoney(anterior)}</td>
+    <td class="num-cell">${pl ? fmtMoney(pl.receita) : "—"}</td>
+    <td class="num-cell">${pl ? fmtMoney(pl.custo) : "—"}</td>
+    <td style="text-align:right;"><button type="button" class="btn small ghost" data-abrir-venda="${id}">${aberto ? "fechar" : "abrir"}</button></td>
+  </tr>`;
+}
+
 function renderVendas(){
   document.getElementById("page-title").textContent = "Vendas";
   document.getElementById("page-desc").textContent = "Lançamento de vendas realizadas por contrato/semana — quantidade vendida por item, custo e receita calculados";
@@ -5601,22 +5684,116 @@ function renderVendas(){
   else renderTabLancamento();
 }
 
+/* ---- v133: painel + tabela de clientes (topo, sempre visível) — clicar em "abrir" expande a grade
+   de lançamento abaixo, pro cliente escolhido (ver renderGradeLancamento). Mesmo padrão da v131 de
+   Contratos: cards Grupo/Matriz/Filial + tabelas Matriz/Filial/Sem unidade. */
 function renderTabLancamento(){
   const body = document.getElementById("vd-body");
-  const contratosAtivos = [...contratos.entries()].filter(([,c]) => c.ativo).sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)));
-  if(!contratosAtivos.length){
-    body.innerHTML = `<div class="empty-state">Nenhum contrato ativo cadastrado ainda.</div>`;
+  const todosContratos = [...contratos.entries()].sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)));
+  if(!todosContratos.length){
+    body.innerHTML = `<div class="empty-state">Nenhum contrato cadastrado ainda.</div>`;
     return;
   }
-  if(vendaContratoSel === null || !contratosAtivos.some(([id]) => id === vendaContratoSel)) vendaContratoSel = contratosAtivos[0][0];
 
-  const semanas = semanasDisponiveisVendas();
-  if(vendaSemanaSel === null || !semanas.includes(vendaSemanaSel)) vendaSemanaSel = semanas[0];
+  const almocoIdx = indiceCardapioAlmoco(), cafeIdx = indiceCafeSemana();
+  const meses = MESES_REFERENCIA;
+  if(vendaPainelMesSel === null || !meses.some(m => m.id === vendaPainelMesSel)) vendaPainelMesSel = meses.some(m => m.id === mesAtualId()) ? mesAtualId() : (meses[0] ? meses[0].id : null);
+
+  const blocos = [
+    vendasPainelBloco("todos", "Grupo", vendaPainelMesSel, almocoIdx, cafeIdx),
+    vendasPainelBloco("matriz", "Matriz", vendaPainelMesSel, almocoIdx, cafeIdx),
+    vendasPainelBloco("filial", "Filial", vendaPainelMesSel, almocoIdx, cafeIdx),
+  ];
+  const semUnidade = todosContratos.filter(([,c]) => !c.unidade);
+
+  body.innerHTML = `
+    <div class="menu-controls">
+      <span class="footnote" style="align-self:center;">Painel e tabela de clientes do mês:</span>
+      <select id="vp-mes">${meses.map(m => `<option value="${m.id}" ${m.id===vendaPainelMesSel?"selected":""}>${escapeHtml(m.nome)}</option>`).join("")}</select>
+    </div>
+    <div class="vn-wrap" style="margin-bottom:18px;">
+      ${blocos.map(vendasPainelBlocoHtml).join("")}
+    </div>
+    ${["matriz","filial"].map(un => `
+    <div class="panel" style="margin-bottom:16px;">
+      <div class="panel-head"><h3>${un==="matriz"?"Matriz":"Filial"}</h3></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Cliente</th><th style="text-align:right;">Faturado mês anterior</th><th style="text-align:right;">Projeção do mês</th><th style="text-align:right;">Custo projetado do mês</th><th></th></tr></thead>
+          <tbody id="vp-tbody-${un}"></tbody>
+        </table>
+      </div>
+    </div>`).join("")}
+    ${semUnidade.length ? `
+    <div class="panel" style="margin-bottom:16px;">
+      <div class="panel-head"><h3>Sem unidade definida</h3></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Cliente</th><th style="text-align:right;">Faturado mês anterior</th><th style="text-align:right;">Projeção do mês</th><th style="text-align:right;">Custo projetado do mês</th><th></th></tr></thead>
+          <tbody id="vp-tbody-sem"></tbody>
+        </table>
+      </div>
+    </div>` : ""}
+    <div class="footnote" style="margin-top:4px;">"Custo projetado do mês" usa o mesmo motor de projeção do Painel/Contratos (cardápio planejado × preço), não o custo já realizado nem o Orçamento de compras real — para o que já foi efetivamente apurado, veja Faturamento apurado.</div>
+    <div id="vd-grade-wrap" style="margin-top:18px;"></div>
+  `;
+
+  function atualizarTabelasClientes(){
+    const porUnidade = { matriz: [], filial: [], sem: [] };
+    todosContratos.forEach(r => { (porUnidade[r[1].unidade === "filial" ? "filial" : r[1].unidade === "matriz" ? "matriz" : "sem"]).push(r); });
+    ["matriz","filial"].forEach(un => {
+      document.getElementById(`vp-tbody-${un}`).innerHTML = porUnidade[un].map(([id,c]) => linhaClienteVenda(id, c, vendaPainelMesSel, almocoIdx, cafeIdx)).join("") || `<tr><td colspan="5" class="empty-state">Nenhum contrato.</td></tr>`;
+    });
+    const tbodySem = document.getElementById("vp-tbody-sem");
+    if(tbodySem) tbodySem.innerHTML = porUnidade.sem.map(([id,c]) => linhaClienteVenda(id, c, vendaPainelMesSel, almocoIdx, cafeIdx)).join("");
+    body.querySelectorAll("[data-abrir-venda]").forEach(b => b.addEventListener("click", () => {
+      const id = b.dataset.abrirVenda;
+      if(vendaAberto && vendaContratoSel === id){ vendaAberto = false; }
+      else { vendaContratoSel = id; vendaAberto = true; vendaMesSel = vendaPainelMesSel; vendaSemanaSel = null; }
+      renderTabLancamento();
+    }));
+  }
+  atualizarTabelasClientes();
+
+  document.getElementById("vp-mes").addEventListener("change", e => { vendaPainelMesSel = e.target.value; renderTabLancamento(); });
+
+  if(vendaAberto && vendaContratoSel && contratos.has(vendaContratoSel)) renderGradeLancamento();
+}
+
+/* ---- grade de lançamento de um cliente — abre abaixo da tabela de clientes quando "abrir" é
+   clicado. vendaMesSel filtra quais semanas aparecem no seletor (semana continua sendo a unidade de
+   fechamento/trava/concorrência — isso aqui não muda, só facilita achar a semana certa por mês). */
+function renderGradeLancamento(){
+  const wrap = document.getElementById("vd-grade-wrap");
+  const cliente = contratos.get(vendaContratoSel);
+  const meses = MESES_REFERENCIA;
+  if(vendaMesSel === null || !meses.some(m => m.id === vendaMesSel)) vendaMesSel = mesAtualId();
+  const semanasDoSistema = semanasDisponiveisVendas();
+  const mesObj = meses.find(m => m.id === vendaMesSel);
+  const semanasDoMes = (mesObj ? mesObj.semanas : []).filter(s => semanasDoSistema.includes(s));
+  if(vendaSemanaSel === null || !semanasDoMes.includes(vendaSemanaSel)) vendaSemanaSel = semanasDoMes[0] ?? null;
+
+  const cabecalho = `
+    <div class="panel-head"><h3>Lançamento — ${escapeHtml(cliente?.nome_cliente || "")}</h3>
+      <button type="button" class="btn ghost small" id="vd-fechar-grade">fechar</button>
+    </div>
+    <div class="menu-controls">
+      <select id="vd-mes">${meses.map(m => `<option value="${m.id}" ${m.id===vendaMesSel?"selected":""}>${escapeHtml(m.nome)}</option>`).join("")}</select>
+      ${vendaSemanaSel!=null ? `<select id="vd-semana">${semanasDoMes.map(s => `<option value="${s}" ${s===vendaSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>` : ""}
+    </div>`;
+
+  if(vendaSemanaSel === null){
+    wrap.innerHTML = `<div class="panel">${cabecalho}<div class="empty-state">Nenhuma semana com cardápio cadastrado em ${escapeHtml(mesObj?mesObj.nome:"")} ainda — cadastre o cardápio desse mês em Cardápios antes de lançar vendas nele.</div></div>`;
+    document.getElementById("vd-fechar-grade").addEventListener("click", () => { vendaAberto = false; renderTabLancamento(); });
+    document.getElementById("vd-mes").addEventListener("change", e => { vendaMesSel = e.target.value; vendaSemanaSel = null; renderGradeLancamento(); });
+    return;
+  }
 
   draftVendas = carregarDraftVendas(vendaContratoSel, vendaSemanaSel);
   const ajusteExistente = ajustesMinimo.get(`${vendaContratoSel}|${vendaSemanaSel}`);
   draftAjusteMinimo = {};
   (ajusteExistente?.itens || []).forEach(it => { if(it.produto_id) draftAjusteMinimo[it.produto_id] = it.quantidade; });
+  draftPrecoUnitario = {}; // preço manual digitado nesta sessão — reseta ao trocar de cliente/semana
 
   const fechadoCliente = clienteFechadoNaSemana(vendaContratoSel, vendaSemanaSel);
   const fechadoGeral = semanaGeralFechada(vendaSemanaSel);
@@ -5640,16 +5817,15 @@ function renderTabLancamento(){
     return "";
   }
 
-  body.innerHTML = `
-    <div class="menu-controls">
-      <select id="vd-contrato">${contratosAtivos.map(([id,c]) => `<option value="${id}" ${id===vendaContratoSel?"selected":""}>${escapeHtml(c.nome_cliente)}</option>`).join("")}</select>
-      <select id="vd-semana">${semanas.map(s => `<option value="${s}" ${s===vendaSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
-      ${!travado ? `<button type="button" class="btn ghost" id="vd-fechar-cliente">🔒 Fechar só este cliente</button>` : ""}
-      <button class="btn primary" id="vd-salvar" style="margin-left:auto;" ${travado ? "disabled" : ""}>Salvar semana</button>
-    </div>
-    ${bannerHtml()}
-    <div class="footnote" style="margin:10px 0;">Itens com custo <strong>"—"</strong> ainda não têm base de custo cadastrada (ex.: itens "fixo" do catálogo sem <code>custo_unitario</code> preenchido) — a margem desses itens fica subestimada até o custo ser preenchido.</div>
-    <div class="panel">
+  wrap.innerHTML = `
+    <div class="panel" style="margin-bottom:16px;">
+      ${cabecalho}
+      ${bannerHtml()}
+      <div class="menu-controls">
+        ${!travado ? `<button type="button" class="btn ghost" id="vd-fechar-cliente">🔒 Fechar só este cliente</button>` : ""}
+        <button class="btn primary" id="vd-salvar" style="margin-left:auto;" ${travado ? "disabled" : ""}>Salvar semana</button>
+      </div>
+      <div class="footnote" style="margin:10px 0;">Itens com custo <strong>"—"</strong> ainda não têm base de custo cadastrada (ex.: itens "fixo" do catálogo sem <code>custo_unitario</code> preenchido) — a margem desses itens fica subestimada até o custo ser preenchido. Preço: digite direto ou use o campo "%" para recalcular a partir do preço do contrato (Enter/sair do campo aplica); vale só pra este item, nesta semana.</div>
       <div class="table-wrap">
         <table class="cardapio-table">
           <thead><tr>
@@ -5665,7 +5841,7 @@ function renderTabLancamento(){
         </table>
       </div>
     </div>
-    <div class="panel">
+    <div class="panel" style="margin-bottom:16px;">
       <div class="panel-head"><h3>Ajuste de mínimo da semana</h3><span class="hint">cliente contratou X/dia, enviamos menos — a diferença fatura, sem gerar custo/compra/PCP</span></div>
       <div class="table-wrap">
         <table>
@@ -5674,40 +5850,53 @@ function renderTabLancamento(){
         </table>
       </div>
     </div>
+    <div class="panel">
+      <div class="panel-head"><h3>Imprimir (espelho para NF)</h3></div>
+      <div class="footnote" style="margin:0 0 10px;">Escolha o período (semana/quinzena/mês aberto, ou datas livres) e, se quiser, desmarque dias que não entram. Ajuste de mínimo só entra se a semana inteira dele estiver selecionada.</div>
+      <div class="menu-controls" style="flex-wrap:wrap;">
+        <button type="button" class="btn ghost" id="vd-pr-semana">Semana aberta</button>
+        <button type="button" class="btn ghost" id="vd-pr-quinzena">Quinzena (14 dias)</button>
+        <button type="button" class="btn ghost" id="vd-pr-mes">Mês aberto</button>
+        <input type="date" id="vd-pr-ini">
+        <span class="footnote">a</span>
+        <input type="date" id="vd-pr-fim">
+        <button type="button" class="btn primary" id="vd-pr-ir" style="margin-left:auto;">🖨️ Imprimir</button>
+      </div>
+      <div id="vd-pr-dias" style="margin-top:10px;"></div>
+    </div>
   `;
 
   const almocoIdx = indiceCardapioAlmoco();
   const cafeIdx = indiceCafeSemana();
-  const contrato = contratos.get(vendaContratoSel);
+  const contrato = cliente;
   const itens = itensDoContratoVenda(vendaContratoSel);
+  const itensPorProduto = new Map(itens.filter(i => i.produto_id).map(i => [i.produto_id, i]));
 
   function qtd(produtoId, dia){
     const v = draftVendas[dia]?.[produtoId];
     return (v === undefined || v === null) ? null : Number(v);
   }
-  // preço congelado (se esta semana já foi fechada alguma vez e este item já tinha preço gravado) —
-  // sempre prevalece sobre o preço ao vivo do contrato, pra não mudar faturamento já fechado.
-  function precoFixado(produtoId){
-    for(const dia of DIAS_ORDEM){
-      const row = vendas.get(`${vendaContratoSel}|${vendaSemanaSel}|${dia}`);
-      const it = (row?.itens || []).find(x => x.produto_id === produtoId);
-      if(it && it.preco_unitario != null) return it.preco_unitario;
-    }
-    return null;
+  // preço efetivo de exibição/cálculo: manual (digitado agora) > congelado (já gravado num
+  // fechamento anterior) > preço ao vivo do contrato — nessa ordem de prioridade.
+  function precoInfo(produtoId){
+    const congelado = precoFixadoSemana(vendaContratoSel, vendaSemanaSel, produtoId);
+    const manual = draftPrecoUnitario[produtoId];
+    const item = itensPorProduto.get(produtoId);
+    const efetivo = (manual !== undefined && manual !== null && manual !== "") ? Number(manual) : (congelado ?? (item ? item.preco_venda : null));
+    return { congelado, manual, efetivo };
   }
 
   function totaisItem(item){
     let receita = 0, custo = 0, temCusto = false;
-    const precoCongelado = item.produto_id ? precoFixado(item.produto_id) : null;
-    const precoEfetivo = precoCongelado ?? item.preco_venda;
+    const { congelado, efetivo } = item.produto_id ? precoInfo(item.produto_id) : { congelado:null, efetivo:item.preco_venda };
     DIAS_ORDEM.forEach(dia => {
       const q = qtd(item.produto_id, dia);
       if(!q) return;
-      if(precoEfetivo != null) receita += q * precoEfetivo;
+      if(efetivo != null) receita += q * efetivo;
       const cu = item.produto_id ? custoUnidadeItemVenda(almocoIdx, cafeIdx, item.produto_id, contrato, vendaContratoSel, vendaSemanaSel, dia) : null;
       if(cu != null){ custo += q * cu; temCusto = true; }
     });
-    return { receita, custo, temCusto, precoCongelado, precoEfetivo };
+    return { receita, custo, temCusto, precoCongelado: congelado, precoEfetivo: efetivo };
   }
 
   function redraw(){
@@ -5716,10 +5905,18 @@ function renderTabLancamento(){
     tbody.innerHTML = itens.map(item => {
       const { receita, custo, temCusto, precoCongelado, precoEfetivo } = totaisItem(item);
       totReceita += receita; totCusto += custo;
+      const podeEditar = item.produto_id && !travado;
+      const difereDoContrato = item.produto_id && precoEfetivo != null && item.preco_venda != null && Math.abs(precoEfetivo - item.preco_venda) > 0.004;
       return `<tr>
         <td class="cat-col">${escapeHtml(item.nome)}</td>
-        <td class="num-cell">${fmtMoney(precoEfetivo)}${precoCongelado!=null?` <span class="chip neutral" title="preço congelado — não acompanha mais o contrato">🔒</span>`:""}</td>
-        ${DIAS_ORDEM.map(dia => `<td class="cel"><input type="number" step="1" min="0" class="cel-gram vd-qtd" data-produto="${escapeHtml(item.produto_id||"")}" data-dia="${dia}" value="${qtd(item.produto_id, dia) ?? ""}" ${(item.produto_id && !travado) ? "" : "disabled"}></td>`).join("")}
+        <td class="num-cell">
+          <div style="display:flex; gap:4px; justify-content:flex-end; align-items:center;">
+            <input type="number" step="0.01" min="0" class="vd-preco-input" data-produto="${escapeHtml(item.produto_id||"")}" value="${precoEfetivo ?? ""}" style="width:76px; text-align:right;" ${podeEditar?"":"disabled"}>
+            <input type="number" step="0.1" class="vd-preco-pct" data-produto="${escapeHtml(item.produto_id||"")}" placeholder="%" title="ajuste rápido em %, sobre o preço do contrato" style="width:46px; text-align:right;" ${podeEditar?"":"disabled"}>
+          </div>
+          ${precoCongelado!=null?`<div class="footnote">🔒 congelado</div>`:(difereDoContrato?`<div class="footnote">contrato ${fmtMoney(item.preco_venda)}</div>`:"")}
+        </td>
+        ${DIAS_ORDEM.map(dia => `<td class="cel"><input type="number" step="1" min="0" class="cel-gram vd-qtd" data-produto="${escapeHtml(item.produto_id||"")}" data-dia="${dia}" value="${qtd(item.produto_id, dia) ?? ""}" ${podeEditar ? "" : "disabled"}></td>`).join("")}
         <td class="num-cell">${fmtMoney(receita)}</td>
         <td class="num-cell">${temCusto || custo ? fmtMoney(custo) : "—"}</td>
         <td class="num-cell">${temCusto || custo ? fmtMoney(receita - custo) : "—"}</td>
@@ -5734,15 +5931,39 @@ function renderTabLancamento(){
       <td class="num-cell">${fmtMoney(totReceita - totCusto)}</td>
     </tr>`;
 
-    tbody.querySelectorAll(".vd-qtd").forEach(inp => inp.addEventListener("input", () => {
-      const produtoId = inp.dataset.produto, dia = inp.dataset.dia;
-      if(!produtoId) return;
-      const val = inp.value === "" ? null : Number(inp.value);
-      if(!draftVendas[dia]) draftVendas[dia] = {};
-      if(val === null) delete draftVendas[dia][produtoId]; else draftVendas[dia][produtoId] = val;
+    // Enter pula para o próximo item da mesma coluna (mesmo dia) — decisão de 08/10/2026; pedido
+    // novo, substitui o "Enter pro lado" do sistema antigo (v99), que não tinha sido portado pra cá.
+    tbody.querySelectorAll(".vd-qtd").forEach(inp => {
+      inp.addEventListener("input", () => {
+        const produtoId = inp.dataset.produto, dia = inp.dataset.dia;
+        if(!produtoId) return;
+        const val = inp.value === "" ? null : Number(inp.value);
+        if(!draftVendas[dia]) draftVendas[dia] = {};
+        if(val === null) delete draftVendas[dia][produtoId]; else draftVendas[dia][produtoId] = val;
+        redraw();
+        document.querySelector(`.vd-qtd[data-produto="${CSS.escape(produtoId)}"][data-dia="${dia}"]`)?.focus();
+      });
+      inp.addEventListener("keydown", e => {
+        if(e.key !== "Enter") return;
+        e.preventDefault();
+        const dia = inp.dataset.dia;
+        const coluna = [...tbody.querySelectorAll(`.vd-qtd[data-dia="${dia}"]`)];
+        const idx = coluna.indexOf(inp);
+        if(idx >= 0 && idx < coluna.length - 1){ const prox = coluna[idx+1]; prox.focus(); prox.select?.(); }
+      });
+    });
+    tbody.querySelectorAll(".vd-preco-input").forEach(inp => inp.addEventListener("input", () => {
+      const produtoId = inp.dataset.produto;
+      draftPrecoUnitario[produtoId] = inp.value === "" ? null : Number(inp.value);
       redraw();
-      // mantém o foco no campo editado após o redraw
-      document.querySelector(`.vd-qtd[data-produto="${CSS.escape(produtoId)}"][data-dia="${dia}"]`)?.focus();
+      document.querySelector(`.vd-preco-input[data-produto="${CSS.escape(produtoId)}"]`)?.focus();
+    }));
+    tbody.querySelectorAll(".vd-preco-pct").forEach(inp => inp.addEventListener("change", () => {
+      const produtoId = inp.dataset.produto;
+      const pct = inp.value === "" ? null : Number(inp.value);
+      const item = itensPorProduto.get(produtoId);
+      if(pct != null && item && item.preco_venda != null) draftPrecoUnitario[produtoId] = Math.round(item.preco_venda * (1 + pct/100) * 100) / 100;
+      redraw();
     }));
   }
   redraw();
@@ -5769,24 +5990,33 @@ function renderTabLancamento(){
   }
   redrawAjuste();
 
-  document.getElementById("vd-contrato").addEventListener("change", e => { vendaContratoSel = e.target.value; renderTabLancamento(); });
-  document.getElementById("vd-semana").addEventListener("change", e => { vendaSemanaSel = Number(e.target.value); renderTabLancamento(); });
-  document.getElementById("vd-fechar-cliente")?.addEventListener("click", () => fecharSemanaClienteAction(vendaContratoSel, vendaSemanaSel, renderTabLancamento));
-  document.getElementById("vd-reabrir-cliente")?.addEventListener("click", () => reabrirSemanaClienteAction(vendaContratoSel, vendaSemanaSel, renderTabLancamento));
-  document.getElementById("vd-reabrir-geral")?.addEventListener("click", () => reabrirSemanaGeralAction(vendaSemanaSel, renderTabLancamento));
+  document.getElementById("vd-fechar-grade").addEventListener("click", () => { vendaAberto = false; renderTabLancamento(); });
+  document.getElementById("vd-mes").addEventListener("change", e => { vendaMesSel = e.target.value; vendaSemanaSel = null; renderGradeLancamento(); });
+  document.getElementById("vd-semana").addEventListener("change", e => { vendaSemanaSel = Number(e.target.value); renderGradeLancamento(); });
+  document.getElementById("vd-fechar-cliente")?.addEventListener("click", () => fecharSemanaClienteAction(vendaContratoSel, vendaSemanaSel, renderGradeLancamento));
+  document.getElementById("vd-reabrir-cliente")?.addEventListener("click", () => reabrirSemanaClienteAction(vendaContratoSel, vendaSemanaSel, renderGradeLancamento));
+  document.getElementById("vd-reabrir-geral")?.addEventListener("click", () => reabrirSemanaGeralAction(vendaSemanaSel, renderGradeLancamento));
 
   document.getElementById("vd-salvar").addEventListener("click", async () => {
     const btn = document.getElementById("vd-salvar");
     btn.disabled = true; btn.textContent = "Salvando…";
     try{
-      // preserva o preco_unitario já congelado de uma reabertura anterior — a troca de quantidade
-      // não pode "descongelar" um item sem querer.
+      // preserva o preco_unitario já congelado de uma reabertura anterior quando não há edição manual
+      // nova — a troca de quantidade sozinha não pode "descongelar" um item sem querer. Preço manual
+      // só grava quando difere do preço do contrato (mesma regra de sempre: igual ao contrato = sem
+      // preço próprio, continua acompanhando o contrato ao vivo).
       const montarItensDoDia = dia => {
         const existentes = new Map((vendas.get(`${vendaContratoSel}|${vendaSemanaSel}|${dia}`)?.itens || []).map(it => [it.produto_id, it]));
         return Object.entries(draftVendas[dia] || {}).map(([produto_id, quantidade]) => {
           const ex = existentes.get(produto_id);
           const item = { produto_id, quantidade };
-          if(ex && ex.preco_unitario != null) item.preco_unitario = ex.preco_unitario;
+          const manual = draftPrecoUnitario[produto_id];
+          const itemContrato = itensPorProduto.get(produto_id);
+          if(manual !== undefined && manual !== null && itemContrato && itemContrato.preco_venda != null && Math.abs(Number(manual) - itemContrato.preco_venda) > 0.004){
+            item.preco_unitario = Number(manual);
+          } else if(ex && ex.preco_unitario != null){
+            item.preco_unitario = ex.preco_unitario;
+          }
           return item;
         });
       };
@@ -5804,15 +6034,142 @@ function renderTabLancamento(){
         if(msg.includes("VERSAO_CONFLITO")) showAlert("Alguém salvou esta semana enquanto você editava. A tela recarregou com os dados mais recentes — refaça seu lançamento.");
         else if(msg.includes("SEMANA_FECHADA")) showAlert("Esta semana está fechada — não é possível salvar. Reabra antes de editar.");
         else showAlert("Erro ao salvar: " + msg);
-        renderTabLancamento();
+        renderGradeLancamento();
         return;
       }
       await Promise.all([loadVendas(), loadAjustesMinimo(), loadVendasSemanaEstado()]);
       showAlert("Semana salva.");
-      renderTabLancamento();
+      renderGradeLancamento();
     }catch(e){ showAlert("Erro ao salvar: " + (e.message || e.code || e)); }
     finally{ btn.disabled = false; btn.textContent = "Salvar semana"; }
   });
+
+  /* ---- impressão por período (espelho para NF) — v133, construída do zero: o protótipo novo
+     (GitHub Pages + Supabase) ainda não tinha nenhuma impressão em Vendas; o que existia (v114/v119)
+     ficou só no sistema antigo (Firestore), não foi portado. */
+  function ymdLocal(date){ return date.toISOString().slice(0,10); }
+  function setPeriodo(iniYMD, fimYMD){
+    document.getElementById("vd-pr-ini").value = iniYMD;
+    document.getElementById("vd-pr-fim").value = fimYMD;
+    atualizarDiasCheckbox();
+  }
+  function atualizarDiasCheckbox(){
+    const ini = document.getElementById("vd-pr-ini").value, fim = document.getElementById("vd-pr-fim").value;
+    const datas = datasEntre(ini, fim);
+    const host = document.getElementById("vd-pr-dias");
+    if(!datas.length){ host.innerHTML = `<div class="footnote">Escolha um período válido (início até o fim).</div>`; return; }
+    if(datas.length > 62){ host.innerHTML = `<div class="footnote" style="color:var(--critical);">Período muito longo (máx. ~2 meses por impressão) — estreite as datas.</div>`; return; }
+    host.innerHTML = datas.map(ymd => {
+      const [y,m,d] = ymd.split("-");
+      return `<label style="display:inline-flex; align-items:center; gap:4px; margin:0 10px 6px 0; font-size:12.5px;"><input type="checkbox" class="vd-pr-dia" data-ymd="${ymd}" checked> ${d}/${m}</label>`;
+    }).join("");
+  }
+  setPeriodo(ymdLocal(dataDoDia(vendaSemanaSel, "SEGUNDA")), ymdLocal(dataDoDia(vendaSemanaSel, "DOMINGO")));
+  document.getElementById("vd-pr-semana").addEventListener("click", () => setPeriodo(ymdLocal(dataDoDia(vendaSemanaSel, "SEGUNDA")), ymdLocal(dataDoDia(vendaSemanaSel, "DOMINGO"))));
+  document.getElementById("vd-pr-quinzena").addEventListener("click", () => {
+    const ini = dataDoDia(vendaSemanaSel, "SEGUNDA");
+    setPeriodo(ymdLocal(ini), ymdLocal(new Date(ini.getTime() + 13*86400000)));
+  });
+  document.getElementById("vd-pr-mes").addEventListener("click", () => {
+    const [y,m] = vendaMesSel.split("-").map(Number);
+    const ultimoDia = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    setPeriodo(`${vendaMesSel}-01`, `${vendaMesSel}-${String(ultimoDia).padStart(2,"0")}`);
+  });
+  document.getElementById("vd-pr-ini").addEventListener("change", atualizarDiasCheckbox);
+  document.getElementById("vd-pr-fim").addEventListener("change", atualizarDiasCheckbox);
+  document.getElementById("vd-pr-ir").addEventListener("click", () => {
+    const ymds = [...document.querySelectorAll(".vd-pr-dia:checked")].map(c => c.dataset.ymd);
+    if(!ymds.length){ showAlert("Selecione ao menos um dia para imprimir."); return; }
+    imprimirVendasPeriodo(vendaContratoSel, ymds);
+  });
+}
+
+/* ---- impressão por período — espelho para emissão de NF. Soma Enviado/Faturado por item ao longo
+   de um conjunto arbitrário de dias (que pode atravessar semanas e meses); ajuste de mínimo só entra
+   para uma semana cujos 7 dias estejam todos no conjunto selecionado (ele é "da semana inteira" por
+   natureza — contar só parte dele seria inventar um número). */
+function imprimirVendasPeriodo(contratoId, ymds){
+  const ct = contratos.get(contratoId);
+  if(!ct){ showAlert("Contrato não encontrado."); return; }
+  const celulas = ymds.map(ymd => ({ ymd, ...semanaDiaDaData(ymd) })).filter(c => c.semana).sort((a,b) => a.ymd.localeCompare(b.ymd));
+  if(!celulas.length){ showAlert("Nenhuma data válida selecionada."); return; }
+
+  const semanasSelecionadas = [...new Set(celulas.map(c => c.semana))];
+  const semanasCompletas = semanasSelecionadas.filter(s => DIAS_ORDEM.every(d => celulas.some(c => c.semana === s && c.dia === d)));
+
+  const itens = itensDoContratoVenda(contratoId).filter(it => it.produto_id);
+  let totalGeral = 0;
+  const linhas = itens.map(item => {
+    let enviado = 0, valorEnviado = 0;
+    celulas.forEach(c => {
+      const row = vendas.get(`${contratoId}|${c.semana}|${c.dia}`);
+      const it = (row?.itens || []).find(x => x.produto_id === item.produto_id);
+      if(it && it.quantidade){
+        const preco = precoItemVendaApurado(item.produto_id, contratoId, it.preco_unitario);
+        enviado += it.quantidade;
+        if(preco != null) valorEnviado += it.quantidade * preco;
+      }
+    });
+    let ajuste = 0, valorAjuste = 0;
+    semanasCompletas.forEach(s => {
+      const aj = ajustesMinimo.get(`${contratoId}|${s}`);
+      const a = (aj?.itens || []).find(x => x.produto_id === item.produto_id);
+      if(a && a.quantidade){
+        const preco = precoItemVendaApurado(item.produto_id, contratoId);
+        ajuste += a.quantidade;
+        if(preco != null) valorAjuste += a.quantidade * preco;
+      }
+    });
+    const faturado = enviado + ajuste;
+    const valor = valorEnviado + valorAjuste;
+    totalGeral += valor;
+    return { nome: item.nome, enviado, ajuste, faturado, valor, precoUnit: faturado > 0 ? valor/faturado : item.preco_venda };
+  }).filter(l => l.enviado || l.ajuste);
+
+  const semanasParciais = semanasSelecionadas.filter(s => !semanasCompletas.includes(s));
+  const periodoTxt = celulas.length === 1 ? fmtDataCompleta(dataDoDia(celulas[0].semana, celulas[0].dia)) : `${fmtDataCompleta(dataDoDia(celulas[0].semana, celulas[0].dia))} a ${fmtDataCompleta(dataDoDia(celulas[celulas.length-1].semana, celulas[celulas.length-1].dia))}`;
+
+  const linhasHtml = linhas.map(l => `<tr>
+    <td>${escapeHtml(l.nome)}</td>
+    <td class="num">${l.enviado}</td>
+    <td class="num">${l.ajuste || "—"}</td>
+    <td class="num destaque">${l.faturado}</td>
+    <td class="num">${fmtMoney(l.precoUnit)}</td>
+    <td class="num destaque">${fmtMoney(l.valor)}</td>
+  </tr>`).join("") || `<tr><td colspan="6" class="vazio">Nenhum item faturado neste período.</td></tr>`;
+
+  const html = `<!doctype html><html><head><meta charset="utf-8"><title>Vendas — ${escapeHtml(ct.nome_cliente)} — ${escapeHtml(periodoTxt)}</title>
+  <style>
+    body{font-family:Arial,Helvetica,sans-serif; color:#111; margin:32px; font-size:13.5px;}
+    h1{font-size:19px; margin:0 0 4px;}
+    .meta{color:#555; font-size:12.5px; margin-bottom:18px;}
+    table{width:100%; border-collapse:collapse; margin-bottom:10px;}
+    td, th{border:1px solid #ccc; padding:6px 8px; text-align:left; font-size:13px;}
+    td.num, th.num{text-align:right; font-family:'Courier New',monospace;}
+    td.destaque{font-weight:700;}
+    td.vazio{color:#777; font-style:italic;}
+    tr.total td{border-top:2px solid #333; font-weight:700;}
+    .aviso{font-size:11.5px; color:#777; margin-top:14px;}
+    @media print{ body{margin:12mm;} }
+    ${printHeadStyle()}
+  </style></head><body>
+    ${printHeadHtml()}
+    <h1>${escapeHtml(ct.nome_cliente)}</h1>
+    <div class="meta">Período: ${escapeHtml(periodoTxt)} (${celulas.length} dia(s)) · emitido em ${new Date().toLocaleString("pt-BR")}</div>
+    <table>
+      <thead><tr><th>Item</th><th class="num">Enviado</th><th class="num">Ajuste mín.</th><th class="num">Faturado</th><th class="num">Preço unit.</th><th class="num">Valor</th></tr></thead>
+      <tbody>${linhasHtml}</tbody>
+      <tfoot><tr class="total"><td colspan="5">Total</td><td class="num">${fmtMoney(totalGeral)}</td></tr></tfoot>
+    </table>
+    ${semanasParciais.length ? `<div class="aviso">Semana(s) ${semanasParciais.map(s=>rotuloSemanaCurto(s)).join(", ")} selecionada(s) parcialmente — ajuste de mínimo dessa(s) semana(s) NÃO entra neste total (só conta quando a semana inteira está no período impresso).</div>` : ""}
+  </body></html>`;
+
+  const w = window.open("", "_blank");
+  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para este site e tente novamente."); return; }
+  w.document.open(); w.document.write(html); w.document.close();
+  w.focus();
+  w.onload = () => w.print();
+  setTimeout(() => { try{ w.print(); }catch(e){} }, 300);
 }
 
 function renderTabFechamentoSemanas(){
