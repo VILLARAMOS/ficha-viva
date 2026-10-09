@@ -6496,23 +6496,17 @@ function unidadeProdutoraDia(ct, semana, dia){
   if(un === "filial" && ct.producao_fds_feriado === "matriz" && ehFdsOuFeriado(semana, dia, "filial")) return "matriz";
   return un;
 }
-function diasDoPeriodoFaturamento(modo, ancoraYMD, mesId){
-  if(modo === "mes"){
-    const mes = MESES_REFERENCIA.find(m => m.id === mesId);
-    if(!mes) return [];
-    const out = [];
-    mes.semanas.forEach(sem => DIAS_ORDEM.forEach(dia => { if(mesDoDia(sem, dia) === mesId) out.push({ semana: sem, dia, ymd: ymdDia(sem, dia) }); }));
-    return out.sort((a,b) => a.ymd.localeCompare(b.ymd));
-  }
-  if(modo === "semana"){
-    const sd = semanaDiaDaData(ancoraYMD || hojeYMD());
-    const sem = sd ? sd.semana : 1;
-    return DIAS_ORDEM.map(dia => ({ semana: sem, dia, ymd: ymdDia(sem, dia) }));
-  }
-  // quinzena: 14 dias corridos a partir da âncora
+// período livre escolhido no calendário (início/fim), em vez do antigo semanal/quinzenal/mensal
+// fixo (decisão de 09/10/2026) — percorre cada dia corrido do intervalo e resolve semana/dia-da-
+// semana pelo mesmo calendário padrão (semanaDiaDaData) usado no resto do sistema.
+function diasDoPeriodoFaturamento(inicioYMD, fimYMD){
+  const ini = inicioYMD || hojeYMD();
+  const fim = fimYMD || ini;
+  if(fim < ini) return [];
   const out = [];
-  let d = new Date((ancoraYMD || hojeYMD()) + "T00:00:00Z");
-  for(let i = 0; i < 14; i++){
+  let d = new Date(ini + "T00:00:00Z");
+  const fimMs = new Date(fim + "T00:00:00Z").getTime();
+  while(d.getTime() <= fimMs){
     const ymd = d.toISOString().slice(0,10);
     const sd = semanaDiaDaData(ymd);
     if(sd) out.push({ semana: sd.semana, dia: sd.dia, ymd });
@@ -6574,12 +6568,11 @@ function apurarGradeDiariaFaturamento(dias){
 
   return { dias, qtdPorDia, receitaPorDia, ajusteMinimoPeriodo, semUnidadeQtd, semUnidadeReceita };
 }
-function labelPeriodoFaturamento(modo, dias){
+function labelPeriodoFaturamento(dias){
   if(!dias.length) return "";
   const ini = fmtData(new Date(dias[0].ymd + "T00:00:00Z"));
   const fim = fmtData(new Date(dias[dias.length-1].ymd + "T00:00:00Z"));
-  const rotulo = modo === "semana" ? "Semana" : modo === "quinzena" ? "Quinzena" : "Período";
-  return `${rotulo}: ${ini} a ${fim}`;
+  return `Período: ${ini} a ${fim} (${dias.length} dia${dias.length===1?"":"s"})`;
 }
 function blocoGradeFaturamentoHtml(scopeLabel, scopeKey, grade){
   const dias = grade.dias;
@@ -6627,8 +6620,10 @@ function blocoGradeFaturamentoHtml(scopeLabel, scopeKey, grade){
   </div>`;
 }
 
-let ftPeriodoModo = "semana";
-let ftPeriodoAncora = null;
+// período livre (início/fim via calendário) da grade diária de quantidades/receita — decisão de
+// 09/10/2026: substitui os botões semanal/quinzenal/mensal, que saíram de uso.
+let ftPeriodoInicio = null;
+let ftPeriodoFim = null;
 
 function renderFaturamento(){
   document.getElementById("page-title").textContent = "Faturamento apurado";
@@ -6686,14 +6681,10 @@ function renderFaturamento(){
       <div style="padding:0 20px 18px;">
         <div class="footnote" style="margin:0 0 10px;">Quantidade pela unidade que <strong>produz</strong> (considera o repasse Matriz→Filial de fds/feriado). Receita por dia é só o itemizado — ajuste de mínimo (semana completa) e contratos fixo/franquia entram na tabela por cliente acima, não aqui.</div>
         <div class="menu-controls" style="flex-wrap:wrap; margin-bottom:10px;">
-          <div class="seg-toggle" id="ft-per-modo">
-            <button type="button" data-modo="semana" class="${ftPeriodoModo==="semana"?"active":""}">Semanal</button>
-            <button type="button" data-modo="quinzena" class="${ftPeriodoModo==="quinzena"?"active":""}">Quinzenal</button>
-            <button type="button" data-modo="mes" class="${ftPeriodoModo==="mes"?"active":""}">Mensal</button>
-          </div>
-          <div id="ft-per-nav" style="display:${ftPeriodoModo==="mes"?"none":"flex"}; align-items:center; gap:6px;">
+          <div id="ft-per-nav" style="display:flex; align-items:center; gap:6px;">
             <button type="button" class="btn ghost small" id="ft-per-prev">←</button>
-            <input type="date" id="ft-per-ancora" value="${ftPeriodoAncora || hojeYMD()}">
+            <label class="footnote" style="margin:0;">De <input type="date" id="ft-per-inicio" value="${ftPeriodoInicio || hojeYMD()}"></label>
+            <label class="footnote" style="margin:0;">até <input type="date" id="ft-per-fim" value="${ftPeriodoFim || hojeYMD()}"></label>
             <button type="button" class="btn ghost small" id="ft-per-next">→</button>
           </div>
           <span class="footnote" id="ft-per-label" style="align-self:center;"></span>
@@ -6764,10 +6755,12 @@ function renderFaturamento(){
   document.getElementById("ft-mes").addEventListener("change", e => { faturamentoMesSel = e.target.value; renderFaturamento(); });
 
   // ---- grade diária de quantidades e receita (Grupo/Matriz/Filial) ----
-  if(ftPeriodoAncora === null) ftPeriodoAncora = hojeYMD();
-  const diasPeriodo = diasDoPeriodoFaturamento(ftPeriodoModo, ftPeriodoAncora, faturamentoMesSel);
+  // período livre por calendário (decisão de 09/10/2026) — default: últimos 7 dias até hoje.
+  if(ftPeriodoFim === null) ftPeriodoFim = hojeYMD();
+  if(ftPeriodoInicio === null) ftPeriodoInicio = new Date(new Date(ftPeriodoFim+"T00:00:00Z").getTime() - 6*86400000).toISOString().slice(0,10);
+  const diasPeriodo = diasDoPeriodoFaturamento(ftPeriodoInicio, ftPeriodoFim);
   const grade = apurarGradeDiariaFaturamento(diasPeriodo);
-  document.getElementById("ft-per-label").textContent = labelPeriodoFaturamento(ftPeriodoModo, diasPeriodo)
+  document.getElementById("ft-per-label").textContent = labelPeriodoFaturamento(diasPeriodo)
     + (grade.semUnidadeQtd || grade.semUnidadeReceita ? ` · ${fmtNum(grade.semUnidadeQtd,1)} un. / ${fmtMoney(grade.semUnidadeReceita)} em contratos sem unidade definida (fora de Matriz/Filial)` : "")
     + (grade.ajusteMinimoPeriodo ? ` · + ${fmtMoney(grade.ajusteMinimoPeriodo)} de ajuste de mínimo no período (não distribuído por dia)` : "");
   document.getElementById("ft-grade").innerHTML = [
@@ -6776,21 +6769,30 @@ function renderFaturamento(){
     blocoGradeFaturamentoHtml("Filial", "filial", grade),
   ].join("");
 
-  document.getElementById("ft-per-modo").addEventListener("click", e => {
-    const b = e.target.closest("button[data-modo]"); if(!b) return;
-    ftPeriodoModo = b.dataset.modo; renderFaturamento();
-  });
-  const ftAncoraInput = document.getElementById("ft-per-ancora");
-  if(ftAncoraInput){
-    ftAncoraInput.addEventListener("change", e => { ftPeriodoAncora = e.target.value || hojeYMD(); renderFaturamento(); });
+  const ftInicioInput = document.getElementById("ft-per-inicio");
+  const ftFimInput = document.getElementById("ft-per-fim");
+  if(ftInicioInput && ftFimInput){
+    ftInicioInput.addEventListener("change", e => {
+      ftPeriodoInicio = e.target.value || ftPeriodoInicio;
+      if(ftPeriodoInicio > ftPeriodoFim) ftPeriodoFim = ftPeriodoInicio;
+      renderFaturamento();
+    });
+    ftFimInput.addEventListener("change", e => {
+      ftPeriodoFim = e.target.value || ftPeriodoFim;
+      if(ftPeriodoFim < ftPeriodoInicio) ftPeriodoInicio = ftPeriodoFim;
+      renderFaturamento();
+    });
+    // ← e → deslocam a janela inteira (início e fim) pelo próprio tamanho do período escolhido
     document.getElementById("ft-per-prev").addEventListener("click", () => {
-      const passo = ftPeriodoModo === "quinzena" ? 14 : 7;
-      ftPeriodoAncora = new Date(new Date(ftPeriodoAncora+"T00:00:00Z").getTime() - passo*86400000).toISOString().slice(0,10);
+      const passo = diasPeriodo.length || 7;
+      ftPeriodoInicio = new Date(new Date(ftPeriodoInicio+"T00:00:00Z").getTime() - passo*86400000).toISOString().slice(0,10);
+      ftPeriodoFim = new Date(new Date(ftPeriodoFim+"T00:00:00Z").getTime() - passo*86400000).toISOString().slice(0,10);
       renderFaturamento();
     });
     document.getElementById("ft-per-next").addEventListener("click", () => {
-      const passo = ftPeriodoModo === "quinzena" ? 14 : 7;
-      ftPeriodoAncora = new Date(new Date(ftPeriodoAncora+"T00:00:00Z").getTime() + passo*86400000).toISOString().slice(0,10);
+      const passo = diasPeriodo.length || 7;
+      ftPeriodoInicio = new Date(new Date(ftPeriodoInicio+"T00:00:00Z").getTime() + passo*86400000).toISOString().slice(0,10);
+      ftPeriodoFim = new Date(new Date(ftPeriodoFim+"T00:00:00Z").getTime() + passo*86400000).toISOString().slice(0,10);
       renderFaturamento();
     });
   }
