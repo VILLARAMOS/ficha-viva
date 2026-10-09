@@ -558,7 +558,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadConjuntosCompra(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadConjuntosCompra(), loadAjusteSeguranca(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
   goToView(currentView);
 }
 
@@ -962,6 +962,15 @@ async function loadConjuntosCompra(){
   conjuntosCompra = new Map();
   if (error){ showAlert('Erro ao carregar conjuntos de compra: ' + error.message); return; }
   (data || []).forEach(row => { const { id, ...rest } = row; conjuntosCompra.set(id, rest); });
+}
+
+/* ---- ajuste de segurança da Lista de compra (buffer por semana/insumo, sem vínculo com cliente) ---- */
+let ajusteSeguranca = new Map(); // "semana|insumo_id" -> {id, semana, insumo_id, quantidade}
+async function loadAjusteSeguranca(){
+  const { data, error } = await sb.from('ajuste_seguranca_compra').select('*');
+  ajusteSeguranca = new Map();
+  if (error){ showAlert('Erro ao carregar ajuste de segurança: ' + error.message); return; }
+  (data || []).forEach(row => ajusteSeguranca.set(`${row.semana}|${row.insumo_id}`, row));
 }
 function nomeUnidadeCompra(u){ return u === "filial" ? "Filial" : (u === "matriz" ? "Matriz" : "—"); }
 function pedidoUnidade(p){ return (p && (p.unidade === "matriz" || p.unidade === "filial")) ? p.unidade : "matriz"; }
@@ -7053,6 +7062,10 @@ let comprasDraft = new Map(); // "contratoId|semana|DIA|produto_id" -> quantidad
 let comprasSalvando = false;
 let comprasListaGerada = false; // já clicou "Gerar lista de compra" nesta visita à aba?
 let conjuntosCompra = new Map(); // id -> {nome, contrato_ids, alterado_em, alterado_por}
+let comprasTotaisOverride = new Map(); // "produtoId|DIA" -> valor — ajuste manual da tabela de Totais, só pra "Gerar lista de compra" (rateado proporcionalmente entre os clientes selecionados); nunca salva, zera ao trocar semana/seleção
+let comprasMostrarPorCliente = false; // Totais é a visão padrão; detalhamento por cliente (tabelas antigas) fica colapsado atrás de um botão
+let ajusteSegurancaDraft = new Map(); // "semana|insumo_id" -> quantidade (null = remover ajuste salvo) — mesmo rascunho pendente da previsão, salva junto em "Salvar alterações"
+let ajusteSegExtras = new Set(); // "semana|insumo_id" adicionados via "+ Adicionar insumo" nesta visita, mesmo antes de digitar valor
 let pedidosSemanaFiltro = "todas";
 let pedidosFornecedorFiltro = "";
 let pedidosUnidadeFiltro = "todas";
@@ -7102,10 +7115,10 @@ function comprasSetDraft(contratoId, semana, dia, produtoId, valStr){
     if(val === salvo) comprasDraft.delete(k); else comprasDraft.set(k, val);
   }
 }
-function comprasPendCount(){ return comprasDraft.size; }
-function comprasDescartar(){ comprasDraft = new Map(); renderCompras(); }
+function comprasPendCount(){ return comprasDraft.size + ajusteSegurancaDraft.size; }
+function comprasDescartar(){ comprasDraft = new Map(); ajusteSegurancaDraft = new Map(); ajusteSegExtras = new Set(); renderCompras(); }
 async function comprasSalvarAlteracoes(){
-  if(!comprasDraft.size) return true;
+  if(!comprasDraft.size && !ajusteSegurancaDraft.size) return true;
   comprasSalvando = true; renderCompras();
   const grupos = new Map(); // "contratoId|semana|DIA" -> Map produto_id -> valor (null = remover)
   comprasDraft.forEach((val, key) => {
@@ -7125,12 +7138,93 @@ async function comprasSalvarAlteracoes(){
       const { error } = await sb.from('previsao_compra').upsert({ contrato_id: contratoId, semana, dia, itens, ...carimbo() }, { onConflict: 'contrato_id,semana,dia' });
       if(error) throw error;
     }
-    await loadPrevisaoCompra();
+    for(const [key, val] of ajusteSegurancaDraft){
+      const [semanaStr, insumoId] = key.split("|");
+      const semana = parseInt(semanaStr, 10);
+      if(val === null){
+        const { error } = await sb.from('ajuste_seguranca_compra').delete().match({ semana, insumo_id: insumoId });
+        if(error) throw error;
+      } else {
+        const { error } = await sb.from('ajuste_seguranca_compra').upsert({ semana, insumo_id: insumoId, quantidade: val, ...carimbo() }, { onConflict: 'semana,insumo_id' });
+        if(error) throw error;
+      }
+    }
+    await Promise.all([loadPrevisaoCompra(), loadAjusteSeguranca()]);
     comprasDraft = new Map();
+    ajusteSegurancaDraft = new Map();
+    ajusteSegExtras = new Set();
     showAlert("Alterações salvas.");
     return true;
   }catch(e){ showAlert("Erro ao salvar: " + (e.message || e.code || e)); return false; }
   finally{ comprasSalvando = false; renderCompras(); }
+}
+/* ---- rascunho do ajuste de segurança (mesmo padrão salvo>rascunho que a previsão, mas sem sugestão automática — padrão 0) ---- */
+function ajusteSegKey(semana, insumoId){ return `${semana}|${insumoId}`; }
+function ajusteSegValorSalvo(semana, insumoId){
+  const row = ajusteSeguranca.get(ajusteSegKey(semana, insumoId));
+  return row ? (row.quantidade || 0) : null;
+}
+function ajusteSegValorAtual(semana, insumoId){
+  const k = ajusteSegKey(semana, insumoId);
+  if(ajusteSegurancaDraft.has(k)){ const d = ajusteSegurancaDraft.get(k); return d === null ? 0 : d; }
+  return ajusteSegValorSalvo(semana, insumoId) || 0;
+}
+function ajusteSegInputValue(semana, insumoId){
+  const k = ajusteSegKey(semana, insumoId);
+  if(ajusteSegurancaDraft.has(k)){ const d = ajusteSegurancaDraft.get(k); return d === null ? "" : d; }
+  const salvo = ajusteSegValorSalvo(semana, insumoId);
+  return salvo === null ? "" : salvo;
+}
+function ajusteSegPendente(semana, insumoId){ return ajusteSegurancaDraft.has(ajusteSegKey(semana, insumoId)); }
+function ajusteSegSetDraft(semana, insumoId, valStr){
+  const k = ajusteSegKey(semana, insumoId);
+  const salvo = ajusteSegValorSalvo(semana, insumoId);
+  if(valStr === "" || Number(valStr) === 0){
+    if(salvo === null || salvo === 0) ajusteSegurancaDraft.delete(k); else ajusteSegurancaDraft.set(k, null);
+  } else {
+    const val = Number(valStr);
+    if(val === salvo) ajusteSegurancaDraft.delete(k); else ajusteSegurancaDraft.set(k, val);
+  }
+}
+function ajusteSegLinhasVisiveis(semana){
+  const ids = new Set();
+  ajusteSeguranca.forEach(row => { if(row.semana === semana) ids.add(row.insumo_id); });
+  ajusteSegurancaDraft.forEach((val, k) => { const [s, iid] = k.split("|"); if(parseInt(s,10) === semana && val !== null) ids.add(iid); });
+  ajusteSegExtras.forEach(k => { const [s, iid] = k.split("|"); if(parseInt(s,10) === semana) ids.add(iid); });
+  return [...ids];
+}
+/* ---- override da tabela de Totais: só pra "Gerar lista de compra", nunca salvo (sessão/seleção/semana atuais) ---- */
+function comprasTotaisKey(produtoId, dia){ return `${produtoId}|${dia}`; }
+function comprasTotalBase(produtoId, dia, semana, selecionados){
+  let soma = 0;
+  selecionados.forEach(([cid, ct]) => {
+    if(!contratoVigenteNoDia(ct, semana, dia)) return;
+    soma += comprasValorAtual(cid, produtoId, dia, semana);
+  });
+  return soma;
+}
+function itensUniaoSelecao(selecionados){
+  const porId = new Map();
+  selecionados.forEach(([cid]) => {
+    itensRefeicaoDoContrato(cid).forEach(item => {
+      if(item.produto_id && !porId.has(item.produto_id)) porId.set(item.produto_id, item.nome);
+    });
+  });
+  return [...porId.entries()].map(([produto_id, nome]) => ({ produto_id, nome }));
+}
+function calcularTotaisOverrideScale(semana, selIds){
+  const mapa = new Map();
+  comprasTotaisOverride.forEach((alvo, k) => {
+    const [produtoId, dia] = k.split("|");
+    let base = 0;
+    selIds.forEach(cid => {
+      const ct = contratos.get(cid);
+      if(!ct || !contratoVigenteNoDia(ct, semana, dia)) return;
+      base += quantidadePrevista(cid, produtoId, dia, semana);
+    });
+    mapa.set(k, base > 0 ? (alvo / base) : null); // null = sem base nos clientes selecionados pra ratear; ajuste não se aplica
+  });
+  return mapa;
 }
 function contagemInsumoNaSemana(insumoId, unidade, semana){
   const row = estoqueContagem.get(`${semana}|${unidade}|${insumoId}`);
@@ -7173,6 +7267,138 @@ function abrirSalvarConjuntoCompra(selIds, conjAtivo){
   };
   document.getElementById("cj-ok").onclick = salvar;
   inp.addEventListener("keydown", e => { if(e.key === "Enter") salvar(); });
+}
+
+function renderComprasTotais(area, semana, selecionados){
+  if(!area) return;
+  if(!selecionados.length){ area.innerHTML = ""; return; }
+  const itens = itensUniaoSelecao(selecionados);
+  if(!itens.length){ area.innerHTML = ""; return; }
+  area.innerHTML = `
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Totais — ${escapeHtml(rotuloSemana(semana))}</h3>
+        <span class="hint">Soma de ${selecionados.length} ${selecionados.length===1?"cliente":"clientes"} selecionado${selecionados.length===1?"":"s"}</span>
+      </div>
+      <div class="panel-body">
+        <div class="footnote" style="margin:0 0 14px;">Soma os clientes selecionados por item/dia. Editar aqui <strong>não altera nenhum cliente</strong> e <strong>não salva</strong> — vale só pra próxima "Gerar lista de compra" (rateado proporcionalmente entre os clientes selecionados). Pra corrigir um cliente específico, use "Ver detalhamento por cliente" abaixo.</div>
+        <div class="table-wrap">
+          <table class="cardapio-table">
+            <thead><tr><th class="cat-col">Item</th>${DIAS_ORDEM.map(dia => `<th>${DIA_LABEL[dia]}</th>`).join("")}</tr></thead>
+            <tbody>
+              ${itens.map(item => `<tr>
+                <td class="cat-col">${escapeHtml(item.nome)}</td>
+                ${DIAS_ORDEM.map(dia => {
+                  const base = comprasTotalBase(item.produto_id, dia, semana, selecionados);
+                  const k = comprasTotaisKey(item.produto_id, dia);
+                  const overridden = comprasTotaisOverride.has(k);
+                  const val = overridden ? comprasTotaisOverride.get(k) : base;
+                  const semBase = overridden && !base;
+                  const titulo = semBase ? "Sem previsão nos clientes selecionados — este ajuste não poderá ser aplicado à lista." : `Soma atual dos clientes selecionados: ${base}`;
+                  return `<td class="cel"><input type="number" step="1" min="0" class="cel-gram cp-tot${overridden?" cp-qtd-pend":""}" data-produto="${escapeHtml(item.produto_id)}" data-dia="${dia}" value="${val}" title="${escapeHtml(titulo)}"></td>`;
+                }).join("")}
+              </tr>`).join("")}
+            </tbody>
+          </table>
+        </div>
+        ${comprasTotaisOverride.size ? `<button type="button" class="btn small ghost" id="cx-tot-limpar" style="margin-top:10px;">Limpar ajustes de total</button>` : ""}
+      </div>
+    </div>
+  `;
+  area.querySelectorAll(".cp-tot").forEach(inp => inp.addEventListener("input", () => {
+    const { produto, dia } = inp.dataset;
+    const k = comprasTotaisKey(produto, dia);
+    const base = comprasTotalBase(produto, dia, semana, selecionados);
+    if(inp.value === ""){ comprasTotaisOverride.delete(k); }
+    else{
+      const val = Number(inp.value);
+      if(val === base) comprasTotaisOverride.delete(k); else comprasTotaisOverride.set(k, val);
+    }
+    inp.classList.toggle("cp-qtd-pend", comprasTotaisOverride.has(k));
+  }));
+  const btnLimpar = document.getElementById("cx-tot-limpar");
+  if(btnLimpar) btnLimpar.addEventListener("click", () => { comprasTotaisOverride = new Map(); renderCompras(); });
+}
+
+function abrirBuscarInsumoSimples(onEscolher){
+  const root = document.getElementById("picker-root");
+  if(!root) return;
+  const insumoList = [...insumos.entries()].sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+  function render(busca){
+    const nb = normalizeText(busca||"");
+    const insF = insumoList.filter(([,d]) => !nb || normalizeText(d.nome).includes(nb));
+    const listEl = root.querySelector(".insumo-picker-list");
+    if(!listEl) return;
+    listEl.innerHTML = insF.length ? insF.map(([iid,d]) => `<div class="ipk-item" data-insumo="${iid}"><span>${escapeHtml(d.nome)}</span><span class="footnote">${fmtMoney(d.custo_kg_l_und)}/${unidadeCustoInsumo(d)}</span></div>`).join("") : `<div class="empty-state">Nenhum insumo encontrado.</div>`;
+    listEl.querySelectorAll("[data-insumo]").forEach(el => el.addEventListener("click", () => { root.innerHTML=""; onEscolher(el.dataset.insumo); }));
+  }
+  root.innerHTML = `
+    <div class="modal-overlay" id="pk-ov">
+      <div class="modal">
+        <div class="modal-head"><h2>Adicionar insumo ao ajuste de segurança</h2><button class="close-x" id="pk-close">&times;</button></div>
+        <div class="modal-body">
+          <div class="field"><input type="text" id="pk-busca" placeholder="Buscar insumo…" autofocus></div>
+          <div class="insumo-picker-list"></div>
+        </div>
+      </div>
+    </div>`;
+  render("");
+  document.getElementById("pk-busca").addEventListener("input", e => render(e.target.value));
+  document.getElementById("pk-close").onclick = () => root.innerHTML = "";
+  document.getElementById("pk-ov").addEventListener("click", e => { if(e.target.id==="pk-ov") root.innerHTML=""; });
+}
+
+function renderComprasAjusteSeguranca(area, semana){
+  if(!area) return;
+  const ids = ajusteSegLinhasVisiveis(semana)
+    .map(iid => ({ iid, ins: insumos.get(iid) }))
+    .filter(x => x.ins)
+    .sort((a,b) => normalizeText(a.ins.nome).localeCompare(normalizeText(b.ins.nome)));
+  area.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h3>Ajuste de segurança — ${escapeHtml(rotuloSemana(semana))}</h3></div>
+      <div class="panel-body">
+        <div class="footnote" style="margin:0 0 14px;">Quantidade extra de insumo pra comprar nesta semana, somada direto na Lista de compra — sem vínculo com nenhum cliente. Fica salva por semana, junto com "Salvar alterações".</div>
+        <div class="table-wrap">
+          <table class="cardapio-table">
+            <thead><tr><th class="cat-col">Insumo</th><th>Quantidade extra</th><th></th></tr></thead>
+            <tbody>
+              ${ids.map(({iid, ins}) => {
+                const val = ajusteSegInputValue(semana, iid);
+                const pend = ajusteSegPendente(semana, iid);
+                return `<tr>
+                  <td class="cat-col">${escapeHtml(ins.nome)} <span class="footnote">(${unidadeCustoInsumo(ins)})</span></td>
+                  <td class="cel"><input type="number" step="0.001" min="0" class="cel-gram as-qtd${pend?" cp-qtd-pend":""}" data-insumo="${iid}" value="${val}" placeholder="0"></td>
+                  <td><button type="button" class="btn small ghost" data-as-remover="${iid}" title="Remover">✕</button></td>
+                </tr>`;
+              }).join("")}
+              ${!ids.length ? `<tr><td colspan="3" class="empty-state">Nenhum ajuste de segurança lançado nesta semana.</td></tr>` : ""}
+            </tbody>
+          </table>
+        </div>
+        <button type="button" class="btn small" id="cx-as-add" style="margin-top:10px;">+ Adicionar insumo</button>
+      </div>
+    </div>
+  `;
+  area.querySelectorAll(".as-qtd").forEach(inp => inp.addEventListener("input", () => {
+    const iid = inp.dataset.insumo;
+    ajusteSegSetDraft(semana, iid, inp.value);
+    inp.classList.toggle("cp-qtd-pend", ajusteSegPendente(semana, iid));
+    atualizarBarraPendenciasCompras();
+  }));
+  area.querySelectorAll("[data-as-remover]").forEach(b => b.addEventListener("click", () => {
+    const iid = b.dataset.asRemover;
+    ajusteSegSetDraft(semana, iid, "");
+    ajusteSegExtras.delete(`${semana}|${iid}`);
+    renderCompras();
+  }));
+  const btnAdd = document.getElementById("cx-as-add");
+  if(btnAdd) btnAdd.addEventListener("click", () => {
+    abrirBuscarInsumoSimples((insumoId) => {
+      ajusteSegExtras.add(`${semana}|${insumoId}`);
+      renderCompras();
+    });
+  });
 }
 
 function renderComprasQuantidades(area, selecionados){
@@ -7240,13 +7466,14 @@ function atualizarBarraPendenciasCompras(){
   if(btnGerar) btnGerar.textContent = nPend ? "Salvar e gerar lista" : "Gerar lista de compra";
 }
 
-function renderListaCompraResultado(semana, contratoIds){
+function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale){
   const area = document.getElementById("cp-lista-resultado");
   if(!area) return;
   const almocoIdx = indiceCardapioAlmoco();
   const cafeIdx = indiceCafeSemana();
   const totalInsumos = new Map(); // insumo_id -> kg/und (bruto, antes de abater estoque)
   const porUnidadeInsumo = new Map(); // insumo_id -> {matriz: kg, filial: kg}
+  let temAjusteTotalIgnorado = false; // algum ajuste de total digitado não tinha base nos clientes selecionados pra ratear
   contratoIds.forEach(id => {
     const ct = contratos.get(id);
     if(!ct) return;
@@ -7255,8 +7482,13 @@ function renderListaCompraResultado(semana, contratoIds){
     DIAS_ORDEM.forEach(dia => {
       if(!contratoVigenteNoDia(ct, semana, dia)) return;
       itensContrato.forEach(item => {
-        const q = quantidadePrevista(id, item.produto_id, dia, semana);
+        let q = quantidadePrevista(id, item.produto_id, dia, semana);
         if(!q) return;
+        if(totaisOverrideScale && totaisOverrideScale.has(`${item.produto_id}|${dia}`)){
+          const fator = totaisOverrideScale.get(`${item.produto_id}|${dia}`);
+          if(fator == null){ temAjusteTotalIgnorado = true; }
+          else q = q * fator;
+        }
         const porItem = insumosUnidadeItemCompra(almocoIdx, cafeIdx, item.produto_id, ct, semana, dia, q);
         mergeInsumosInto(totalInsumos, porItem);
         porItem.forEach((kg, insumoId) => {
@@ -7282,19 +7514,26 @@ function renderListaCompraResultado(semana, contratoIds){
     if(emEstoque > 0) emEstoquePorInsumo.set(insumoId, emEstoque);
   });
 
-  const linhas = [...totalInsumos.entries()].map(([insumoId, kgBruto]) => {
+  const idsAjuste = ajusteSegLinhasVisiveis(semana).filter(iid => ajusteSegValorAtual(semana, iid) > 0);
+  const todosInsumoIds = new Set([...totalInsumos.keys(), ...idsAjuste]);
+  const linhas = [...todosInsumoIds].map(insumoId => {
     const ins = insumos.get(insumoId);
     const emEstoque = emEstoquePorInsumo.get(insumoId) || 0;
-    const kg = Math.max(0, kgBruto - emEstoque);
+    const kgBruto = totalInsumos.get(insumoId) || 0;
+    const extra = ajusteSegValorAtual(semana, insumoId);
+    const kg = Math.max(0, kgBruto - emEstoque) + extra;
     const custo = ins && ins.custo_kg_l_und != null ? kg * ins.custo_kg_l_und : null;
-    return { nome: ins ? ins.nome : insumoId, grupo: ins?.grupo_compra || "(sem grupo)", kg, kgBruto, emEstoque, unidade: ins ? unidadeCustoInsumo(ins) : "kg", custo };
+    return { nome: ins ? ins.nome : insumoId, grupo: ins?.grupo_compra || "(sem grupo)", kg, kgBruto, emEstoque, extra, unidade: ins ? unidadeCustoInsumo(ins) : "kg", custo };
   }).sort((a,b) => normalizeText(a.grupo).localeCompare(normalizeText(b.grupo)) || normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
 
   let totCusto = 0, semCusto = 0;
   const linhasHtml = linhas.map(l => {
     if(l.custo != null) totCusto += l.custo; else semCusto++;
+    const notas = [];
+    if(l.emEstoque > 0) notas.push(`bruto ${fmtNum(l.kgBruto,3)} − estoque ${fmtNum(l.emEstoque,3)}`);
+    if(l.extra > 0) notas.push(`+ ${fmtNum(l.extra,3)} ajuste de segurança`);
     return `<tr>
-      <td class="name-cell">${escapeHtml(l.nome)}${l.emEstoque > 0 ? `<div class="footnote" style="margin:2px 0 0;">bruto ${fmtNum(l.kgBruto,3)} − estoque ${fmtNum(l.emEstoque,3)}</div>` : ""}</td>
+      <td class="name-cell">${escapeHtml(l.nome)}${notas.length ? `<div class="footnote" style="margin:2px 0 0;">${notas.join(" · ")}</div>` : ""}</td>
       <td style="font-size:12.5px;">${escapeHtml(l.grupo)}</td>
       <td class="num-cell">${fmtNum(l.kg, 3)}</td>
       <td>${l.unidade}</td>
@@ -7303,7 +7542,7 @@ function renderListaCompraResultado(semana, contratoIds){
   }).join("") || `<tr><td colspan="5" class="empty-state">Nenhuma previsão de consumo para os clientes e semana selecionados.</td></tr>`;
 
   area.innerHTML = `
-    <div class="footnote" style="margin:16px 0 10px;">Lista gerada para <strong>${escapeHtml(rotuloSemana(semana))}</strong> (${escapeHtml(intervaloSemana(semana))}) — ${contratoIds.length} ${contratoIds.length===1?"cliente":"clientes"}. ${temContagemNaSemana ? "Estoque contado nesta semana já abatido (cada unidade só abate a própria contagem)." : "Sem contagem de estoque nesta semana — necessidade bruta."}</div>
+    <div class="footnote" style="margin:16px 0 10px;">Lista gerada para <strong>${escapeHtml(rotuloSemana(semana))}</strong> (${escapeHtml(intervaloSemana(semana))}) — ${contratoIds.length} ${contratoIds.length===1?"cliente":"clientes"}. ${temContagemNaSemana ? "Estoque contado nesta semana já abatido (cada unidade só abate a própria contagem)." : "Sem contagem de estoque nesta semana — necessidade bruta."}${temAjusteTotalIgnorado ? " Um ou mais ajustes feitos na tabela de Totais não puderam ser aplicados (nenhum cliente selecionado tinha previsão para esse item/dia)." : ""}</div>
     <div class="panel">
       <div class="panel-head"><h3>Lista de compra — insumos</h3></div>
       <div class="table-wrap">
@@ -7410,23 +7649,31 @@ function renderComprasLista(content, tabsHtml, wireTabs){
         ${contratosAtivos.length ? "" : `<div class="empty-state">Nenhum contrato ativo cadastrado ainda.</div>`}
       </div>
     </div>
+    <div id="cp-totais-area"></div>
+    <div style="margin:10px 0 18px;">
+      <button type="button" class="btn small ghost" id="cx-toggle-cliente">${comprasMostrarPorCliente ? "Ocultar detalhamento por cliente" : "Ver detalhamento por cliente"}</button>
+    </div>
     <div id="cp-qtd-area"></div>
+    <div id="cp-ajuste-area"></div>
     <div id="cp-lista-resultado"></div>
   `;
   wireTabs();
 
-  document.getElementById("cp-semana").addEventListener("change", e => { comprasSemana = parseInt(e.target.value,10); renderCompras(); });
-  document.getElementById("cx-sem-ant").addEventListener("click", () => { comprasSemana = opcoesSemana[idxSem-1]; renderCompras(); });
-  document.getElementById("cx-sem-prox").addEventListener("click", () => { comprasSemana = opcoesSemana[idxSem+1]; renderCompras(); });
+  const limparOverridesTotais = () => { comprasTotaisOverride = new Map(); };
+  document.getElementById("cp-semana").addEventListener("change", e => { comprasSemana = parseInt(e.target.value,10); limparOverridesTotais(); renderCompras(); });
+  document.getElementById("cx-sem-ant").addEventListener("click", () => { comprasSemana = opcoesSemana[idxSem-1]; limparOverridesTotais(); renderCompras(); });
+  document.getElementById("cx-sem-prox").addEventListener("click", () => { comprasSemana = opcoesSemana[idxSem+1]; limparOverridesTotais(); renderCompras(); });
 
   content.querySelectorAll("[data-atalho]").forEach(b => b.addEventListener("click", () => {
     const k = b.dataset.atalho;
     comprasSelecao = new Set(k==="matriz"?idsMatriz:k==="filial"?idsFilial:idsTodos);
+    limparOverridesTotais();
     renderCompras();
   }));
   content.querySelectorAll("[data-conj]").forEach(b => b.addEventListener("click", () => {
     const c = conjuntosCompra.get(b.dataset.conj);
     if(c) comprasSelecao = new Set((c.contrato_ids||[]).filter(id => idsTodos.includes(id)));
+    limparOverridesTotais();
     renderCompras();
   }));
   content.querySelectorAll("[data-conj-del]").forEach(b => b.addEventListener("click", async () => {
@@ -7442,22 +7689,29 @@ function renderComprasLista(content, tabsHtml, wireTabs){
   content.querySelectorAll(".cp-cli-chip").forEach(b => b.addEventListener("click", () => {
     const id = b.dataset.id;
     if(comprasSelecao.has(id)) comprasSelecao.delete(id); else comprasSelecao.add(id);
+    limparOverridesTotais();
     renderCompras();
   }));
-  document.getElementById("cx-cli-limpar").addEventListener("click", () => { comprasSelecao = new Set(); renderCompras(); });
+  document.getElementById("cx-cli-limpar").addEventListener("click", () => { comprasSelecao = new Set(); limparOverridesTotais(); renderCompras(); });
   document.getElementById("cx-conj-salvar").addEventListener("click", () => abrirSalvarConjuntoCompra(selIds, conjAtivo));
   document.getElementById("cx-salvar").addEventListener("click", () => comprasSalvarAlteracoes());
   document.getElementById("cx-descartar").addEventListener("click", () => comprasDescartar());
+  document.getElementById("cx-toggle-cliente").addEventListener("click", () => { comprasMostrarPorCliente = !comprasMostrarPorCliente; renderCompras(); });
   document.getElementById("cx-gerar").addEventListener("click", async () => {
     if(comprasPendCount() && !(await comprasSalvarAlteracoes())) return;
     comprasListaGerada = true;
-    renderListaCompraResultado(comprasSemana, selIds);
+    renderListaCompraResultado(comprasSemana, selIds, calcularTotaisOverrideScale(comprasSemana, selIds));
     const r = document.getElementById("cp-lista-resultado");
     if(r) r.scrollIntoView({behavior:"smooth", block:"start"});
   });
 
-  renderComprasQuantidades(document.getElementById("cp-qtd-area"), contratosAtivos.filter(([id]) => selIds.includes(id)));
-  if(comprasListaGerada && selIds.length) renderListaCompraResultado(comprasSemana, selIds);
+  const selecionadosCt = contratosAtivos.filter(([id]) => selIds.includes(id));
+  renderComprasTotais(document.getElementById("cp-totais-area"), comprasSemana, selecionadosCt);
+  const areaCliente = document.getElementById("cp-qtd-area");
+  if(comprasMostrarPorCliente) renderComprasQuantidades(areaCliente, selecionadosCt);
+  else areaCliente.innerHTML = "";
+  renderComprasAjusteSeguranca(document.getElementById("cp-ajuste-area"), comprasSemana);
+  if(comprasListaGerada && selIds.length) renderListaCompraResultado(comprasSemana, selIds, calcularTotaisOverrideScale(comprasSemana, selIds));
 }
 
 function renderCompras(){
