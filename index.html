@@ -6446,6 +6446,180 @@ function apurarEventosDoMes(mesId){
 
 let faturamentoMesSel = null;
 
+/* ===================================================================== FATURAMENTO APURADO —
+   GRADE DIÁRIA DE QUANTIDADES E RECEITA (pedido de 09/10/2026)
+   Objetivo: "quantas refeições/marmitas produzimos por dia" + receita por dia, com visão
+   semanal/quinzenal/mensal, aberta em Grupo/Matriz/Filial. Decisões tomadas com o Marcelo nesse
+   pedido (não inferidas):
+     - Quantidade conta pela unidade que PRODUZ, não quem fatura: no fds/feriado em que a Filial
+       fatura mas é a Matriz que produz (ct.producao_fds_feriado === "matriz"), a quantidade entra
+       como produção da Matriz. Isso é DIFERENTE da tabela por cliente acima (que soma custo/receita
+       sempre pela unidade que fatura, com o transferido só como aviso) — divergência deliberada,
+       porque a pergunta aqui é "quanto produzimos", não "quem fatura".
+     - "Quinzena" = janela rolante de 14 dias a partir de uma data âncora (mesmo conceito do botão
+       "Quinzena (14 dias)" de Vendas > Imprimir), não quinzena fixa de calendário (1–15/16–fim).
+     - Layout: dias como coluna (grade), um bloco por Grupo/Matriz/Filial.
+   Receita por dia só soma o que é NATURALMENTE diário: itens de contrato itemizado (qtd × preço).
+   Ajuste de mínimo é semanal (não tem dia) e só entra se a semana inteira dele estiver dentro do
+   período pedido — mesma regra já usada na impressão de Vendas. Contratos fixo/franquia não têm
+   preço por item, então NÃO entram nesta grade (entrariam com um número inventado) — o valor deles
+   já está na tabela por cliente acima, mês a mês. */
+const TIPOS_QTD_FATURAMENTO = [
+  { key: "refeicao", label: "Refeição" },
+  { key: "marmita",  label: "Marmita" },
+  { key: "cafe",     label: "Café/extras" },
+];
+function tipoQuantidadeProduto(produtoId){
+  const cat = catalogoPorProduto(produtoId);
+  const tc = cat && cat.tipo_custo;
+  if(tc === "cardapio_refeicao") return "refeicao";
+  if(tc === "cardapio_marmita" || tc === "cardapio_marmita_especial") return "marmita";
+  if(tc === "cardapio_cafe") return "cafe";
+  return null; // ficha avulsa / item fixo sem tipo de cardápio — fora desta grade
+}
+function unidadeContratoSimples(ct){
+  return (ct && ct.unidade === "filial") ? "filial" : (ct && ct.unidade === "matriz") ? "matriz" : null;
+}
+// unidade que de fato PRODUZ naquele dia — considera o repasse Matriz→Filial de fds/feriado
+function unidadeProdutoraDia(ct, semana, dia){
+  const un = unidadeContratoSimples(ct);
+  if(un === "filial" && ct.producao_fds_feriado === "matriz" && ehFdsOuFeriado(semana, dia, "filial")) return "matriz";
+  return un;
+}
+function diasDoPeriodoFaturamento(modo, ancoraYMD, mesId){
+  if(modo === "mes"){
+    const mes = MESES_REFERENCIA.find(m => m.id === mesId);
+    if(!mes) return [];
+    const out = [];
+    mes.semanas.forEach(sem => DIAS_ORDEM.forEach(dia => { if(mesDoDia(sem, dia) === mesId) out.push({ semana: sem, dia, ymd: ymdDia(sem, dia) }); }));
+    return out.sort((a,b) => a.ymd.localeCompare(b.ymd));
+  }
+  if(modo === "semana"){
+    const sd = semanaDiaDaData(ancoraYMD || hojeYMD());
+    const sem = sd ? sd.semana : 1;
+    return DIAS_ORDEM.map(dia => ({ semana: sem, dia, ymd: ymdDia(sem, dia) }));
+  }
+  // quinzena: 14 dias corridos a partir da âncora
+  const out = [];
+  let d = new Date((ancoraYMD || hojeYMD()) + "T00:00:00Z");
+  for(let i = 0; i < 14; i++){
+    const ymd = d.toISOString().slice(0,10);
+    const sd = semanaDiaDaData(ymd);
+    if(sd) out.push({ semana: sd.semana, dia: sd.dia, ymd });
+    d = new Date(d.getTime() + 86400000);
+  }
+  return out;
+}
+// agrega, pro conjunto de dias dado, quantidade por dia×unidade-produtora×tipo e receita
+// itemizada por dia×unidade-que-fatura — uma passada só por todas as vendas do período.
+function apurarGradeDiariaFaturamento(dias){
+  const diasSet = new Set(dias.map(d => `${d.semana}|${d.dia}`));
+  const diaInfo = new Map(dias.map(d => [`${d.semana}|${d.dia}`, d]));
+  const qtdPorDia = {}, receitaPorDia = {};
+  dias.forEach(d => {
+    qtdPorDia[d.ymd] = { matriz:{refeicao:0,marmita:0,cafe:0}, filial:{refeicao:0,marmita:0,cafe:0} };
+    receitaPorDia[d.ymd] = { matriz:0, filial:0 };
+  });
+  let ajusteMinimoPeriodo = 0, semUnidadeQtd = 0, semUnidadeReceita = 0;
+
+  [...contratos.entries()].forEach(([id, ct]) => {
+    const un = unidadeContratoSimples(ct);
+    const itemizado = ct.modelo_faturamento !== "fixo" && ct.modelo_faturamento !== "franquia";
+    vendasDoContrato(id).forEach(v => {
+      const chave = `${v.semana}|${v.dia}`;
+      if(!diasSet.has(chave) || !diaJaAconteceu(v.semana, v.dia)) return;
+      const info = diaInfo.get(chave);
+      const unProd = unidadeProdutoraDia(ct, v.semana, v.dia);
+      (v.itens || []).forEach(it => {
+        if(!it.quantidade) return;
+        const tipo = tipoQuantidadeProduto(it.produto_id);
+        if(tipo){
+          if(unProd) qtdPorDia[info.ymd][unProd][tipo] += it.quantidade;
+          else semUnidadeQtd += it.quantidade;
+        }
+        if(itemizado){
+          const preco = precoItemVendaApurado(it.produto_id, id, it.preco_unitario);
+          if(preco != null){
+            if(un) receitaPorDia[info.ymd][un] += preco * it.quantidade;
+            else semUnidadeReceita += preco * it.quantidade;
+          }
+        }
+      });
+    });
+    if(itemizado){
+      const semanasPeriodo = new Set(dias.map(d => d.semana));
+      semanasPeriodo.forEach(s => {
+        const aj = ajustesMinimo.get(`${id}|${s}`);
+        if(!aj) return;
+        const semanaCompleta = DIAS_ORDEM.every(dd => diasSet.has(`${s}|${dd}`));
+        if(!semanaCompleta) return;
+        (aj.itens || []).forEach(a => {
+          if(!a.quantidade) return;
+          const preco = precoItemVendaApurado(a.produto_id, id);
+          if(preco != null) ajusteMinimoPeriodo += preco * a.quantidade;
+        });
+      });
+    }
+  });
+
+  return { dias, qtdPorDia, receitaPorDia, ajusteMinimoPeriodo, semUnidadeQtd, semUnidadeReceita };
+}
+function labelPeriodoFaturamento(modo, dias){
+  if(!dias.length) return "";
+  const ini = fmtData(new Date(dias[0].ymd + "T00:00:00Z"));
+  const fim = fmtData(new Date(dias[dias.length-1].ymd + "T00:00:00Z"));
+  const rotulo = modo === "semana" ? "Semana" : modo === "quinzena" ? "Quinzena" : "Período";
+  return `${rotulo}: ${ini} a ${fim}`;
+}
+function blocoGradeFaturamentoHtml(scopeLabel, scopeKey, grade){
+  const dias = grade.dias;
+  const totCol = (ymd, tipo) => {
+    if(scopeKey === "grupo") return (grade.qtdPorDia[ymd].matriz[tipo]||0) + (grade.qtdPorDia[ymd].filial[tipo]||0);
+    return grade.qtdPorDia[ymd][scopeKey][tipo] || 0;
+  };
+  const totReceitaDia = (ymd) => scopeKey === "grupo"
+    ? (grade.receitaPorDia[ymd].matriz||0) + (grade.receitaPorDia[ymd].filial||0)
+    : (grade.receitaPorDia[ymd][scopeKey] || 0);
+
+  const linhasQtd = TIPOS_QTD_FATURAMENTO.map(t => {
+    const valores = dias.map(d => totCol(d.ymd, t.key));
+    const tot = valores.reduce((a,b)=>a+b, 0);
+    return `<tr><td class="name-cell">${t.label}</td>${valores.map(v => `<td class="num-cell">${v ? fmtNum(v,1) : "—"}</td>`).join("")}<td class="num-cell" style="font-weight:600;">${fmtNum(tot,1)}</td></tr>`;
+  });
+  const totaisDia = dias.map(d => TIPOS_QTD_FATURAMENTO.reduce((s,t)=>s+totCol(d.ymd,t.key),0));
+  const totGeral = totaisDia.reduce((a,b)=>a+b,0);
+  const receitaDias = dias.map(d => totReceitaDia(d.ymd));
+  const totReceitaGeral = receitaDias.reduce((a,b)=>a+b,0);
+
+  return `<div class="panel" style="margin-bottom:16px;">
+    <div class="panel-head"><h3>${escapeHtml(scopeLabel)}</h3></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr>
+          <th>Quantidade</th>
+          ${dias.map(d => `<th style="text-align:right;">${fmtData(new Date(d.ymd+"T00:00:00Z"))}</th>`).join("")}
+          <th style="text-align:right;">Total</th>
+        </tr></thead>
+        <tbody>
+          ${linhasQtd.join("")}
+          <tr class="row-total"><td class="name-cell">Total unidades</td>${totaisDia.map(v=>`<td class="num-cell">${fmtNum(v,1)}</td>`).join("")}<td class="num-cell">${fmtNum(totGeral,1)}</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="table-wrap" style="border-top:1px solid var(--border);">
+      <table>
+        <thead><tr><th>Receita itemizada (R$)</th>${dias.map(d => `<th style="text-align:right;">${fmtData(new Date(d.ymd+"T00:00:00Z"))}</th>`).join("")}<th style="text-align:right;">Total</th></tr></thead>
+        <tbody>
+          <tr class="row-total"><td class="name-cell">Receita do dia</td>${receitaDias.map(v=>`<td class="num-cell">${v?fmtMoney(v):"—"}</td>`).join("")}<td class="num-cell">${fmtMoney(totReceitaGeral)}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>`;
+}
+
+let ftPeriodoModo = "semana";
+let ftPeriodoAncora = null;
+
 function renderFaturamento(){
   document.getElementById("page-title").textContent = "Faturamento apurado";
   document.getElementById("page-desc").textContent = "Receita e custo realmente apurados a partir do que foi lançado em Vendas e Eventos — recalculado ao vivo (sem fechamento de mês nesta versão)";
@@ -6495,6 +6669,26 @@ function renderFaturamento(){
           <thead><tr><th>Categoria</th><th style="text-align:right;">Receita</th><th style="text-align:right;">Custo</th><th>CMV</th></tr></thead>
           <tbody id="ft-cat-tbody"></tbody>
         </table>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:4px;">
+      <div class="panel-head"><h3>Quantidades e receita por dia</h3></div>
+      <div style="padding:0 20px 18px;">
+        <div class="footnote" style="margin:0 0 10px;">Quantidade pela unidade que <strong>produz</strong> (considera o repasse Matriz→Filial de fds/feriado). Receita por dia é só o itemizado — ajuste de mínimo (semana completa) e contratos fixo/franquia entram na tabela por cliente acima, não aqui.</div>
+        <div class="menu-controls" style="flex-wrap:wrap; margin-bottom:10px;">
+          <div class="seg-toggle" id="ft-per-modo">
+            <button type="button" data-modo="semana" class="${ftPeriodoModo==="semana"?"active":""}">Semanal</button>
+            <button type="button" data-modo="quinzena" class="${ftPeriodoModo==="quinzena"?"active":""}">Quinzenal</button>
+            <button type="button" data-modo="mes" class="${ftPeriodoModo==="mes"?"active":""}">Mensal</button>
+          </div>
+          <div id="ft-per-nav" style="display:${ftPeriodoModo==="mes"?"none":"flex"}; align-items:center; gap:6px;">
+            <button type="button" class="btn ghost small" id="ft-per-prev">←</button>
+            <input type="date" id="ft-per-ancora" value="${ftPeriodoAncora || hojeYMD()}">
+            <button type="button" class="btn ghost small" id="ft-per-next">→</button>
+          </div>
+          <span class="footnote" id="ft-per-label" style="align-self:center;"></span>
+        </div>
+        <div id="ft-grade"></div>
       </div>
     </div>
   `;
@@ -6558,6 +6752,38 @@ function renderFaturamento(){
   }).join("");
 
   document.getElementById("ft-mes").addEventListener("change", e => { faturamentoMesSel = e.target.value; renderFaturamento(); });
+
+  // ---- grade diária de quantidades e receita (Grupo/Matriz/Filial) ----
+  if(ftPeriodoAncora === null) ftPeriodoAncora = hojeYMD();
+  const diasPeriodo = diasDoPeriodoFaturamento(ftPeriodoModo, ftPeriodoAncora, faturamentoMesSel);
+  const grade = apurarGradeDiariaFaturamento(diasPeriodo);
+  document.getElementById("ft-per-label").textContent = labelPeriodoFaturamento(ftPeriodoModo, diasPeriodo)
+    + (grade.semUnidadeQtd || grade.semUnidadeReceita ? ` · ${fmtNum(grade.semUnidadeQtd,1)} un. / ${fmtMoney(grade.semUnidadeReceita)} em contratos sem unidade definida (fora de Matriz/Filial)` : "")
+    + (grade.ajusteMinimoPeriodo ? ` · + ${fmtMoney(grade.ajusteMinimoPeriodo)} de ajuste de mínimo no período (não distribuído por dia)` : "");
+  document.getElementById("ft-grade").innerHTML = [
+    blocoGradeFaturamentoHtml("Grupo", "grupo", grade),
+    blocoGradeFaturamentoHtml("Matriz", "matriz", grade),
+    blocoGradeFaturamentoHtml("Filial", "filial", grade),
+  ].join("");
+
+  document.getElementById("ft-per-modo").addEventListener("click", e => {
+    const b = e.target.closest("button[data-modo]"); if(!b) return;
+    ftPeriodoModo = b.dataset.modo; renderFaturamento();
+  });
+  const ftAncoraInput = document.getElementById("ft-per-ancora");
+  if(ftAncoraInput){
+    ftAncoraInput.addEventListener("change", e => { ftPeriodoAncora = e.target.value || hojeYMD(); renderFaturamento(); });
+    document.getElementById("ft-per-prev").addEventListener("click", () => {
+      const passo = ftPeriodoModo === "quinzena" ? 14 : 7;
+      ftPeriodoAncora = new Date(new Date(ftPeriodoAncora+"T00:00:00Z").getTime() - passo*86400000).toISOString().slice(0,10);
+      renderFaturamento();
+    });
+    document.getElementById("ft-per-next").addEventListener("click", () => {
+      const passo = ftPeriodoModo === "quinzena" ? 14 : 7;
+      ftPeriodoAncora = new Date(new Date(ftPeriodoAncora+"T00:00:00Z").getTime() + passo*86400000).toISOString().slice(0,10);
+      renderFaturamento();
+    });
+  }
 }
 function rotuloModeloFaturamentoSimples(ct){
   if(!ct) return "";
