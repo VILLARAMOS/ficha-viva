@@ -361,6 +361,7 @@ table.cardapio-table .cel-search-btn:hover{background:var(--surface-alt); color:
 table.cardapio-table .cel-search-btn .ico{width:11px; height:11px;}
 table.cardapio-table .cel-sub-row{display:flex; align-items:center; gap:3px;}
 table.cardapio-table input.cel-gram, table.cardapio-table input.cel-preco{font:inherit; width:100%; font-size:9.5px; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:5px; padding:3px 4px; min-width:0; box-sizing:border-box;}
+table.cardapio-table input.cp-qtd-pend{outline:2px solid var(--warn); outline-offset:-1px;}
 table.cardapio-table .cel-preco-wrap{display:flex; align-items:center; gap:3px;}
 table.cardapio-table .cel-preco-prefix{flex:none; font-size:9.5px; color:var(--text-muted); font-weight:600;}
 table.cardapio-table .cel-custo{flex:none; font-family:'IBM Plex Mono',ui-monospace,monospace; font-size:9.5px; color:var(--text-faint); white-space:nowrap;}
@@ -557,7 +558,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadConjuntosCompra(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
   goToView(currentView);
 }
 
@@ -954,6 +955,13 @@ async function loadPedidos(){
   pedidos = new Map();
   if (error){ showAlert('Erro ao carregar pedidos: ' + error.message); return; }
   (data || []).forEach(row => { const { id, ...rest } = row; pedidos.set(id, rest); });
+}
+
+async function loadConjuntosCompra(){
+  const { data, error } = await sb.from('conjuntos_compra').select('*').order('nome');
+  conjuntosCompra = new Map();
+  if (error){ showAlert('Erro ao carregar conjuntos de compra: ' + error.message); return; }
+  (data || []).forEach(row => { const { id, ...rest } = row; conjuntosCompra.set(id, rest); });
 }
 function nomeUnidadeCompra(u){ return u === "filial" ? "Filial" : (u === "matriz" ? "Matriz" : "—"); }
 function pedidoUnidade(p){ return (p && (p.unidade === "matriz" || p.unidade === "filial")) ? p.unidade : "matriz"; }
@@ -7036,12 +7044,15 @@ function rotuloOrigemSugestao(origem, n){
 }
 
 /* ---- UI ---- */
-let compraContratoSel = null;
-let compraSemanaSel = null;
-let compraMesSel = null;
-let compraTabSel = "previsao"; // "previsao" | "lista" | "pedidos" | "estoque"
-let compraClientesSel = null; // Set de contrato_id na Lista de compra — null = todos
-let draftPrevisao = null; // { [DIA]: { [produto_id]: quantidade_ajustada } }
+/* ---- Compras: Lista de compra por semana (clientes + conjuntos salvos + rascunho pendente) + Pedidos ---- */
+let comprasTab = "lista"; // "lista" | "pedidos"
+let comprasSemana = null;
+let comprasSemanaIniciada = false; // já abriu a aba e aplicou o padrão de semana (próxima semana)?
+let comprasSelecao = null; // Set de contrato_id selecionados na Lista de compra — null = ainda não iniciado (abre com todos)
+let comprasDraft = new Map(); // "contratoId|semana|DIA|produto_id" -> quantidade ajustada (null = remover ajuste salvo) — rascunho, só grava em "Salvar alterações"
+let comprasSalvando = false;
+let comprasListaGerada = false; // já clicou "Gerar lista de compra" nesta visita à aba?
+let conjuntosCompra = new Map(); // id -> {nome, contrato_ids, alterado_em, alterado_por}
 let pedidosSemanaFiltro = "todas";
 let pedidosFornecedorFiltro = "";
 let pedidosUnidadeFiltro = "todas";
@@ -7058,241 +7069,427 @@ function itensRefeicaoDoContrato(contratoId){
   return itensDoContratoVenda(contratoId).filter(it => it.produto_id && categoriaSimples(it.produto_id) === "refeicao");
 }
 
-function carregarDraftPrevisao(contratoId, semana){
-  const d = {};
-  DIAS_ORDEM.forEach(dia => {
-    const row = previsaoCompra.get(`${contratoId}|${semana}|${dia}`);
-    d[dia] = {};
-    (row?.itens || []).forEach(it => { if(it.produto_id && it.quantidade_ajustada != null) d[dia][it.produto_id] = it.quantidade_ajustada; });
+/* ---- rascunho pendente da Lista de compra (v2: fluxo por semana — clientes + ajuste + gerar, tudo numa tela) ---- */
+function comprasDraftKey(contratoId, semana, dia, produtoId){ return `${contratoId}|${semana}|${dia}|${produtoId}`; }
+function comprasValorSalvo(contratoId, produtoId, dia, semana){
+  const doc = previsaoCompra.get(`${contratoId}|${semana}|${dia}`);
+  const item = doc && (doc.itens||[]).find(it => it.produto_id === produtoId);
+  return (item && item.quantidade_ajustada !== null && item.quantidade_ajustada !== undefined) ? item.quantidade_ajustada : null;
+}
+function comprasValorAtual(contratoId, produtoId, dia, semana){ // rascunho (se houver) > ajuste salvo > sugestão automática
+  const k = comprasDraftKey(contratoId, semana, dia, produtoId);
+  if(comprasDraft.has(k)){
+    const d = comprasDraft.get(k);
+    return d !== null ? d : origemSugestao(contratoId, produtoId, dia, semana).valor;
+  }
+  const salvo = comprasValorSalvo(contratoId, produtoId, dia, semana);
+  return salvo !== null ? salvo : origemSugestao(contratoId, produtoId, dia, semana).valor;
+}
+function comprasInputValue(contratoId, produtoId, dia, semana){
+  const k = comprasDraftKey(contratoId, semana, dia, produtoId);
+  if(comprasDraft.has(k)){ const d = comprasDraft.get(k); return d === null ? "" : d; }
+  const salvo = comprasValorSalvo(contratoId, produtoId, dia, semana);
+  return salvo === null ? "" : salvo;
+}
+function comprasCelPendente(contratoId, produtoId, dia, semana){ return comprasDraft.has(comprasDraftKey(contratoId, semana, dia, produtoId)); }
+function comprasSetDraft(contratoId, semana, dia, produtoId, valStr){
+  const k = comprasDraftKey(contratoId, semana, dia, produtoId);
+  const salvo = comprasValorSalvo(contratoId, produtoId, dia, semana);
+  if(valStr === ""){
+    if(salvo === null) comprasDraft.delete(k); else comprasDraft.set(k, null); // null = remover o ajuste salvo, volta a usar a sugestão
+  } else {
+    const val = Number(valStr);
+    if(val === salvo) comprasDraft.delete(k); else comprasDraft.set(k, val);
+  }
+}
+function comprasPendCount(){ return comprasDraft.size; }
+function comprasDescartar(){ comprasDraft = new Map(); renderCompras(); }
+async function comprasSalvarAlteracoes(){
+  if(!comprasDraft.size) return true;
+  comprasSalvando = true; renderCompras();
+  const grupos = new Map(); // "contratoId|semana|DIA" -> Map produto_id -> valor (null = remover)
+  comprasDraft.forEach((val, key) => {
+    const [contratoId, semana, dia, produtoId] = key.split("|");
+    const gk = `${contratoId}|${semana}|${dia}`;
+    if(!grupos.has(gk)) grupos.set(gk, new Map());
+    grupos.get(gk).set(produtoId, val);
   });
-  return d;
+  try{
+    for(const [gk, overrides] of grupos){
+      const [contratoId, semanaStr, dia] = gk.split("|");
+      const semana = parseInt(semanaStr, 10);
+      const doc = previsaoCompra.get(gk);
+      const mapa = new Map((doc?.itens||[]).map(it => [it.produto_id, it.quantidade_ajustada]));
+      overrides.forEach((val, pid) => { if(val === null) mapa.delete(pid); else mapa.set(pid, val); });
+      const itens = [...mapa.entries()].map(([produto_id, quantidade_ajustada]) => ({ produto_id, quantidade_ajustada }));
+      const { error } = await sb.from('previsao_compra').upsert({ contrato_id: contratoId, semana, dia, itens, ...carimbo() }, { onConflict: 'contrato_id,semana,dia' });
+      if(error) throw error;
+    }
+    await loadPrevisaoCompra();
+    comprasDraft = new Map();
+    showAlert("Alterações salvas.");
+    return true;
+  }catch(e){ showAlert("Erro ao salvar: " + (e.message || e.code || e)); return false; }
+  finally{ comprasSalvando = false; renderCompras(); }
+}
+function contagemInsumoNaSemana(insumoId, unidade, semana){
+  const row = estoqueContagem.get(`${semana}|${unidade}|${insumoId}`);
+  return row ? (row.quantidade_contada||0) : 0;
+}
+function comprasMesmoConjunto(a, b){ return a.length === b.length && a.every(id => b.includes(id)) && b.every(id => a.includes(id)); }
+
+function abrirSalvarConjuntoCompra(selIds, conjAtivo){
+  const root = document.getElementById("modal-root");
+  const fechar = () => { root.innerHTML = ""; };
+  const nomes = selIds.map(id => contratos.get(id)?.nome_cliente).filter(Boolean);
+  root.innerHTML = `
+    <div class="modal-overlay" id="ov">
+      <div class="modal" style="max-width:460px;">
+        <div class="modal-head"><h2>${conjAtivo ? "Atualizar conjunto" : "Salvar conjunto de clientes"}</h2><button class="close-x" id="close-m">&times;</button></div>
+        <div class="modal-body">
+          <div class="field"><label for="cj-nome">Nome do conjunto</label><input type="text" id="cj-nome" value="${conjAtivo ? escapeHtml(conjAtivo[1].nome) : ""}" placeholder="ex.: Extrema — sem Filial" autocomplete="off"></div>
+          <div class="footnote">${selIds.length} ${selIds.length===1?"cliente":"clientes"}: ${escapeHtml(nomes.join(", "))}</div>
+          <div class="footnote">Se já existir um conjunto com o mesmo nome, ele é substituído por esta seleção.</div>
+          <div class="footnote" id="err-msg" style="color:var(--critical);"></div>
+        </div>
+        <div class="modal-foot"><button class="btn" id="cj-cancelar">Cancelar</button><button class="btn primary" id="cj-ok">Salvar</button></div>
+      </div>
+    </div>`;
+  document.getElementById("close-m").onclick = fechar;
+  document.getElementById("cj-cancelar").onclick = fechar;
+  document.getElementById("ov").addEventListener("click", e => { if(e.target.id === "ov") fechar(); });
+  const inp = document.getElementById("cj-nome"); inp.focus(); inp.select();
+  const salvar = async () => {
+    const nome = inp.value.trim();
+    if(!nome){ document.getElementById("err-msg").textContent = "Dê um nome ao conjunto."; return; }
+    const btn = document.getElementById("cj-ok"); btn.disabled = true;
+    try{
+      const { error } = await sb.from('conjuntos_compra').upsert({ nome, contrato_ids: selIds, ...carimbo() }, { onConflict: 'nome' });
+      if(error) throw error;
+      await loadConjuntosCompra();
+      fechar();
+      renderCompras();
+    }catch(e){ btn.disabled = false; document.getElementById("err-msg").textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+  };
+  document.getElementById("cj-ok").onclick = salvar;
+  inp.addEventListener("keydown", e => { if(e.key === "Enter") salvar(); });
+}
+
+function renderComprasQuantidades(area, selecionados){
+  if(!area) return;
+  const semana = comprasSemana;
+  if(!selecionados.length){ area.innerHTML = `<div class="empty-state">Selecione ao menos um cliente em "Clientes da lista".</div>`; return; }
+  const grupos = selecionados.map(([cid, ct]) => ({ cid, ct, itens: itensRefeicaoDoContrato(cid) })).filter(g => g.itens.length);
+  const semRefeicao = selecionados.filter(([cid]) => !itensRefeicaoDoContrato(cid).length).map(([,ct]) => ct.nome_cliente);
+  if(!grupos.length){ area.innerHTML = `<div class="empty-state">Nenhum dos clientes selecionados tem item de refeição cadastrado.</div>`; return; }
+
+  area.innerHTML = `
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Previsão de consumo — ${escapeHtml(rotuloSemana(semana))}</h3>
+        <span class="hint">${escapeHtml(intervaloSemana(semana))}</span>
+      </div>
+      <div class="panel-body">
+        <div class="footnote" style="margin:0 0 14px;">Sem ajuste, a célula mostra a <strong>sugestão automática</strong> como placeholder (passe o mouse pra ver a origem): lançado em Vendas → mediana do mês (mín. 2 lançamentos) → ciclo de 9 semanas → quantidade contratada por dia. Digite um número pra sobrepor; apague o campo pra voltar à sugestão. As mudanças ficam pendentes até clicar em "Salvar alterações". Só itens de <strong>refeição</strong> — café e extras são terceirizados.</div>
+        ${grupos.map(g => `
+          <div style="margin-bottom:18px;">
+            <div class="footnote" style="font-weight:600; margin-bottom:6px;">${escapeHtml(g.ct.nome_cliente)}</div>
+            <div class="table-wrap">
+              <table class="cardapio-table">
+                <thead><tr><th class="cat-col">Item</th>${DIAS_ORDEM.map(dia => `<th>${DIA_LABEL[dia]}</th>`).join("")}</tr></thead>
+                <tbody>
+                  ${g.itens.map(item => `<tr>
+                    <td class="cat-col">${escapeHtml(item.nome)}</td>
+                    ${DIAS_ORDEM.map(dia => {
+                      if(!item.produto_id) return `<td class="cel"><input disabled></td>`;
+                      if(!contratoVigenteNoDia(g.ct, semana, dia)) return `<td class="cel"><input disabled title="Fora da vigência do contrato"></td>`;
+                      const sug = origemSugestao(g.cid, item.produto_id, dia, semana);
+                      const inputVal = comprasInputValue(g.cid, item.produto_id, dia, semana);
+                      const placeholder = sug.valor != null ? sug.valor : "—";
+                      const titulo = sug.valor != null ? rotuloOrigemSugestao(sug.origem, sug.n) : "sem sugestão (sem histórico e sem quantidade contratada)";
+                      const pend = comprasCelPendente(g.cid, item.produto_id, dia, semana);
+                      return `<td class="cel"><input type="number" step="1" min="0" class="cel-gram cp-qtd${pend?" cp-qtd-pend":""}" data-cid="${g.cid}" data-produto="${escapeHtml(item.produto_id)}" data-dia="${dia}" value="${inputVal}" placeholder="${placeholder}" title="${escapeHtml(titulo)}"></td>`;
+                    }).join("")}
+                  </tr>`).join("")}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        `).join("")}
+        ${semRefeicao.length ? `<div class="footnote">Sem item de refeição contratado (só café/extras): ${escapeHtml(semRefeicao.join(", "))}.</div>` : ""}
+      </div>
+    </div>
+  `;
+
+  area.querySelectorAll(".cp-qtd").forEach(inp => inp.addEventListener("input", () => {
+    const { cid, produto, dia } = inp.dataset;
+    comprasSetDraft(cid, semana, dia, produto, inp.value);
+    inp.classList.toggle("cp-qtd-pend", comprasCelPendente(cid, produto, dia, semana));
+    atualizarBarraPendenciasCompras();
+  }));
+}
+function atualizarBarraPendenciasCompras(){
+  const nPend = comprasPendCount();
+  const info = document.getElementById("cx-pend-info");
+  if(info) info.innerHTML = nPend ? `<span class="chip warn">${nPend} ${nPend===1?"alteração":"alterações"} não salva${nPend===1?"":"s"}</span>` : "";
+  const btnDesc = document.getElementById("cx-descartar");
+  if(btnDesc) btnDesc.style.display = nPend ? "" : "none";
+  const btnSalvar = document.getElementById("cx-salvar");
+  if(btnSalvar){ btnSalvar.disabled = !nPend || comprasSalvando; btnSalvar.classList.toggle("primary", !!nPend); }
+  const btnGerar = document.getElementById("cx-gerar");
+  if(btnGerar) btnGerar.textContent = nPend ? "Salvar e gerar lista" : "Gerar lista de compra";
+}
+
+function renderListaCompraResultado(semana, contratoIds){
+  const area = document.getElementById("cp-lista-resultado");
+  if(!area) return;
+  const almocoIdx = indiceCardapioAlmoco();
+  const cafeIdx = indiceCafeSemana();
+  const totalInsumos = new Map(); // insumo_id -> kg/und (bruto, antes de abater estoque)
+  const porUnidadeInsumo = new Map(); // insumo_id -> {matriz: kg, filial: kg}
+  contratoIds.forEach(id => {
+    const ct = contratos.get(id);
+    if(!ct) return;
+    const itensContrato = itensRefeicaoDoContrato(id);
+    const un = ct.unidade === "filial" ? "filial" : "matriz";
+    DIAS_ORDEM.forEach(dia => {
+      if(!contratoVigenteNoDia(ct, semana, dia)) return;
+      itensContrato.forEach(item => {
+        const q = quantidadePrevista(id, item.produto_id, dia, semana);
+        if(!q) return;
+        const porItem = insumosUnidadeItemCompra(almocoIdx, cafeIdx, item.produto_id, ct, semana, dia, q);
+        mergeInsumosInto(totalInsumos, porItem);
+        porItem.forEach((kg, insumoId) => {
+          const acc = porUnidadeInsumo.get(insumoId) || {matriz:0, filial:0};
+          acc[un] += kg;
+          porUnidadeInsumo.set(insumoId, acc);
+        });
+      });
+    });
+  });
+  // abate a contagem de Estoque mais recente da semana, cada unidade só abatendo a própria (igual sistema antigo)
+  let temContagemNaSemana = false;
+  const emEstoquePorInsumo = new Map();
+  porUnidadeInsumo.forEach((porUn, insumoId) => {
+    let emEstoque = 0;
+    ["matriz","filial"].forEach(u => {
+      if(porUn[u] > 0){
+        const contado = contagemInsumoNaSemana(insumoId, u, semana);
+        if(contado > 0) temContagemNaSemana = true;
+        emEstoque += Math.min(porUn[u], contado);
+      }
+    });
+    if(emEstoque > 0) emEstoquePorInsumo.set(insumoId, emEstoque);
+  });
+
+  const linhas = [...totalInsumos.entries()].map(([insumoId, kgBruto]) => {
+    const ins = insumos.get(insumoId);
+    const emEstoque = emEstoquePorInsumo.get(insumoId) || 0;
+    const kg = Math.max(0, kgBruto - emEstoque);
+    const custo = ins && ins.custo_kg_l_und != null ? kg * ins.custo_kg_l_und : null;
+    return { nome: ins ? ins.nome : insumoId, grupo: ins?.grupo_compra || "(sem grupo)", kg, kgBruto, emEstoque, unidade: ins ? unidadeCustoInsumo(ins) : "kg", custo };
+  }).sort((a,b) => normalizeText(a.grupo).localeCompare(normalizeText(b.grupo)) || normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
+
+  let totCusto = 0, semCusto = 0;
+  const linhasHtml = linhas.map(l => {
+    if(l.custo != null) totCusto += l.custo; else semCusto++;
+    return `<tr>
+      <td class="name-cell">${escapeHtml(l.nome)}${l.emEstoque > 0 ? `<div class="footnote" style="margin:2px 0 0;">bruto ${fmtNum(l.kgBruto,3)} − estoque ${fmtNum(l.emEstoque,3)}</div>` : ""}</td>
+      <td style="font-size:12.5px;">${escapeHtml(l.grupo)}</td>
+      <td class="num-cell">${fmtNum(l.kg, 3)}</td>
+      <td>${l.unidade}</td>
+      <td class="num-cell">${l.custo != null ? fmtMoney(l.custo) : "—"}</td>
+    </tr>`;
+  }).join("") || `<tr><td colspan="5" class="empty-state">Nenhuma previsão de consumo para os clientes e semana selecionados.</td></tr>`;
+
+  area.innerHTML = `
+    <div class="footnote" style="margin:16px 0 10px;">Lista gerada para <strong>${escapeHtml(rotuloSemana(semana))}</strong> (${escapeHtml(intervaloSemana(semana))}) — ${contratoIds.length} ${contratoIds.length===1?"cliente":"clientes"}. ${temContagemNaSemana ? "Estoque contado nesta semana já abatido (cada unidade só abate a própria contagem)." : "Sem contagem de estoque nesta semana — necessidade bruta."}</div>
+    <div class="panel">
+      <div class="panel-head"><h3>Lista de compra — insumos</h3></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Insumo</th><th>Grupo de compra</th><th style="text-align:right;">Quantidade</th><th>Unidade</th><th style="text-align:right;">Custo estimado</th></tr></thead>
+          <tbody>${linhasHtml}</tbody>
+          <tfoot><tr class="row-total">
+            <td class="name-cell">Total${semCusto ? ` (${semCusto} insumo(s) sem custo cadastrado)` : ""}</td><td></td><td></td><td></td>
+            <td class="num-cell">${fmtMoney(totCusto)}</td>
+          </tr></tfoot>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function renderComprasLista(content, tabsHtml, wireTabs){
+  const contratosAtivos = [...contratos.entries()].filter(([,c]) => c.ativo).sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)));
+  const idsTodos = contratosAtivos.map(([id]) => id);
+
+  const semanasBase = semanasDisponiveisVendas();
+  const semanaAtual = semanaDaData(hojeYMD()) || 1;
+  const opcoesSemana = [...new Set([...semanasBase, semanaAtual, semanaAtual+1])].sort((a,b)=>a-b);
+  if(!comprasSemanaIniciada){ // abre direto na semana seguinte à de hoje — a que se compra agora
+    comprasSemanaIniciada = true;
+    comprasSemana = opcoesSemana.includes(semanaAtual+1) ? semanaAtual+1 : (opcoesSemana.includes(semanaAtual) ? semanaAtual : opcoesSemana[0]);
+  }
+  if(!opcoesSemana.includes(comprasSemana)) comprasSemana = opcoesSemana[0];
+  const idxSem = opcoesSemana.indexOf(comprasSemana);
+
+  if(comprasSelecao === null) comprasSelecao = new Set(idsTodos);
+  comprasSelecao = new Set([...comprasSelecao].filter(id => idsTodos.includes(id)));
+  const selIds = idsTodos.filter(id => comprasSelecao.has(id));
+  const idsMatriz = contratosAtivos.filter(([,c]) => c.unidade !== "filial").map(([id]) => id);
+  const idsFilial = contratosAtivos.filter(([,c]) => c.unidade === "filial").map(([id]) => id);
+  const conjuntos = [...conjuntosCompra.entries()].sort((a,b) => normalizeText(a[1].nome||"").localeCompare(normalizeText(b[1].nome||"")));
+  const conjAtivo = conjuntos.find(([,c]) => selIds.length && comprasMesmoConjunto((c.contrato_ids||[]).filter(id => idsTodos.includes(id)), selIds));
+  const ehTodos = !!(selIds.length && selIds.length === idsTodos.length);
+  let rotuloSel;
+  if(!selIds.length) rotuloSel = "Nenhum cliente";
+  else if(conjAtivo) rotuloSel = conjAtivo[1].nome;
+  else if(ehTodos) rotuloSel = "Grupo inteiro";
+  else if(comprasMesmoConjunto(selIds, idsMatriz)) rotuloSel = "Matriz";
+  else if(comprasMesmoConjunto(selIds, idsFilial)) rotuloSel = "Filial";
+  else if(selIds.length === 1) rotuloSel = contratos.get(selIds[0]).nome_cliente;
+  else rotuloSel = "Seleção personalizada";
+
+  const nPend = comprasPendCount();
+  const atalho = (key, label, ids) => {
+    const ativo = ids.length && comprasMesmoConjunto(ids, selIds);
+    return `<button type="button" class="chip-dia ${ativo?"on":""}" data-atalho="${key}" ${ids.length?"":"disabled"}>${escapeHtml(label)} (${ids.length})</button>`;
+  };
+  const grupoClientesHtml = (titulo, lista) => {
+    if(!lista.length) return "";
+    return `<div style="margin-bottom:10px;">
+      <div class="footnote" style="margin:0 0 4px; font-weight:600;">${titulo}</div>
+      <div class="kk-dias-chips" style="flex-wrap:wrap;">
+        ${lista.map(([id,c]) => `<button type="button" class="chip-dia cp-cli-chip ${comprasSelecao.has(id)?"on":""}" data-id="${id}">${escapeHtml(c.nome_cliente)}</button>`).join("")}
+      </div>
+    </div>`;
+  };
+
+  content.innerHTML = `
+    ${tabsHtml}
+    <div class="menu-controls">
+      <button type="button" class="btn" id="cx-sem-ant" ${idxSem>0?"":"disabled"} title="Semana anterior">←</button>
+      <select id="cp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===comprasSemana?"selected":""}>${escapeHtml(rotuloSemana(s))}${s===semanaAtual+1?" · próxima":""}</option>`).join("")}</select>
+      <button type="button" class="btn" id="cx-sem-prox" ${idxSem<opcoesSemana.length-1?"":"disabled"} title="Próxima semana">→</button>
+      <span class="footnote" style="margin:0;">${escapeHtml(intervaloSemana(comprasSemana))}</span>
+      <span style="flex:1 1 auto;"></span>
+      <span id="cx-pend-info">${nPend ? `<span class="chip warn">${nPend} ${nPend===1?"alteração":"alterações"} não salva${nPend===1?"":"s"}</span>` : ""}</span>
+      <button type="button" class="btn small ghost" id="cx-descartar" style="${nPend?"":"display:none;"}">Descartar</button>
+      <button type="button" class="btn ${nPend?"primary":""}" id="cx-salvar" ${nPend && !comprasSalvando ? "" : "disabled"}>${comprasSalvando?"Salvando…":"Salvar alterações"}</button>
+      <button type="button" class="btn primary" id="cx-gerar" ${selIds.length && !comprasSalvando ? "" : "disabled"}>${nPend ? "Salvar e gerar lista" : "Gerar lista de compra"}</button>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Clientes da lista</h3>
+        <span class="hint">${escapeHtml(rotuloSel)} · ${selIds.length} de ${idsTodos.length}</span>
+      </div>
+      <div class="panel-body">
+        <div class="kk-dias-chips" style="margin-bottom:10px; flex-wrap:wrap; align-items:center;">
+          ${atalho("todos", "Grupo inteiro", idsTodos)}
+          ${atalho("matriz", "Matriz", idsMatriz)}
+          ${atalho("filial", "Filial", idsFilial)}
+          ${conjuntos.length ? `<span style="width:1px; align-self:stretch; background:var(--border); margin:0 4px;"></span>` : ""}
+          ${conjuntos.map(([cid,c]) => {
+            const ids = (c.contrato_ids||[]).filter(id => idsTodos.includes(id));
+            const ativo = ids.length && comprasMesmoConjunto(ids, selIds);
+            return `<span style="display:inline-flex; align-items:center; gap:2px;">
+              <button type="button" class="chip-dia ${ativo?"on":""}" data-conj="${cid}">${escapeHtml(c.nome)} (${ids.length})</button>
+              <button type="button" class="btn small ghost" data-conj-del="${cid}" title="Excluir conjunto" style="padding:2px 6px; color:var(--critical);">✕</button>
+            </span>`;
+          }).join("")}
+        </div>
+        <div style="display:flex; gap:8px; margin-bottom:12px;">
+          <button type="button" class="btn small ghost" id="cx-cli-limpar" ${selIds.length?"":"disabled"}>Limpar seleção</button>
+          <button type="button" class="btn small" id="cx-conj-salvar" ${selIds.length?"":"disabled"}>${conjAtivo ? "Atualizar conjunto" : "Salvar como conjunto"}</button>
+        </div>
+        <div class="grid2">
+          ${grupoClientesHtml("Matriz", contratosAtivos.filter(([,c]) => c.unidade !== "filial"))}
+          ${grupoClientesHtml("Filial", contratosAtivos.filter(([,c]) => c.unidade === "filial"))}
+        </div>
+        ${contratosAtivos.length ? "" : `<div class="empty-state">Nenhum contrato ativo cadastrado ainda.</div>`}
+      </div>
+    </div>
+    <div id="cp-qtd-area"></div>
+    <div id="cp-lista-resultado"></div>
+  `;
+  wireTabs();
+
+  document.getElementById("cp-semana").addEventListener("change", e => { comprasSemana = parseInt(e.target.value,10); renderCompras(); });
+  document.getElementById("cx-sem-ant").addEventListener("click", () => { comprasSemana = opcoesSemana[idxSem-1]; renderCompras(); });
+  document.getElementById("cx-sem-prox").addEventListener("click", () => { comprasSemana = opcoesSemana[idxSem+1]; renderCompras(); });
+
+  content.querySelectorAll("[data-atalho]").forEach(b => b.addEventListener("click", () => {
+    const k = b.dataset.atalho;
+    comprasSelecao = new Set(k==="matriz"?idsMatriz:k==="filial"?idsFilial:idsTodos);
+    renderCompras();
+  }));
+  content.querySelectorAll("[data-conj]").forEach(b => b.addEventListener("click", () => {
+    const c = conjuntosCompra.get(b.dataset.conj);
+    if(c) comprasSelecao = new Set((c.contrato_ids||[]).filter(id => idsTodos.includes(id)));
+    renderCompras();
+  }));
+  content.querySelectorAll("[data-conj-del]").forEach(b => b.addEventListener("click", async () => {
+    const c = conjuntosCompra.get(b.dataset.conjDel);
+    if(!c || !(await confirmDialog(`Excluir o conjunto "${c.nome}"? Os clientes e contratos não mudam.`))) return;
+    try{
+      const { error } = await sb.from('conjuntos_compra').delete().eq('id', b.dataset.conjDel);
+      if(error) throw error;
+      await loadConjuntosCompra();
+      renderCompras();
+    }catch(e){ showAlert("Erro ao excluir: " + (e.message||e.code||e)); }
+  }));
+  content.querySelectorAll(".cp-cli-chip").forEach(b => b.addEventListener("click", () => {
+    const id = b.dataset.id;
+    if(comprasSelecao.has(id)) comprasSelecao.delete(id); else comprasSelecao.add(id);
+    renderCompras();
+  }));
+  document.getElementById("cx-cli-limpar").addEventListener("click", () => { comprasSelecao = new Set(); renderCompras(); });
+  document.getElementById("cx-conj-salvar").addEventListener("click", () => abrirSalvarConjuntoCompra(selIds, conjAtivo));
+  document.getElementById("cx-salvar").addEventListener("click", () => comprasSalvarAlteracoes());
+  document.getElementById("cx-descartar").addEventListener("click", () => comprasDescartar());
+  document.getElementById("cx-gerar").addEventListener("click", async () => {
+    if(comprasPendCount() && !(await comprasSalvarAlteracoes())) return;
+    comprasListaGerada = true;
+    renderListaCompraResultado(comprasSemana, selIds);
+    const r = document.getElementById("cp-lista-resultado");
+    if(r) r.scrollIntoView({behavior:"smooth", block:"start"});
+  });
+
+  renderComprasQuantidades(document.getElementById("cp-qtd-area"), contratosAtivos.filter(([id]) => selIds.includes(id)));
+  if(comprasListaGerada && selIds.length) renderListaCompraResultado(comprasSemana, selIds);
 }
 
 function renderCompras(){
   document.getElementById("page-title").textContent = "Compras";
-  document.getElementById("page-desc").textContent = "Previsão de consumo por contrato/semana e lista de compra de insumos agregada por mês";
+  document.getElementById("page-desc").textContent = comprasTab === "pedidos"
+    ? "Histórico de compras por fornecedor: registre, duplique pedidos antigos e confira o recebimento."
+    : "Escolha os clientes e a semana, ajuste a previsão de consumo e gere a lista de insumos a comprar.";
   document.getElementById("topbar-actions").innerHTML = "";
 
-  const contratosAtivos = [...contratos.entries()].filter(([,c]) => c.ativo).sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)));
-  const meses = MESES_REFERENCIA;
-  if(compraMesSel === null || !meses.some(m => m.id === compraMesSel)) compraMesSel = meses.some(m => m.id === mesAtualId()) ? mesAtualId() : (meses[0] ? meses[0].id : null);
-
-  if(compraTabSel === "estoque") compraTabSel = "previsao"; // Estoque foi incorporado à aba Insumos
   const content = document.getElementById("content");
-  content.innerHTML = `
+  const tabsHtml = `
     <div class="seg-toggle" id="cp-tabs" style="margin-bottom:14px; width:fit-content;">
-      <button type="button" data-tab="previsao" class="${compraTabSel==="previsao"?"active":""}">Ajustar previsão</button>
-      <button type="button" data-tab="lista" class="${compraTabSel==="lista"?"active":""}">Lista de compra</button>
-      <button type="button" data-tab="pedidos" class="${compraTabSel==="pedidos"?"active":""}">Pedidos</button>
+      <button type="button" data-tab="lista" class="${comprasTab==="lista"?"active":""}">Lista de compra</button>
+      <button type="button" data-tab="pedidos" class="${comprasTab==="pedidos"?"active":""}">Pedidos</button>
     </div>
-    <div id="cp-body"></div>
   `;
-
-  function renderTabPrevisao(){
-    if(!contratosAtivos.length){ document.getElementById("cp-body").innerHTML = `<div class="empty-state">Nenhum contrato ativo cadastrado ainda.</div>`; return; }
-    if(compraContratoSel === null || !contratosAtivos.some(([id]) => id === compraContratoSel)) compraContratoSel = contratosAtivos[0][0];
-    const semanas = semanasDisponiveisVendas();
-    if(compraSemanaSel === null || !semanas.includes(compraSemanaSel)) compraSemanaSel = semanas[0];
-    draftPrevisao = carregarDraftPrevisao(compraContratoSel, compraSemanaSel);
-
-    const body = document.getElementById("cp-body");
-    body.innerHTML = `
-      <div class="menu-controls">
-        <select id="cp-contrato">${contratosAtivos.map(([id,c]) => `<option value="${id}" ${id===compraContratoSel?"selected":""}>${escapeHtml(c.nome_cliente)}</option>`).join("")}</select>
-        <select id="cp-semana">${semanas.map(s => `<option value="${s}" ${s===compraSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
-        <button class="btn primary" id="cp-salvar" style="margin-left:auto;">Salvar ajustes</button>
-      </div>
-      <div class="footnote" style="margin:10px 0;">Sem ajuste, a célula mostra a <strong>sugestão automática</strong> como placeholder (passe o mouse pra ver a origem): o que já foi lançado em Vendas nesta semana → mediana do mês (mín. 2 lançamentos) → o mesmo dia 9 semanas atrás (ciclo de 2 meses) → quantidade contratada por dia. Digite um número pra sobrepor; apague o campo pra voltar a usar a sugestão. Só itens de <strong>refeição</strong> aparecem aqui — café e extras são terceirizados e não entram na Lista de compra.</div>
-      <div class="panel">
-        <div class="table-wrap">
-          <table class="cardapio-table">
-            <thead><tr><th class="cat-col">Item</th>${DIAS_ORDEM.map(dia => `<th>${DIA_LABEL[dia]}</th>`).join("")}</tr></thead>
-            <tbody id="cp-tbody"></tbody>
-          </table>
-        </div>
-      </div>
-    `;
-
-    const itens = itensRefeicaoDoContrato(compraContratoSel);
-    function redraw(){
-      const tbody = document.getElementById("cp-tbody");
-      tbody.innerHTML = itens.map(item => `<tr>
-        <td class="cat-col">${escapeHtml(item.nome)}</td>
-        ${DIAS_ORDEM.map(dia => {
-          if(!item.produto_id) return `<td class="cel"><input disabled></td>`;
-          const ajuste = draftPrevisao[dia]?.[item.produto_id];
-          const sug = origemSugestao(compraContratoSel, item.produto_id, dia, compraSemanaSel);
-          const mostrarValor = (ajuste !== undefined && ajuste !== null) ? ajuste : "";
-          const placeholder = sug.valor != null ? sug.valor : "—";
-          const titulo = sug.valor != null ? rotuloOrigemSugestao(sug.origem, sug.n) : "sem sugestão (sem histórico e sem quantidade contratada)";
-          return `<td class="cel"><input type="number" step="1" min="0" class="cel-gram cp-qtd" data-produto="${escapeHtml(item.produto_id)}" data-dia="${dia}" value="${mostrarValor}" placeholder="${placeholder}" title="${escapeHtml(titulo)}"></td>`;
-        }).join("")}
-      </tr>`).join("") || `<tr><td colspan="${1+DIAS_ORDEM.length}" class="empty-state">Este contrato não tem itens cadastrados.</td></tr>`;
-
-      tbody.querySelectorAll(".cp-qtd").forEach(inp => inp.addEventListener("input", () => {
-        const produtoId = inp.dataset.produto, dia = inp.dataset.dia;
-        const val = inp.value === "" ? null : Number(inp.value);
-        if(!draftPrevisao[dia]) draftPrevisao[dia] = {};
-        if(val === null) delete draftPrevisao[dia][produtoId]; else draftPrevisao[dia][produtoId] = val;
-      }));
-    }
-    redraw();
-
-    document.getElementById("cp-contrato").addEventListener("change", e => { compraContratoSel = e.target.value; renderTabPrevisao(); });
-    document.getElementById("cp-semana").addEventListener("change", e => { compraSemanaSel = Number(e.target.value); renderTabPrevisao(); });
-    document.getElementById("cp-salvar").addEventListener("click", async () => {
-      const btn = document.getElementById("cp-salvar");
-      btn.disabled = true; btn.textContent = "Salvando…";
-      try{
-        const linhas = DIAS_ORDEM.map(dia => ({
-          contrato_id: compraContratoSel, semana: compraSemanaSel, dia,
-          itens: Object.entries(draftPrevisao[dia] || {}).map(([produto_id, quantidade_ajustada]) => ({ produto_id, quantidade_ajustada })),
-          ...carimbo(),
-        }));
-        const { error } = await sb.from('previsao_compra').upsert(linhas, { onConflict: 'contrato_id,semana,dia' });
-        if(error) throw error;
-        await loadPrevisaoCompra();
-        showAlert("Ajustes salvos.");
-      }catch(e){ showAlert("Erro ao salvar: " + (e.message || e.code || e)); }
-      finally{ btn.disabled = false; btn.textContent = "Salvar ajustes"; }
-    });
+  function wireTabs(){
+    content.querySelectorAll("#cp-tabs button[data-tab]").forEach(b => b.addEventListener("click", () => { comprasTab = b.dataset.tab; renderCompras(); }));
   }
 
-  function montarLista(){
-    const mes = meses.find(m => m.id === compraMesSel);
-    const totalInsumos = new Map(); // insumo_id -> kg/und (bruto, antes de abater estoque)
-    const porUnidadeInsumo = new Map(); // insumo_id -> {matriz: kg, filial: kg}
-    const contratosNaLista = compraClientesSel === null ? contratosAtivos : contratosAtivos.filter(([id]) => compraClientesSel.has(id));
-    if(mes){
-      const almocoIdx = indiceCardapioAlmoco();
-      const cafeIdx = indiceCafeSemana();
-      contratosNaLista.forEach(([id, ct]) => {
-        const itensContrato = itensRefeicaoDoContrato(id);
-        const un = ct.unidade === "filial" ? "filial" : "matriz";
-        mes.semanas.forEach(semana => {
-          DIAS_ORDEM.forEach(dia => {
-            if(mesDoDia(semana, dia) !== mes.id) return;
-            if(!contratoVigenteNoDia(ct, semana, dia)) return;
-            itensContrato.forEach(item => {
-              const q = quantidadePrevista(id, item.produto_id, dia, semana);
-              if(!q) return;
-              const porItem = insumosUnidadeItemCompra(almocoIdx, cafeIdx, item.produto_id, ct, semana, dia, q);
-              mergeInsumosInto(totalInsumos, porItem);
-              porItem.forEach((kg, insumoId) => {
-                const acc = porUnidadeInsumo.get(insumoId) || {matriz:0, filial:0};
-                acc[un] += kg;
-                porUnidadeInsumo.set(insumoId, acc);
-              });
-            });
-          });
-        });
-      });
-    }
-    // abate a contagem de Estoque mais recente do mês, cada unidade só abatendo a própria (igual sistema antigo)
-    let temContagemNoMes = false;
-    const emEstoquePorInsumo = new Map();
-    porUnidadeInsumo.forEach((porUn, insumoId) => {
-      let emEstoque = 0;
-      ["matriz","filial"].forEach(u => {
-        if(porUn[u] > 0){
-          const contado = contagemInsumoNoMes(insumoId, u, mes);
-          if(contado > 0) temContagemNoMes = true;
-          emEstoque += Math.min(porUn[u], contado);
-        }
-      });
-      if(emEstoque > 0) emEstoquePorInsumo.set(insumoId, emEstoque);
-    });
-
-    const linhas = [...totalInsumos.entries()].map(([insumoId, kgBruto]) => {
-      const ins = insumos.get(insumoId);
-      const emEstoque = emEstoquePorInsumo.get(insumoId) || 0;
-      const kg = Math.max(0, kgBruto - emEstoque);
-      const custo = ins && ins.custo_kg_l_und != null ? kg * ins.custo_kg_l_und : null;
-      return { nome: ins ? ins.nome : insumoId, grupo: ins?.grupo_compra || "(sem grupo)", kg, kgBruto, emEstoque, unidade: ins ? unidadeCustoInsumo(ins) : "kg", custo };
-    }).sort((a,b) => normalizeText(a.grupo).localeCompare(normalizeText(b.grupo)) || normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
-
-    const tbody = document.getElementById("cp-lista-tbody");
-    let totCusto = 0, semCusto = 0;
-    tbody.innerHTML = linhas.map(l => {
-      if(l.custo != null) totCusto += l.custo; else semCusto++;
-      return `<tr>
-        <td class="name-cell">${escapeHtml(l.nome)}${l.emEstoque > 0 ? `<div class="footnote" style="margin:2px 0 0;">bruto ${fmtNum(l.kgBruto,3)} − estoque ${fmtNum(l.emEstoque,3)}</div>` : ""}</td>
-        <td style="font-size:12.5px;">${escapeHtml(l.grupo)}</td>
-        <td class="num-cell">${fmtNum(l.kg, 3)}</td>
-        <td>${l.unidade}</td>
-        <td class="num-cell">${l.custo != null ? fmtMoney(l.custo) : "—"}</td>
-      </tr>`;
-    }).join("") || `<tr><td colspan="5" class="empty-state">Nenhuma previsão de consumo neste mês ainda.</td></tr>`;
-    document.getElementById("cp-lista-tfoot").innerHTML = `<tr class="row-total">
-      <td class="name-cell">Total${semCusto ? ` (${semCusto} insumo(s) sem custo cadastrado)` : ""}</td><td></td><td></td><td></td>
-      <td class="num-cell">${fmtMoney(totCusto)}</td>
-    </tr>`;
-    const avisoEstoque = document.getElementById("cp-lista-estoque-aviso");
-    if(avisoEstoque) avisoEstoque.textContent = temContagemNoMes
-      ? "Estoque contado neste mês já abatido (cada unidade só abate a própria contagem)."
-      : "Sem contagem de estoque neste mês — necessidade bruta.";
+  if(comprasTab === "pedidos"){
+    content.innerHTML = `${tabsHtml}<div id="cp-body"></div>`;
+    wireTabs();
+    renderTabPedidos();
+    return;
   }
 
-  function renderTabLista(){
-    if(compraClientesSel === null) compraClientesSel = new Set(contratosAtivos.map(([id]) => id));
-    compraClientesSel = new Set([...compraClientesSel].filter(id => contratosAtivos.some(([cid]) => cid === id)));
-    const idsMatriz = contratosAtivos.filter(([,c]) => c.unidade === "matriz").map(([id]) => id);
-    const idsFilial = contratosAtivos.filter(([,c]) => c.unidade === "filial").map(([id]) => id);
-    const mesmoConjunto = (a,b) => a.length === b.length && a.every(id => b.includes(id));
+  renderComprasLista(content, tabsHtml, wireTabs);
+}
 
-    const body = document.getElementById("cp-body");
-    body.innerHTML = `
-      <div class="menu-controls"><select id="cp-mes">${meses.map(m => `<option value="${m.id}" ${m.id===compraMesSel?"selected":""}>${escapeHtml(m.nome)}</option>`).join("")}</select></div>
-      <div class="footnote" style="margin:10px 0;">Soma a previsão (ajuste manual, ou sugestão automática quando não há ajuste) dos clientes marcados abaixo, vigentes no mês, convertida em kg/unidade de insumo — mesmo motor de cálculo usado no custo de Vendas, só que acumulando insumo em vez de R$. Só itens de <strong>refeição</strong> entram — café e extras são terceirizados.</div>
-      <div class="footnote" id="cp-lista-estoque-aviso" style="margin:0 0 10px;"></div>
-      <div class="panel">
-        <div class="panel-head">
-          <h3>Clientes da lista</h3>
-          <span class="hint">${compraClientesSel.size} de ${contratosAtivos.length}</span>
-        </div>
-        <div class="panel-body">
-          <div class="seg-toggle" id="cp-cli-atalhos" style="width:fit-content; margin-bottom:10px;">
-            <button type="button" data-atalho="todos">Todos</button>
-            <button type="button" data-atalho="matriz" ${idsMatriz.length?"":"disabled"}>Matriz</button>
-            <button type="button" data-atalho="filial" ${idsFilial.length?"":"disabled"}>Filial</button>
-          </div>
-          <div class="kk-dias-chips" style="flex-wrap:wrap;">
-            ${contratosAtivos.map(([id,c]) => `<button type="button" class="chip-dia cp-cli-chip ${compraClientesSel.has(id)?"on":""}" data-id="${id}">${escapeHtml(c.nome_cliente)}</button>`).join("")}
-          </div>
-        </div>
-      </div>
-      <div class="panel"><div class="table-wrap"><table>
-        <thead><tr><th>Insumo</th><th>Grupo de compra</th><th style="text-align:right;">Quantidade</th><th>Unidade</th><th style="text-align:right;">Custo estimado</th></tr></thead>
-        <tbody id="cp-lista-tbody"></tbody>
-        <tfoot id="cp-lista-tfoot"></tfoot>
-      </table></div></div>
-    `;
-    montarLista();
-    document.getElementById("cp-mes").addEventListener("change", e => { compraMesSel = e.target.value; montarLista(); });
-
-    function atualizarChipsCliente(){
-      document.querySelectorAll(".cp-cli-chip").forEach(b => b.classList.toggle("on", compraClientesSel.has(b.dataset.id)));
-      document.querySelectorAll("#cp-cli-atalhos button").forEach(b => {
-        const ids = b.dataset.atalho === "matriz" ? idsMatriz : b.dataset.atalho === "filial" ? idsFilial : contratosAtivos.map(([id])=>id);
-        b.classList.toggle("active", ids.length > 0 && mesmoConjunto([...compraClientesSel].sort(), [...ids].sort()));
-      });
-    }
-    atualizarChipsCliente();
-
-    document.getElementById("cp-cli-atalhos").addEventListener("click", e => {
-      const b = e.target.closest("button[data-atalho]"); if(!b) return;
-      const ids = b.dataset.atalho === "matriz" ? idsMatriz : b.dataset.atalho === "filial" ? idsFilial : contratosAtivos.map(([id])=>id);
-      compraClientesSel = new Set(ids);
-      atualizarChipsCliente(); montarLista();
-    });
-    document.querySelectorAll(".cp-cli-chip").forEach(b => b.addEventListener("click", () => {
-      const id = b.dataset.id;
-      if(compraClientesSel.has(id)) compraClientesSel.delete(id); else compraClientesSel.add(id);
-      atualizarChipsCliente(); montarLista();
-    }));
-  }
-
-  function renderTabPedidos(){
+/* ---- Pedidos (histórico de compras por fornecedor — inalterado) ---- */
+function renderTabPedidos(){
     const semanasComPedido = [...new Set([...pedidos.values()].map(p=>p.semana).filter(s=>s!=null))].sort((a,b)=>a-b);
     const semanaAtual = semanaDaData(hojeYMD()) || 1;
     const opcoesFiltro = [...new Set([...semanasComPedido, semanaAtual])].sort((a,b)=>a-b);
@@ -7402,24 +7599,6 @@ function renderCompras(){
     document.getElementById("pd-unidade-filtro").addEventListener("change", e => { pedidosUnidadeFiltro = e.target.value; updateTable(); });
     document.getElementById("pd-busca").addEventListener("input", e => { pedidosBusca = e.target.value; updateTable(); });
     document.getElementById("pd-novo").addEventListener("click", () => openPedidoModal(null));
-  }
-
-  // Estoque foi incorporado à aba Insumos (ver renderTabInsumoEstoque) — este bloco não existe mais aqui.
-
-  function dispatchTab(){
-    if(compraTabSel === "previsao") renderTabPrevisao();
-    else if(compraTabSel === "lista") renderTabLista();
-    else renderTabPedidos();
-  }
-
-  document.getElementById("cp-tabs").addEventListener("click", e => {
-    const b = e.target.closest("button[data-tab]"); if(!b) return;
-    compraTabSel = b.dataset.tab;
-    document.querySelectorAll("#cp-tabs button[data-tab]").forEach(x => x.classList.toggle("active", x===b));
-    dispatchTab();
-  });
-
-  dispatchTab();
 }
 
 /* ---- modal: registrar/editar pedido ---- */
