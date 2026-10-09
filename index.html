@@ -5554,6 +5554,11 @@ function custoUnidadeItemVendaVivo(almocoIdx, cafeIdx, produtoId, contrato, sema
       const f = fichas.get(cat.ficha_id);
       return f ? computeFicha(f, cat.ficha_id).custoKg : null;
     }
+    case "insumo": {
+      if(!cat.insumo_id) return null;
+      const ins = insumos.get(cat.insumo_id);
+      return ins ? (ins.custo_kg_l_und ?? null) : null;
+    }
     case "fixo":
       return cat.custo_unitario ?? null;
     case "zero":
