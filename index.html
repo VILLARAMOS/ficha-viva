@@ -5454,7 +5454,7 @@ function construirSnapshotCustoSemana(semana){
     if(!ct) return;
     (row.itens || []).forEach(it => {
       if(!it.quantidade || !it.produto_id) return;
-      const custo = custoUnidadeItemVendaVivo(almocoIdx, cafeIdx, it.produto_id, ct, row.semana, row.dia);
+      const custo = custoUnidadeItemVendaVivo(almocoIdx, cafeIdx, it.produto_id, ct, row.semana, row.dia, row.contrato_id);
       if(custo !== null && custo !== undefined) snap[`${row.contrato_id}|${row.dia}|${it.produto_id}`] = custo;
     });
   });
@@ -5518,10 +5518,15 @@ function catalogoPorProduto(produtoId){
   return [...catalogoItens.values()].find(c => c.produto_id === produtoId) || null;
 }
 // custo ao vivo, recalculado do cardápio/ficha técnica — sem olhar fechamento de semana
-function custoUnidadeItemVendaVivo(almocoIdx, cafeIdx, produtoId, contrato, semana, dia){
+function custoUnidadeItemVendaVivo(almocoIdx, cafeIdx, produtoId, contrato, semana, dia, contratoId){
   const cat = catalogoPorProduto(produtoId);
   if(!cat) return null;
   switch(cat.tipo_custo){
+    case "percentual_venda": {
+      if(contratoId == null) return null;
+      const preco = precoItemVendaApurado(produtoId, contratoId, null);
+      return preco != null ? preco * (cat.multiplicador || 0) : null;
+    }
     case "cardapio_refeicao": {
       const row = contrato.cardapio_refeicao_num!=null ? almocoIdx.get(`${contrato.cardapio_refeicao_num}|${semana}|${dia}`) : null;
       return row ? (row.custo_planejado ?? null) : null;
@@ -5566,7 +5571,7 @@ function custoUnidadeItemVenda(almocoIdx, cafeIdx, produtoId, contrato, contrato
     const chave = `${contratoId}|${dia}|${produtoId}`;
     if(Object.prototype.hasOwnProperty.call(sf.custo_congelado || {}, chave)) return sf.custo_congelado[chave];
   }
-  return custoUnidadeItemVendaVivo(almocoIdx, cafeIdx, produtoId, contrato, semana, dia);
+  return custoUnidadeItemVendaVivo(almocoIdx, cafeIdx, produtoId, contrato, semana, dia, contratoId);
 }
 
 function itensDoContratoVenda(contratoId){
@@ -8344,7 +8349,7 @@ function apurarPlanejadoContrato(id, ct, mesId, almocoIdx, cafeIdx){
       if(!item.produto_id) return;
       const q = quantidadePrevista(id, item.produto_id, dia, semana);
       if(!q) return;
-      const custoUnd = custoUnidadeItemVendaVivo(almocoIdx, cafeIdx, item.produto_id, ct, semana, dia);
+      const custoUnd = custoUnidadeItemVendaVivo(almocoIdx, cafeIdx, item.produto_id, ct, semana, dia, id);
       const c = (custoUnd != null ? custoUnd : 0) * q;
       const r = (item.preco_venda != null ? item.preco_venda : 0) * q;
       out.custo += c; out.receitaItemizada += r; out.quantidade += q;
