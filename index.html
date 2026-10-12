@@ -10005,7 +10005,81 @@ async function pcpSalvarMargem(pct){
   const row = { chave: "geral", margem_pct: (pct > 0 ? pct : null), alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
   const { error } = await sb.from('pcp_config').upsert(row);
   if(error){ showAlert("Erro ao salvar margem de produção: " + error.message); return; }
-  pcpConfig.set("geral", row);
+  pcpConfig.set("geral", { ...(pcpConfig.get("geral")||{}), ...row });
+}
+
+// ---------- Fase 2: Açougue — não existe hoje campo estruturado no cadastro de insumos pra dizer se uma
+// proteína chega em natura (passa pelo açougue) ou já pronta (vai direto pra cozinha) — confirmado com o
+// Marcelo em 12/10/2026. Resolvido com uma lista padrão por heurística de nome (igual ao protótipo /
+// artifact de referência) + override gravável em pcp_config.acougue_itens, ajustável na tela.
+// validado em 12/10/2026 contra a lista real de insumos (bloco PROTEÍNAS) — tem gente de dois tipos
+// misturada lá: corte crú de verdade (vai pro açougue) e prato/preparo já pronto comprado ou feito de
+// outro jeito (NÃO passa pelo açougue), ex.: "SALMÃO COM CAMARÃO CREMOSO", "FRANGO KFC", "CARNE DE
+// PANELA À MINEIRA", "ESCALOPE ... AO MOLHO MADEIRA". Radical sem a vogal final pra pegar
+// masculino/feminino junto (pront* cobre pronto/pronta). Essa lista é só o ponto de partida — ela NÃO
+// vai pegar tudo (ex.: "CARNE DE PANELA À MINEIRA" não bate em nenhuma palavra abaixo); por isso existe
+// a tela de revisão (Cortes e dias) — revisar essa lista uma vez antes de confiar na Requisição.
+const ACOUGUE_PALAVRAS_FORA = [
+  "linguic","salsicha","hamburgu","almondeg","nugget","empanad","milanesa","defumad",
+  "temperad","marinad","bacon","presunto","mortadela","salame","copa","embutido","pront",
+  "cozid","assad","grelhad","frit","panqueca","hadoque","kani","molho","cremos","rechead",
+  "kfc","bbq","cerveja","california","role","individual"
+];
+function acougueItemEhInNatura(ins){
+  if(!ins || ins.grupo_compra !== "PROTEÍNAS") return false;
+  const nome = normalizeText(ins.nome || "");
+  return !ACOUGUE_PALAVRAS_FORA.some(p => nome.includes(p));
+}
+function acougueItensPadrao(){
+  return [...insumos.entries()].filter(([, ins]) => acougueItemEhInNatura(ins)).map(([id]) => id);
+}
+function pcpAcougueCustom(){
+  const c = pcpConfig.get("geral");
+  return (c && Array.isArray(c.acougue_itens)) ? c.acougue_itens : null;
+}
+function pcpAcougueSet(){
+  const custom = pcpAcougueCustom();
+  return new Set(custom || acougueItensPadrao());
+}
+async function pcpSalvarAcougueItens(itensIds){
+  const row = { chave: "geral", acougue_itens: itensIds, alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
+  const { error } = await sb.from('pcp_config').upsert(row);
+  if(error){ showAlert("Erro ao salvar itens do açougue: " + error.message); return; }
+  pcpConfig.set("geral", { ...(pcpConfig.get("geral")||{}), ...row });
+}
+
+// ---------- Fase 2: dias de operação — açougue e separação de estoque normalmente não funcionam no fim
+// de semana; por padrão seg-sex, ajustável na tela (grava em pcp_config.acougue_dias/estoque_dias). Nos
+// dias em que o açougue não opera, o corte do dia anterior útil precisa cobrir os dias seguintes até o
+// próximo dia de operação (ex.: sexta cobre sáb+dom+seg) — ver pcpPrepAcougueDoDia.
+const PCP_DIAS_OP_PADRAO = ["SEGUNDA","TERCA","QUARTA","QUINTA","SEXTA"];
+function pcpAcgDias(){
+  const c = pcpConfig.get("geral");
+  return (c && Array.isArray(c.acougue_dias) && c.acougue_dias.length) ? c.acougue_dias : PCP_DIAS_OP_PADRAO;
+}
+function pcpEstDias(){
+  const c = pcpConfig.get("geral");
+  return (c && Array.isArray(c.estoque_dias) && c.estoque_dias.length) ? c.estoque_dias : PCP_DIAS_OP_PADRAO;
+}
+async function pcpSalvarDiasOperacao(campo, dias){
+  const row = { chave: "geral", [campo]: dias, alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
+  const { error } = await sb.from('pcp_config').upsert(row);
+  if(error){ showAlert("Erro ao salvar dias de operação: " + error.message); return; }
+  pcpConfig.set("geral", { ...(pcpConfig.get("geral")||{}), ...row });
+}
+// dias (em DIAS_ORDEM), em ordem, até o próximo dia em que `diasOp` operar — inclusive o próprio diaIni
+// se ele já é dia de operação, pra cobrir o caso comum (dia normal, sem acúmulo).
+function pcpDiasCobertos(diaIni, diasOp){
+  const iIni = DIAS_ORDEM.indexOf(diaIni);
+  if(iIni === -1) return [diaIni];
+  if(!diasOp.includes(diaIni)) return []; // dia sem operação não gera cobertura própria — some do mapa
+  const cobertos = [diaIni];
+  for(let i = iIni + 1; i < DIAS_ORDEM.length; i++){
+    const d = DIAS_ORDEM[i];
+    if(diasOp.includes(d)) break;
+    cobertos.push(d);
+  }
+  return cobertos;
 }
 
 // mesmo agrupamento/ordem já usado em Fichas técnicas (GRUPOS_FICHA_BASE) — não cria uma segunda
@@ -10014,6 +10088,24 @@ function pcpGrupoFicha(f){ return (f && f.grupo) || "SEM GRUPO"; }
 function pcpOrdemGrupo(grupo){
   const i = GRUPOS_FICHA_BASE.indexOf(grupo);
   return i === -1 ? GRUPOS_FICHA_BASE.length : i;
+}
+// mesma ideia do CATEGORIA_GRUPO_PREFIXO usado em Fichas técnicas (linha ~4796), pra classificar um item
+// de cardápio SEM ficha (insumo direto — ex.: "Pão", "Margarina") no mesmo grupo (PROTEÍNA/BASE/...) que
+// as receitas já usam. Precisa pra Fase 2 (Requisição do estoque) rotear esses itens por setor também.
+const PCP_CATEGORIA_GRUPO_PREFIXO = [["Proteína","PROTEÍNA"],["Base","BASE"],["Guarnição","GUARNIÇÃO"],["Salada","SALADA"],["Sobremesa","SOBREMESA"],["Suco","SUCO"],["Extra","EXTRA"]];
+function pcpGrupoDaCategoria(categoria){
+  const base = categoriaBase(categoria);
+  const achado = PCP_CATEGORIA_GRUPO_PREFIXO.find(([pfx]) => base.startsWith(pfx));
+  return achado ? achado[1] : "SEM GRUPO";
+}
+// setor físico que prepara cada grupo — usado pra separar a Requisição do estoque por bancada.
+// suco fica "fora" de propósito: é preparado na unidade do cliente, não na cozinha central (confirmado
+// com o Marcelo em 12/10/2026) — não entra em Requisição nem em Açougue.
+function pcpSetorDoGrupo(grupo){
+  if(grupo === "SUCO SIMPLES" || grupo === "SUCO NATURAL" || grupo === "SUCO") return "fora";
+  if(grupo === "SALADA") return "saladas";
+  if(grupo === "SOBREMESA") return "sobremesas";
+  return "cozinha";
 }
 // CORREÇÃO (mesma sessão, antes de ir pra Fase 2): cheguei a tratar Salada/Sobremesa/Suco como "porção"
 // e ficha "servida por unidade" como "un.", copiando uma distinção que existia no protótipo antigo
@@ -10063,7 +10155,7 @@ function pcpAcumularDia(dayDoc, numPessoas, contratoId, nomeCliente, produtoId, 
       receitas.set(r.fichaId, R);
     } else if(r.insumoId){
       const ins = insumos.get(r.insumoId);
-      const D = diretos.get(r.insumoId) || { insumoId: r.insumoId, nome: ins ? ins.nome : (it.nome || r.insumoId), unidade: ins ? (ins.unidade_medida || "") : "", total: 0, porCliente: new Map() };
+      const D = diretos.get(r.insumoId) || { insumoId: r.insumoId, nome: ins ? ins.nome : (it.nome || r.insumoId), unidade: ins ? (ins.unidade_medida || "") : "", grupo: pcpGrupoDaCategoria(it.categoria), total: 0, porCliente: new Map() };
       D.total += r.qtd;
       const pc = D.porCliente.get(chave) || { contratoId, nome: nomeCliente, produtoId, qtd: 0 };
       pc.qtd += r.qtd; D.porCliente.set(chave, pc);
@@ -10076,9 +10168,9 @@ function pcpAcumularDia(dayDoc, numPessoas, contratoId, nomeCliente, produtoId, 
 // mesmo dispatch de custoUnidadeItemVendaVivo/insumosUnidadeItemCompra (contrato → tipo_custo → linha do
 // cardápio no almocoIdx) — de propósito os três motores (custo, compra, produção) leem o MESMO campo do
 // contrato, pra nunca dessincronizar. Aqui param na ficha em vez de ir até o insumo.
-function pcpProducaoUnidadeItem(almocoIdx, produtoId, contrato, contratoId, nomeCliente, semana, dia, quantidade, receitas, diretos, avisos){
-  const cat = catalogoPorProduto(produtoId);
-  if(!cat || !PCP_TIPOS_PRODUCAO.has(cat.tipo_custo) || !quantidade) return;
+// isolado de pcpProducaoUnidadeItem pra ser reaproveitado também pela Requisição do estoque (Fase 2) —
+// os dois motores precisam resolver a MESMA linha de cardápio pro mesmo contrato/dia, senão divergem.
+function pcpResolveRowProducao(almocoIdx, cat, contrato, semana, dia, quantidade){
   let row = null, qtdEf = quantidade;
   if(cat.tipo_custo === "cardapio_refeicao"){
     row = contrato.cardapio_refeicao_num != null ? almocoIdx.get(`${contrato.cardapio_refeicao_num}|${semana}|${dia}`) : null;
@@ -10093,6 +10185,12 @@ function pcpProducaoUnidadeItem(almocoIdx, produtoId, contrato, contratoId, nome
       qtdEf = quantidade * (cat.multiplicador || 1);
     }
   }
+  return { row, qtdEf };
+}
+function pcpProducaoUnidadeItem(almocoIdx, produtoId, contrato, contratoId, nomeCliente, semana, dia, quantidade, receitas, diretos, avisos){
+  const cat = catalogoPorProduto(produtoId);
+  if(!cat || !PCP_TIPOS_PRODUCAO.has(cat.tipo_custo) || !quantidade) return;
+  const { row, qtdEf } = pcpResolveRowProducao(almocoIdx, cat, contrato, semana, dia, quantidade);
   if(!row){
     avisos.push({ tipo: "critical", txt: `${nomeCliente}: ${fmtNum(quantidade,0)} ${cat.nome} previstos, mas o contrato não tem o cardápio desse grupo montado neste dia — nada entra na produção.` });
     return;
@@ -10130,6 +10228,73 @@ function pcpCalcularDia(semana, dia, unidadeFiltro){
   const lista = [...receitas.values()].sort((a, b) => pcpOrdemGrupo(a.grupo) - pcpOrdemGrupo(b.grupo) || b.total - a.total);
   const kgTotal = lista.reduce((s, r) => s + r.total, 0);
   return { semana, dia, unidade: unidadeFiltro || "todos", receitas: lista, diretos: [...diretos.values()].sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR')), clientes: [...clientes.values()].sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome))), avisos, pessoasTot, kgTotal };
+}
+
+// ---------- Fase 2: Requisição do estoque por setor ----------
+// Mesma explosão ficha→insumo já usada em Compras (insumosParaKgNecessario) — NÃO reimplementa o
+// cálculo, só redireciona o resultado pra bancada certa (cozinha/saladas/sobremesas) em vez de um total
+// único. Suco fica fora (preparado na unidade do cliente — confirmado 12/10/2026). Proteína em natura
+// (pcpAcougueSet) sai da bancada "cozinha" e vai pro bucket "acougue": quem prepara é o açougue, não a
+// cozinha, então essa requisição é separada da requisição de estoque normal.
+function pcpAcumularInsumosDia(dayDoc, numPessoas, acougueSet, buckets){
+  if(!dayDoc) return;
+  (dayDoc.itens || []).forEach(it => {
+    const r = pcpItemProducao(it, numPessoas);
+    if(!r) return;
+    let setor, porInsumo;
+    if(r.fichaId){
+      const f = fichas.get(r.fichaId);
+      setor = pcpSetorDoGrupo(pcpGrupoFicha(f));
+      if(setor === "fora") return;
+      porInsumo = insumosParaKgNecessario(r.fichaId, r.qtd);
+    } else if(r.insumoId){
+      setor = pcpSetorDoGrupo(pcpGrupoDaCategoria(it.categoria));
+      if(setor === "fora") return;
+      porInsumo = new Map([[r.insumoId, r.qtd]]);
+    } else return;
+    porInsumo.forEach((kg, insumoId) => {
+      const destino = (setor === "cozinha" && acougueSet.has(insumoId)) ? "acougue" : setor;
+      const mapa = buckets.get(destino) || new Map();
+      mapa.set(insumoId, (mapa.get(insumoId) || 0) + kg);
+      buckets.set(destino, mapa);
+    });
+  });
+}
+// motor principal da Requisição: varre os MESMOS contratos/quantidadePrevista/linha-de-cardápio do
+// pcpCalcularDia (via pcpResolveRowProducao, pra nunca dessincronizar) e acumula por setor em vez de por
+// receita. Não repete os avisos de "cardápio não montado" — já aparecem na aba Produção.
+function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro){
+  const almocoIdx = new Map();
+  cardapiosAlmoco.forEach(row => almocoIdx.set(`${row.cardapio_num}|${row.semana}|${row.dia}`, row));
+  const acougueSet = pcpAcougueSet();
+  const buckets = new Map(); // "cozinha"|"saladas"|"sobremesas"|"acougue" -> Map(insumoId -> kg)
+
+  [...contratos.entries()]
+    .filter(([, ct]) => ct.ativo !== false)
+    .filter(([, ct]) => !unidadeFiltro || unidadeFiltro === "todos" || ct.unidade === unidadeFiltro)
+    .filter(([, ct]) => contratoVigenteNoDia(ct, semana, dia))
+    .forEach(([contratoId, ct]) => {
+      itensDoContratoVenda(contratoId).forEach(ci => {
+        const cat = catalogoPorProduto(ci.produto_id);
+        if(!cat || !PCP_TIPOS_PRODUCAO.has(cat.tipo_custo)) return;
+        const qtd = quantidadePrevista(contratoId, ci.produto_id, dia, semana);
+        if(!(qtd > 0)) return;
+        const { row, qtdEf } = pcpResolveRowProducao(almocoIdx, cat, ct, semana, dia, qtd);
+        if(!row) return;
+        pcpAcumularInsumosDia(row, qtdEf, acougueSet, buckets);
+      });
+    });
+
+  const SETOR_LABEL = { cozinha: "Cozinha", saladas: "Saladas", sobremesas: "Sobremesas", acougue: "Açougue" };
+  const SETOR_ORDEM = ["acougue", "cozinha", "saladas", "sobremesas"];
+  const porSetor = SETOR_ORDEM.filter(s => buckets.has(s)).map(setor => {
+    const itens = [...buckets.get(setor).entries()].map(([insumoId, kg]) => {
+      const ins = insumos.get(insumoId);
+      return { insumoId, nome: ins ? ins.nome : insumoId, unidade: ins ? (ins.unidade_medida || "kg") : "kg", kg };
+    }).sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR'));
+    return { setor, label: SETOR_LABEL[setor], itens };
+  });
+  return { semana, dia, unidade: unidadeFiltro || "todos", porSetor };
 }
 
 /* ---------- tela ---------- */
@@ -10209,13 +10374,70 @@ function pcpEtiquetaImprimir(res){
   w.document.close(); w.focus(); w.print();
 }
 
+function pcpRequisicaoHtml(res){
+  if(!res.porSetor.length) return `<p class="footnote">Nada a requisitar neste dia.</p>`;
+  return res.porSetor.map(s => `<div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head"><h3>${escapeHtml(s.label)}</h3><span class="hint">${s.itens.length} item${s.itens.length===1?"":"s"}</span></div>
+    <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Insumo</th><th style="text-align:right;">Quantidade</th></tr></thead><tbody>
+      ${s.itens.map(it => `<tr><td class="name-cell">${escapeHtml(it.nome)}</td><td class="num-cell">${fmtNum(it.kg,3)} ${escapeHtml(it.unidade)}</td></tr>`).join("")}
+    </tbody></table></div></div>
+  </div>`).join("");
+}
+
+function pcpAbrirConfigAcougue(){
+  const root = document.getElementById("modal-root");
+  const custom = pcpAcougueCustom();
+  const selecionados = new Set(custom || acougueItensPadrao());
+  const candidatos = [...insumos.entries()]
+    .filter(([, ins]) => ins.grupo_compra === "PROTEÍNAS")
+    .map(([id, ins]) => ({ id, nome: ins.nome }))
+    .sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR'));
+  const diasChk = (dias) => DIAS_ORDEM
+    .map(d => `<label style="display:inline-flex; align-items:center; gap:4px; margin-right:12px;"><input type="checkbox" data-dia="${d}" ${dias.includes(d)?"checked":""}> ${DIA_LABEL[d]}</label>`).join("");
+  root.innerHTML = `
+    <div class="modal-overlay" id="acg-ov">
+      <div class="modal" style="max-width:560px;">
+        <div class="modal-head"><h2>Cortes e dias — Açougue / Requisição</h2><button class="close-x" id="acg-close">&times;</button></div>
+        <div class="modal-body">
+          <p class="footnote">Não existe hoje um campo no cadastro de insumos pra dizer se uma proteína chega em natura (passa pelo açougue) ou já pronta. A lista abaixo começa com um padrão por nome — desmarque o que não deveria ir pro açougue, ou marque o que falta.</p>
+          <div style="max-height:280px; overflow:auto; border:1px solid var(--border); border-radius:8px; padding:10px; margin:10px 0;">
+            ${candidatos.map(c => `<label style="display:flex; align-items:center; gap:8px; padding:3px 0;"><input type="checkbox" data-acg-item="${c.id}" ${selecionados.has(c.id)?"checked":""}> ${escapeHtml(c.nome)}</label>`).join("") || "<span class='footnote'>Nenhum insumo no bloco de compra PROTEÍNAS.</span>"}
+          </div>
+          <div class="field"><label>Dias em que o açougue opera</label><div id="acg-dias">${diasChk(pcpAcgDias())}</div></div>
+          <div class="field" style="margin-top:10px;"><label>Dias em que a separação de estoque opera</label><div id="est-dias">${diasChk(pcpEstDias())}</div></div>
+          <p class="footnote" style="margin-top:8px;">Fora desses dias, a requisição do dia anterior útil precisa cobrir também os dias sem operação (ex.: sexta cobre sábado e domingo).</p>
+        </div>
+        <div class="modal-foot">
+          <button class="btn primary" id="acg-salvar">Salvar</button>
+        </div>
+      </div>
+    </div>`;
+  const close = () => { root.innerHTML = ""; };
+  document.getElementById("acg-close").addEventListener("click", close);
+  document.getElementById("acg-ov").addEventListener("click", e => { if(e.target.id==="acg-ov") close(); });
+  document.getElementById("acg-salvar").addEventListener("click", async () => {
+    const itens = [...root.querySelectorAll("[data-acg-item]")].filter(i => i.checked).map(i => i.dataset.acgItem);
+    const acgDias = [...root.querySelectorAll("#acg-dias [data-dia]")].filter(i => i.checked).map(i => i.dataset.dia);
+    const estDias = [...root.querySelectorAll("#est-dias [data-dia]")].filter(i => i.checked).map(i => i.dataset.dia);
+    await pcpSalvarAcougueItens(itens);
+    await pcpSalvarDiasOperacao("acougue_dias", acgDias);
+    await pcpSalvarDiasOperacao("estoque_dias", estDias);
+    close();
+    renderPCP();
+  });
+}
+
 function renderPCP(){
   document.getElementById("page-title").textContent = "PCP";
   document.getElementById("page-desc").textContent = "Planejamento da produção do dia: cardápio × previsão de atendimento (mesmo motor da Lista de compra) = quanto produzir de cada receita, e o volume líquido por cliente pra etiqueta da cuba.";
   const opcoesSemana = pcpOpcoesSemana();
   if(pcpSemanaSel === null || !opcoesSemana.includes(pcpSemanaSel)) pcpSemanaSel = opcoesSemana[opcoesSemana.length - 1];
   const margemPct = pcpMargemPct();
-  document.getElementById("topbar-actions").innerHTML = `
+  const ehRequisicao = pcpSubView === "requisicao";
+  document.getElementById("topbar-actions").innerHTML = ehRequisicao ? `
+    <div style="display:flex; align-items:center; gap:8px;">
+      <button class="btn small ghost" id="pcp-acg-config">Cortes e dias</button>
+    </div>` : `
     <div style="display:flex; align-items:center; gap:8px;">
       <label style="margin:0; font-size:12px; color:var(--text-muted);">Margem de produção</label>
       <input type="number" id="pcp-margem" step="0.1" min="0" value="${margemPct || ""}" placeholder="0" style="width:70px;">
@@ -10224,38 +10446,50 @@ function renderPCP(){
       <button class="btn small primary" id="pcp-imprimir" style="margin-left:6px;">Imprimir etiquetas</button>
     </div>`;
 
-  const res = pcpCalcularDia(pcpSemanaSel, pcpDiaSel, pcpUnidadeSel === "todos" ? null : pcpUnidadeSel);
+  const unidadeFiltro = pcpUnidadeSel === "todos" ? null : pcpUnidadeSel;
+  const res = ehRequisicao ? null : pcpCalcularDia(pcpSemanaSel, pcpDiaSel, unidadeFiltro);
+  const resReq = ehRequisicao ? pcpCalcularRequisicaoDia(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
   const content = document.getElementById("content");
   content.innerHTML = `
     <div class="seg-toggle" id="pcp-subview-tabs" style="margin-bottom:14px; width:fit-content;">
       <button type="button" data-pcpsub="producao" class="${pcpSubView==="producao"?"active":""}">Produção da cozinha</button>
       <button type="button" data-pcpsub="volume" class="${pcpSubView==="volume"?"active":""}">Volume por cliente</button>
+      <button type="button" data-pcpsub="requisicao" class="${pcpSubView==="requisicao"?"active":""}">Açougue / Requisição do estoque</button>
     </div>
     <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:16px;">
       <div class="seg-toggle" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" data-pcpuni="${u.id}" class="${pcpUnidadeSel===u.id?"active":""}">${u.nome}</button>`).join("")}</div>
       <select id="pcp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===pcpSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))}</option>`).join("")}</select>
       <div class="seg-toggle" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" data-pcpdia="${d}" class="${pcpDiaSel===d?"active":""}">${DIA_LABEL[d].slice(0,3)}</button>`).join("")}</div>
     </div>
-    <div class="kpi-row" style="display:flex; gap:14px; margin-bottom:16px; flex-wrap:wrap;">
-      <div class="kpi"><div class="label">Pessoas previstas</div><div class="value">${fmtNum(res.pessoasTot,0)}</div></div>
-      <div class="kpi"><div class="label">Kg a produzir</div><div class="value">${fmtNum(res.kgTotal,1)}</div></div>
-      <div class="kpi"><div class="label">Receitas</div><div class="value">${res.receitas.length}</div></div>
-      <div class="kpi"><div class="label">Clientes</div><div class="value">${res.clientes.length}</div></div>
-    </div>
-    ${res.avisos.length ? `<div style="margin-bottom:14px;">${res.avisos.map(pcpAvisoChip).join("")}</div>` : ""}
-    ${pcpSubView === "producao" ? pcpProducaoHtml(res, margemPct) : pcpVolumeHtml(res)}
+    ${ehRequisicao ? `
+      ${!pcpAcgDias().includes(pcpDiaSel) ? `<div style="margin-bottom:14px;">${pcpAvisoChip({tipo:"warn", txt:`O açougue não opera em ${DIA_LABEL[pcpDiaSel]} — essa proteína precisa ter saído num dia anterior de operação.`})}</div>` : ""}
+      ${pcpRequisicaoHtml(resReq)}
+    ` : `
+      <div class="kpi-row" style="display:flex; gap:14px; margin-bottom:16px; flex-wrap:wrap;">
+        <div class="kpi"><div class="label">Pessoas previstas</div><div class="value">${fmtNum(res.pessoasTot,0)}</div></div>
+        <div class="kpi"><div class="label">Kg a produzir</div><div class="value">${fmtNum(res.kgTotal,1)}</div></div>
+        <div class="kpi"><div class="label">Receitas</div><div class="value">${res.receitas.length}</div></div>
+        <div class="kpi"><div class="label">Clientes</div><div class="value">${res.clientes.length}</div></div>
+      </div>
+      ${res.avisos.length ? `<div style="margin-bottom:14px;">${res.avisos.map(pcpAvisoChip).join("")}</div>` : ""}
+      ${pcpSubView === "producao" ? pcpProducaoHtml(res, margemPct) : pcpVolumeHtml(res)}
+    `}
   `;
 
   content.querySelector("#pcp-subview-tabs").addEventListener("click", e => { const b = e.target.closest("button[data-pcpsub]"); if(!b) return; pcpSubView = b.dataset.pcpsub; renderPCP(); });
   content.querySelector("#pcp-uni-tabs").addEventListener("click", e => { const b = e.target.closest("button[data-pcpuni]"); if(!b) return; pcpUnidadeSel = b.dataset.pcpuni; renderPCP(); });
   content.querySelector("#pcp-dia-tabs").addEventListener("click", e => { const b = e.target.closest("button[data-pcpdia]"); if(!b) return; pcpDiaSel = b.dataset.pcpdia; renderPCP(); });
   content.querySelector("#pcp-semana").addEventListener("change", e => { pcpSemanaSel = parseInt(e.target.value,10); renderPCP(); });
-  document.getElementById("pcp-margem-salvar").addEventListener("click", async () => {
-    const v = parseFloat(document.getElementById("pcp-margem").value);
-    await pcpSalvarMargem(isFinite(v) ? v : null);
-    renderPCP();
-  });
-  document.getElementById("pcp-imprimir").addEventListener("click", () => pcpEtiquetaImprimir(res));
+  if(ehRequisicao){
+    document.getElementById("pcp-acg-config").addEventListener("click", pcpAbrirConfigAcougue);
+  } else {
+    document.getElementById("pcp-margem-salvar").addEventListener("click", async () => {
+      const v = parseFloat(document.getElementById("pcp-margem").value);
+      await pcpSalvarMargem(isFinite(v) ? v : null);
+      renderPCP();
+    });
+    document.getElementById("pcp-imprimir").addEventListener("click", () => pcpEtiquetaImprimir(res));
+  }
   if(window.lucide) lucide.createIcons();
 }
 
