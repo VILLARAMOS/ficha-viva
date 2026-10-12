@@ -8320,13 +8320,21 @@ function openPedidoModal(id, opts){
   function linhaHtml(l,i){
     return `
       <div class="field-row pd-line" data-i="${i}" style="align-items:flex-end;">
-        <div class="field" style="flex:2;"><label>Insumo</label><input type="text" class="pd-nome" list="pd-insumo-list" autocomplete="off" value="${escapeHtml(l.nome||"")}" placeholder="Buscar insumo…"><div class="footnote" style="margin-top:2px;">${l.insumo_id ? escapeHtml(blocoDoInsumo(l.insumo_id)) : (l.nome ? '<span style="color:var(--critical);">insumo não encontrado — escolha da lista</span>' : "")}</div></div>
+        <div class="field" style="flex:2;"><label>Insumo</label><input type="text" class="pd-nome" list="pd-insumo-list" autocomplete="off" value="${escapeHtml(l.nome||"")}" placeholder="Buscar insumo…"><div class="footnote" style="margin-top:2px;">${l.insumo_id ? escapeHtml(blocoDoInsumo(l.insumo_id)) : (l.nome ? '<span style="color:var(--critical);">insumo não encontrado — escolha da lista</span>' : "")}</div><div class="footnote pd-ultimo" style="margin-top:2px;"></div></div>
         <div class="field"><label>Quantidade</label><input type="number" step="0.001" min="0" class="pd-qtd" value="${l.quantidade!=null?l.quantidade:""}"></div>
         <div class="field"><label>Un.</label><input type="text" class="pd-un" value="${escapeHtml(l.unidade||"")}" disabled></div>
         <div class="field"><label>Preço unit. (R$)</label><input type="number" step="0.01" min="0" class="pd-preco" value="${l.preco_unitario!=null?l.preco_unitario:""}"><div class="footnote pd-alerta" style="margin-top:2px;"></div></div>
         <div class="field"><label>Valor</label><div class="val small" style="padding:9px 0;">${fmtMoney((l.quantidade||0)*(l.preco_unitario||0))}</div></div>
         <div class="field"><button type="button" class="btn small ghost pd-rm" style="color:var(--critical);">remover</button></div>
       </div>`;
+  }
+  // mostra o último preço pago por esse insumo (qualquer fornecedor) assim que ele é escolhido — só na tela,
+  // nunca entra em impressão/PDF (a Lista de compra é o único fluxo impresso, e não usa esta função).
+  function ultimoPrecoHtml(l){
+    if(!l.insumo_id) return "";
+    const ult = fornecedorSugeridoParaInsumo(l.insumo_id);
+    if(!ult || ult.preco_unitario == null) return `<span style="opacity:.6;">sem compra anterior desse insumo</span>`;
+    return `<span style="opacity:.75;">Último pago: <strong>${fmtMoney(ult.preco_unitario)}</strong> em ${escapeHtml(fmtDataYMD(ult.data_pedido))}${ult.fornecedor ? " · "+escapeHtml(ult.fornecedor) : ""}</span>`;
   }
   // compara o preço lançado com a média paga (qualquer fornecedor) no mês anterior ao da data do pedido
   function alertaPrecoHtml(l){
@@ -8346,7 +8354,9 @@ function openPedidoModal(id, opts){
     wrap.querySelectorAll(".pd-line").forEach(row => {
       const i = +row.dataset.i, l = draft.itens[i];
       const alertaEl = row.querySelector(".pd-alerta");
+      const ultimoEl = row.querySelector(".pd-ultimo");
       if(alertaEl) alertaEl.innerHTML = alertaPrecoHtml(l);
+      if(ultimoEl) ultimoEl.innerHTML = ultimoPrecoHtml(l);
       row.querySelector(".pd-nome").addEventListener("change", e => {
         const texto = e.target.value;
         const match = insumosOrdenados.find(([,ins]) => normalizeText(ins.nome) === normalizeText(texto));
