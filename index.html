@@ -3979,7 +3979,7 @@ function openContratoModal(id){
     nome_cliente:"", ativo:true, modelo_faturamento:"itemizado", valor_fixo_mensal:null,
     unidade:"matriz", data_inicio:null, data_fim:null,
     cardapio_refeicao_num: REFEICAO_NUMS[0], cardapio_marmita_num: MARMITA_NUMS[0], marmita_especial_ativo:false, cardapio_marmita_especial_num:null,
-    cardapio_cafe_num: CAFE_NUMS[0], cafe_especial_ativo:false, cardapio_cafe_especial_num:null,
+    cardapio_cafe_num: CAFE_NUMS[0], cafe_especial_ativo:false, cardapio_cafe_especial_num:null, cafe_terceirizado:false,
     observacoes:null,
     perfil_incidencia_id:"geral", producao_fds_feriado:null, franquia:[]
   };
@@ -4073,6 +4073,7 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
               <select id="kk-cafe-num">${CAFE_NUMS.map(n => `<option value="${n}" ${n===draft.cardapio_cafe_num?"selected":""}>${labelNumeroCardapio("cafe",n)}</option>`).join("")}</select>
               <label style="margin-top:6px; font-size:12.5px;"><input type="checkbox" id="kk-cafe-esp-on" style="width:auto; display:inline-block; margin-right:6px;" ${draft.cafe_especial_ativo?"checked":""}> este cliente tem café especial de fim de semana</label>
               <select id="kk-cafe-esp-num" style="margin-top:4px; display:${draft.cafe_especial_ativo?"block":"none"};">${CAFE_NUMS.map(n => `<option value="${n}" ${n===draft.cardapio_cafe_especial_num?"selected":""}>${labelNumeroCardapio("cafe",n)} (especial)</option>`).join("")}</select>
+              <label style="margin-top:6px; font-size:12.5px;"><input type="checkbox" id="kk-cafe-terc" style="width:auto; display:inline-block; margin-right:6px;" ${draft.cafe_terceirizado?"checked":""}> café 100% terceirizado (compramos pronto, não os ingredientes)</label>
             </div>
           </div>
 
@@ -4400,6 +4401,7 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
       cardapio_cafe_num: Number(document.getElementById("kk-cafe-num").value),
       cafe_especial_ativo: document.getElementById("kk-cafe-esp-on").checked,
       cardapio_cafe_especial_num: document.getElementById("kk-cafe-esp-on").checked ? Number(document.getElementById("kk-cafe-esp-num").value) : null,
+      cafe_terceirizado: document.getElementById("kk-cafe-terc").checked,
       observacoes: document.getElementById("kk-obs").value.trim() || null,
       perfil_incidencia_id: document.getElementById("kk-perfil-inc").value || null,
       producao_fds_feriado: document.getElementById("kk-pcp-fds").value || null,
@@ -7123,10 +7125,22 @@ let estoqueSemanaSel = null;
 let estoqueFilter = "";
 let estoqueGrupoFilter = "";
 
-// café/extras são terceirizados — fora da lista de compra (igual ao sistema antigo). Previsão
-// continua mostrando só os itens de refeição também, já que é a única coisa que a lista usa.
+// "outros" (refrigerante, lanche, etc.) continua fora da lista de compra — só refeição aqui.
+// É o que alimenta a grade de Previsão de consumo / Totais editáveis (ainda só refeição).
 function itensRefeicaoDoContrato(contratoId){
   return itensDoContratoVenda(contratoId).filter(it => it.produto_id && categoriaSimples(it.produto_id) === "refeicao");
+}
+// itens de café do contrato — só entram na lista de compra/orçamento se o cliente NÃO for
+// marcado como "café 100% terceirizado" (compra pronto, não os ingredientes).
+function itensCafeDoContrato(contratoId){
+  return itensDoContratoVenda(contratoId).filter(it => it.produto_id && catalogoPorProduto(it.produto_id)?.categoria === "cafe");
+}
+// itens que entram no cálculo de insumo (Lista de compra e Orçamento): refeição sempre,
+// café só se o cliente produz o próprio café (não terceirizado).
+function itensComprasDoContrato(ct, contratoId){
+  const itens = itensRefeicaoDoContrato(contratoId);
+  if(!ct.cafe_terceirizado) return itens.concat(itensCafeDoContrato(contratoId));
+  return itens;
 }
 
 /* ---- rascunho pendente da Lista de compra (v2: fluxo por semana — clientes + ajuste + gerar, tudo numa tela) ---- */
@@ -7463,7 +7477,7 @@ function renderComprasQuantidades(area, selecionados){
         <span class="hint">${escapeHtml(intervaloSemana(semana))}</span>
       </div>
       <div class="panel-body">
-        <div class="footnote" style="margin:0 0 14px;">Sem ajuste, a célula mostra a <strong>sugestão automática</strong> como placeholder (passe o mouse pra ver a origem): lançado em Vendas → mediana do mês (mín. 2 lançamentos) → ciclo de 9 semanas → quantidade contratada por dia. Digite um número pra sobrepor; apague o campo pra voltar à sugestão. As mudanças ficam pendentes até clicar em "Salvar alterações". Só itens de <strong>refeição</strong> — café e extras são terceirizados.</div>
+        <div class="footnote" style="margin:0 0 14px;">Sem ajuste, a célula mostra a <strong>sugestão automática</strong> como placeholder (passe o mouse pra ver a origem): lançado em Vendas → mediana do mês (mín. 2 lançamentos) → ciclo de 9 semanas → quantidade contratada por dia. Digite um número pra sobrepor; apague o campo pra voltar à sugestão. As mudanças ficam pendentes até clicar em "Salvar alterações". Só itens de <strong>refeição</strong> aqui — café entra direto na lista de compra pela sugestão automática (sem ajuste manual por cliente ainda); "outros" (refrigerante, lanche etc.) continua fora.</div>
         ${grupos.map(g => `
           <div style="margin-bottom:18px;">
             <div class="footnote" style="font-weight:600; margin-bottom:6px;">${escapeHtml(g.ct.nome_cliente)}</div>
@@ -7523,10 +7537,11 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale){
   const porUnidadeInsumo = new Map(); // insumo_id -> {matriz: kg, filial: kg}
   const demandaPorDiaInsumo = new Map(); // insumo_id -> Map(dia -> {matriz, filial}) — base p/ abate de estoque dia a dia
   let temAjusteTotalIgnorado = false; // algum ajuste de total digitado não tinha base nos clientes selecionados pra ratear
+  const nClientesCafeTerc = contratoIds.filter(id => contratos.get(id)?.cafe_terceirizado).length;
   contratoIds.forEach(id => {
     const ct = contratos.get(id);
     if(!ct) return;
-    const itensContrato = itensRefeicaoDoContrato(id);
+    const itensContrato = itensComprasDoContrato(ct, id); // refeição + café (se não for 100% terceirizado)
     const un = ct.unidade === "filial" ? "filial" : "matriz";
     DIAS_ORDEM.forEach(dia => {
       if(!contratoVigenteNoDia(ct, semana, dia)) return;
@@ -7626,7 +7641,7 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale){
   }).join("") || `<tr><td colspan="${3+DIAS_ORDEM.length+3}" class="empty-state">Nenhuma previsão de consumo para os clientes e semana selecionados.</td></tr>`;
 
   area.innerHTML = `
-    <div class="footnote" style="margin:16px 0 10px;">Lista gerada para <strong>${escapeHtml(rotuloSemana(semana))}</strong> (${escapeHtml(intervaloSemana(semana))}) — ${contratoIds.length} ${contratoIds.length===1?"cliente":"clientes"}. ${temContagemNaSemana ? "Estoque contado nesta semana já abatido, consumindo primeiro a necessidade dos primeiros dias da semana (cada unidade só abate a própria contagem)." : "Sem contagem de estoque nesta semana — necessidade bruta."}${temAjusteTotalIgnorado ? " Um ou mais ajustes feitos na tabela de Totais não puderam ser aplicados (nenhum cliente selecionado tinha previsão para esse item/dia)." : ""} O ajuste de segurança (quando lançado) entra só no total da semana — ainda não é possível detalhá-lo por dia.</div>
+    <div class="footnote" style="margin:16px 0 10px;">Lista gerada para <strong>${escapeHtml(rotuloSemana(semana))}</strong> (${escapeHtml(intervaloSemana(semana))}) — ${contratoIds.length} ${contratoIds.length===1?"cliente":"clientes"}. ${temContagemNaSemana ? "Estoque contado nesta semana já abatido, consumindo primeiro a necessidade dos primeiros dias da semana (cada unidade só abate a própria contagem)." : "Sem contagem de estoque nesta semana — necessidade bruta."}${temAjusteTotalIgnorado ? " Um ou mais ajustes feitos na tabela de Totais não puderam ser aplicados (nenhum cliente selecionado tinha previsão para esse item/dia)." : ""} Insumo de café incluso (produção própria)${nClientesCafeTerc ? `, exceto ${nClientesCafeTerc} ${nClientesCafeTerc===1?"cliente marcado":"clientes marcados"} como café 100% terceirizado` : ""}. O ajuste de segurança (quando lançado) entra só no total da semana — ainda não é possível detalhá-lo por dia.</div>
     <div class="panel">
       <div class="panel-head">
         <h3>Lista de compra — insumos</h3>
@@ -8309,7 +8324,7 @@ function orcadoPorBlocoSemana(mesId, escopo){
   const porSemanaBloco = mes.semanas.map(semana => {
     const insumosSemana = new Map();
     contratosEscopo.forEach(([id,ct]) => {
-      const itensContrato = itensRefeicaoDoContrato(id);
+      const itensContrato = itensComprasDoContrato(ct, id); // refeição + café (se não for 100% terceirizado)
       DIAS_ORDEM.forEach(dia => {
         if(mesDoDia(semana,dia) !== mes.id) return;
         if(!contratoVigenteNoDia(ct,semana,dia)) return;
