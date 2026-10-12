@@ -240,7 +240,12 @@ tbody tr:hover{background:var(--surface-alt);}
 .insumo-table-wrap{max-width:900px;}
 .insumo-table-wrap table{font-size:12.5px;}
 .insumo-table-wrap th, .insumo-table-wrap td{padding:7px 9px;}
-.scroll-mirror{max-width:900px; overflow-x:auto; overflow-y:hidden; height:14px; margin-bottom:-2px;}
+/* v135: barra de rolagem espelhada no TOPO de toda .table-wrap (a de baixo já é a nativa), injetada automaticamente — ver initTableTopMirrors */
+.scroll-mirror{overflow-x:auto; overflow-y:hidden; height:14px; margin-bottom:-2px;}
+.scroll-mirror::-webkit-scrollbar{height:12px;}
+.scroll-mirror::-webkit-scrollbar-track{background:var(--surface-alt);}
+.scroll-mirror::-webkit-scrollbar-thumb{background:var(--border); border-radius:8px; border:3px solid var(--surface-alt);}
+.scroll-mirror::-webkit-scrollbar-thumb:hover{background:var(--text-faint);}
 .scroll-mirror-inner{height:1px;}
 .estoque-subtabs{margin:16px 0 14px;}
 .pend-entrada-row{display:grid; grid-template-columns:1.6fr .8fr .8fr .9fr 1.4fr auto; gap:10px; align-items:center; padding:10px 0; border-bottom:1px solid var(--border);}
@@ -1240,20 +1245,51 @@ let insumoSort = {field:"nome", dir:"asc"};
 let insumoTabSel = "cadastro"; // "cadastro" | "estoque"
 let estoqueSubTab = "contagem"; // "contagem" | "entradas" | "movimentar" | "baixa"
 
-// liga um .table-wrap a uma barra de rolagem espelhada em cima (arrastar com o mouse já é genérico, ver initTableDragScroll abaixo)
-function habilitarScrollDuplo(wrapEl, mirrorEl){
-  if(!wrapEl || !mirrorEl) return;
-  const inner = mirrorEl.querySelector(".scroll-mirror-inner");
-  const table = wrapEl.querySelector("table");
-  if(inner && table) inner.style.width = table.scrollWidth + "px";
-  let syncing = false;
-  mirrorEl.addEventListener("scroll", () => { if(syncing) return; syncing = true; wrapEl.scrollLeft = mirrorEl.scrollLeft; syncing = false; });
-  wrapEl.addEventListener("scroll", () => { if(syncing) return; syncing = true; mirrorEl.scrollLeft = wrapEl.scrollLeft; syncing = false; });
-}
+// v135: injeta automaticamente uma barra de rolagem espelhada no TOPO de toda .table-wrap do sistema
+// (a de baixo já existe, nativa do próprio wrap) — sem precisar ligar tela por tela. Um MutationObserver
+// cobre os re-renders (innerHTML troca o conteúdo inteiro, criando novos .table-wrap) e um ResizeObserver
+// por tabela mantém a largura do espelho em dia quando o conteúdo muda sem recriar o wrap (ex.: alternar
+// "ver detalhamento", mostrar/ocultar coluna).
+(function initTableTopMirrors(){
+  function ligarMirror(wrap){
+    if(wrap.dataset.mirrored) return;
+    const table = wrap.querySelector("table");
+    if(!table) return;
+    wrap.dataset.mirrored = "1";
+    const mirror = document.createElement("div");
+    mirror.className = "scroll-mirror";
+    const inner = document.createElement("div");
+    inner.className = "scroll-mirror-inner";
+    mirror.appendChild(inner);
+    wrap.parentNode.insertBefore(mirror, wrap);
+
+    const syncWidth = () => { inner.style.width = table.scrollWidth + "px"; };
+    const syncOuter = () => { mirror.style.width = wrap.getBoundingClientRect().width + "px"; };
+    syncWidth(); syncOuter();
+
+    let syncing = false;
+    mirror.addEventListener("scroll", () => { if(syncing) return; syncing = true; wrap.scrollLeft = mirror.scrollLeft; syncing = false; });
+    wrap.addEventListener("scroll", () => { if(syncing) return; syncing = true; mirror.scrollLeft = wrap.scrollLeft; syncing = false; });
+
+    if(typeof ResizeObserver !== "undefined"){
+      new ResizeObserver(syncWidth).observe(table);
+      new ResizeObserver(syncOuter).observe(wrap);
+    }
+  }
+  function varrer(root){
+    (root.matches && root.matches(".table-wrap") ? [root] : []).concat([...root.querySelectorAll?.(".table-wrap")||[]])
+      .forEach(ligarMirror);
+  }
+  varrer(document.body);
+  new MutationObserver(muts => {
+    muts.forEach(m => m.addedNodes.forEach(n => { if(n.nodeType === 1) varrer(n); }));
+  }).observe(document.body, {childList:true, subtree:true});
+})();
 // segurar e arrastar (nas duas direções) em qualquer tabela do sistema — qualquer .table-wrap, sem precisar
 // ligar tela por tela. Delegado no document pra funcionar mesmo depois de um re-render (innerHTML troca o conteúdo
-// mas o listener continua valendo). Não inicia o arrasto em cima de campo clicável (input/select/botão/link),
-// senão quebraria digitação e cliques normais nas tabelas.
+// mas o listener continua valendo). Não inicia o arrasto em cima de campo realmente "clicável de ação" (select/botão/link/
+// contenteditable) — mas PODE iniciar em cima de um input/textarea (tabelas de Totais/Previsão são quase todas inputs);
+// o limiar de 4px abaixo evita que um clique ou digitação normal seja confundido com arrasto.
 (function initTableDragScroll(){
   let el = null, startX = 0, startY = 0, baseLeft = 0, baseTop = 0, moved = false;
   const LIMIAR = 4; // px de tolerância antes de virar arrasto — abaixo disso continua sendo um clique normal
@@ -1261,7 +1297,7 @@ function habilitarScrollDuplo(wrapEl, mirrorEl){
     if(e.button !== 0) return;
     const wrap = e.target.closest(".table-wrap");
     if(!wrap) return;
-    if(e.target.closest("input, select, button, textarea, a, [contenteditable]")) return;
+    if(e.target.closest("select, button, a, [contenteditable]")) return;
     el = wrap; startX = e.pageX; startY = e.pageY; baseLeft = wrap.scrollLeft; baseTop = wrap.scrollTop; moved = false;
   });
   document.addEventListener("mousemove", e => {
@@ -1315,7 +1351,6 @@ function renderTabInsumoCadastro(){
       <span class="footnote" id="insumo-count" style="align-self:center;"></span>
     </div>
     <div class="panel">
-      <div class="scroll-mirror" id="insumo-scroll-top"><div class="scroll-mirror-inner"></div></div>
       <div class="table-wrap insumo-table-wrap" id="insumo-table-wrap">
         <table>
           <thead><tr id="insumo-thead-row">
@@ -1332,7 +1367,6 @@ function renderTabInsumoCadastro(){
       </div>
     </div>
   `;
-  habilitarScrollDuplo(document.getElementById("insumo-table-wrap"), document.getElementById("insumo-scroll-top"));
   const content = body;
 
   function updateInsumoTable(){
@@ -1372,9 +1406,6 @@ function renderTabInsumoCadastro(){
     content.querySelectorAll("#insumo-thead-row th.sortable").forEach(th => {
       th.textContent = th.textContent.replace(/ [↑↓]$/, "") + (insumoSort.field===th.dataset.field ? (insumoSort.dir==="asc"?" ↑":" ↓") : "");
     });
-    const mirrorInner = document.querySelector("#insumo-scroll-top .scroll-mirror-inner");
-    const table = document.querySelector("#insumo-table-wrap table");
-    if(mirrorInner && table) mirrorInner.style.width = table.scrollWidth + "px";
   }
 
   updateInsumoTable();
