@@ -7789,8 +7789,56 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale){
         </table>
       </div>
     </div>
+    <div class="panel" style="margin-top:16px;" id="cx-sugestoes-panel"></div>
   `;
   document.getElementById("cx-imprimir-lista")?.addEventListener("click", () => imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto));
+  renderSugestoesPedido(semana, linhas);
+}
+
+// agrupa a demanda da lista de compra pelo fornecedor que mais recentemente vendeu cada insumo — rascunho em
+// memória (nada é gravado até a compradora abrir e salvar cada um). Insumo nunca comprado antes cai no grupo
+// "sem fornecedor sugerido".
+function sugestoesPedidoPorFornecedor(linhas){
+  const grupos = new Map(); // fornecedor_id (ou "" p/ sem sugestão) -> {fornecedorId, fornecedorNome, itens:[], totalCusto}
+  linhas.filter(l => l.kg > 0).forEach(l => {
+    const sug = fornecedorSugeridoParaInsumo(l.insumoId);
+    const key = sug ? sug.fornecedor_id : "";
+    if(!grupos.has(key)) grupos.set(key, { fornecedorId: sug ? sug.fornecedor_id : null, fornecedorNome: sug ? sug.fornecedor : null, itens: [], totalCusto: 0 });
+    const g = grupos.get(key);
+    const precoRef = sug && sug.preco_unitario != null ? sug.preco_unitario : (insumos.get(l.insumoId)?.custo_unitario ?? null);
+    g.itens.push({ insumo_id: l.insumoId, nome: l.nome, unidade: l.unidade, quantidade: Math.round(l.kg*1000)/1000, preco_unitario: precoRef });
+    g.totalCusto += l.kg * (precoRef||0);
+  });
+  return [...grupos.values()].sort((a,b) => (b.fornecedorId?1:0) - (a.fornecedorId?1:0) || normalizeText(a.fornecedorNome||"zzz").localeCompare(normalizeText(b.fornecedorNome||"zzz")));
+}
+function renderSugestoesPedido(semana, linhas){
+  const panel = document.getElementById("cx-sugestoes-panel");
+  if(!panel) return;
+  const grupos = sugestoesPedidoPorFornecedor(linhas);
+  if(!grupos.length){ panel.innerHTML = ""; return; }
+  panel.innerHTML = `
+    <div class="panel-head"><h3>Pedidos sugeridos por fornecedor</h3></div>
+    <div class="footnote" style="padding:0 16px 10px;">Agrupado pelo fornecedor mais recente de cada insumo (histórico de pedidos). É só um rascunho — abra, confira quantidade/preço e salve (ou descarte) cada um.</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Fornecedor</th><th style="text-align:right;">Itens</th><th style="text-align:right;">Valor estimado</th><th></th></tr></thead>
+        <tbody>
+          ${grupos.map((g,i) => `<tr>
+            <td class="name-cell">${g.fornecedorNome ? escapeHtml(g.fornecedorNome) : '<span class="footnote">sem fornecedor sugerido (nunca comprado)</span>'}</td>
+            <td class="num-cell">${g.itens.length}</td>
+            <td class="num-cell">${fmtMoney(g.totalCusto)}</td>
+            <td><button type="button" class="btn small ghost" data-abrir-sugestao="${i}">${g.fornecedorNome ? "abrir rascunho" : "abrir (escolher fornecedor)"}</button></td>
+          </tr>`).join("")}
+        </tbody>
+      </table>
+    </div>`;
+  panel.querySelectorAll("[data-abrir-sugestao]").forEach(b => b.addEventListener("click", () => {
+    const g = grupos[+b.dataset.abrirSugestao];
+    openPedidoModal(null, { draftPrefill: {
+      fornecedor: g.fornecedorNome||"", data_pedido: hojeYMD(), unidade:"matriz", destino_rotulo:"Grupo inteiro", destino_ids:null,
+      semana_referencia: semana, itens: g.itens,
+    }});
+  }));
 }
 
 function imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto){
@@ -8186,6 +8234,13 @@ function openPedidoModal(id, opts){
     draft = { fornecedor: origem.fornecedor||"", data_pedido: hojeYMD(), data_entrega_prevista: "",
       unidade: pedidoUnidade(origem), destino_rotulo: origem.destino_rotulo||"Grupo inteiro", destino_ids: origem.destino_ids||null,
       semana_referencia: null, observacoes: origem.observacoes||"", itens: (origem.itens||[]).map(linhaDePedidoAnterior) };
+  } else if(opts.draftPrefill){
+    // vem da "Lista de compra" (sugestão de pedido por fornecedor) — rascunho em memória, nada gravado até salvar
+    const p = opts.draftPrefill;
+    draft = { fornecedor: p.fornecedor||"", data_pedido: p.data_pedido||hojeYMD(), data_entrega_prevista:"",
+      unidade: p.unidade||"matriz", destino_rotulo: p.destino_rotulo||"Grupo inteiro", destino_ids: p.destino_ids||null,
+      semana_referencia: p.semana_referencia!=null?p.semana_referencia:null, observacoes: p.observacoes||"",
+      itens: (p.itens||[]).map(l => ({...l})) };
   } else {
     draft = { fornecedor:"", data_pedido: hojeYMD(), data_entrega_prevista:"", unidade:"matriz", destino_rotulo:"Grupo inteiro", destino_ids:null,
       semana_referencia:null, observacoes:"", itens:[novaLinhaPedido()] };
@@ -8199,7 +8254,7 @@ function openPedidoModal(id, opts){
   root.innerHTML = `
     <div class="modal-overlay" id="ov">
       <div class="modal" style="max-width:920px;">
-        <div class="modal-head"><h2>${existing ? "Editar pedido" : (origem ? "Novo pedido (repetido)" : "Registrar pedido")}</h2><button class="close-x" id="close-m">&times;</button></div>
+        <div class="modal-head"><h2>${existing ? "Editar pedido" : (origem ? "Novo pedido (repetido)" : (opts.draftPrefill ? "Novo pedido (sugerido)" : "Registrar pedido"))}</h2><button class="close-x" id="close-m">&times;</button></div>
         <div class="modal-body">
           <div class="field-row">
             <div class="field" style="flex:2;"><label for="pd-fornecedor">Fornecedor</label><input type="text" id="pd-fornecedor" list="pd-forn-list" autocomplete="off" value="${escapeHtml(draft.fornecedor)}" placeholder="Nome do fornecedor"><datalist id="pd-forn-list">${fornecedoresConhecidos().map(f => `<option value="${escapeHtml(f)}"></option>`).join("")}</datalist><div class="footnote" id="pd-forn-info" style="margin-top:3px;"></div></div>
