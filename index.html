@@ -274,6 +274,9 @@ tbody tr:hover{background:var(--surface-alt);}
 .es-split .table-wrap{border-top:none;}
 .es-form-actions{display:flex; justify-content:flex-end; gap:8px; margin-top:4px;}
 @media (max-width:980px){ .es-split{grid-template-columns:1fr;} .pend-entrada-row{grid-template-columns:1fr 1fr;} .pend-entrada-head{display:none;} }
+.grid2{display:grid; grid-template-columns:1fr 1fr; gap:14px; align-items:start;}
+.grid2-box{border:1px solid var(--border); border-radius:10px; padding:12px; background:var(--surface-alt);}
+@media (max-width:820px){ .grid2{grid-template-columns:1fr;} }
 .ing-table{border:1px solid var(--border); border-radius:10px; overflow:hidden; font-size:12px;}
 .ing-header, .ing-line{display:grid; grid-template-columns:2fr .8fr .72fr .72fr .85fr .95fr 56px; gap:6px; align-items:center;}
 .ing-header{padding:6px 8px; background:var(--surface-alt); font-size:10px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.02em;}
@@ -6872,6 +6875,21 @@ function insumosParaKgNecessario(fichaId, kgNecessario){
 }
 function mergeInsumosInto(target, source){ source.forEach((v,k) => target.set(k, (target.get(k)||0) + v)); }
 
+/* ---- coletor de proveniência (opcional): registra em qual receita/dia cada insumo da Lista de compra foi usado,
+   sem alterar o retorno (Map insumo->kg) das funções acima, que outras telas (ex.: Orçamento) já consomem. ---- */
+function criarColetorReceitas(){
+  const porInsumo = new Map(); // insumoId -> Map("dia|receita" -> kg)
+  return {
+    add(insumoId, kg, receita, dia){
+      if(!kg || !receita) return;
+      if(!porInsumo.has(insumoId)) porInsumo.set(insumoId, new Map());
+      const porReceita = porInsumo.get(insumoId);
+      const k = `${dia}|${receita}`;
+      porReceita.set(k, (porReceita.get(k)||0) + kg);
+    },
+    get(insumoId){ return porInsumo.get(insumoId) || new Map(); }
+  };
+}
 function insumosItemCardapioCompra(it, numPessoas){
   const m = new Map();
   if(!it || !numPessoas) return m;
@@ -6885,27 +6903,50 @@ function insumosItemCardapioCompra(it, numPessoas){
   }
   return m;
 }
+function nomeReceitaDoItemCardapio(it){
+  if(!it) return null;
+  if(it.ficha_id) return fichas.get(it.ficha_id)?.nome || "Ficha técnica";
+  if(it.insumo_id) return insumos.get(it.insumo_id)?.nome || "Insumo";
+  return null;
+}
 function insumosEmbalagemDiaCompra(dayDoc, numPessoas){
   const ids = (dayDoc && dayDoc.embalagem_ids) || [];
   const m = new Map();
   ids.forEach(id => { if(id) m.set(id, (m.get(id)||0) + numPessoas); });
   return m;
 }
-function insumosDoDiaRefeicaoCompra(dayDoc, numPessoas){
+function insumosDoDiaRefeicaoCompra(dayDoc, numPessoas, dia, coletor){
   const total = new Map();
   if(!dayDoc) return total;
-  (dayDoc.itens||[]).forEach(it => mergeInsumosInto(total, insumosItemCardapioCompra(it, numPessoas)));
-  mergeInsumosInto(total, insumosEmbalagemDiaCompra(dayDoc, numPessoas));
+  (dayDoc.itens||[]).forEach(it => {
+    const porItem = insumosItemCardapioCompra(it, numPessoas);
+    mergeInsumosInto(total, porItem);
+    if(coletor){
+      const nome = nomeReceitaDoItemCardapio(it);
+      if(nome) porItem.forEach((kg, insumoId) => coletor.add(insumoId, kg, nome, dia));
+    }
+  });
+  const emb = insumosEmbalagemDiaCompra(dayDoc, numPessoas);
+  mergeInsumosInto(total, emb);
+  if(coletor) emb.forEach((kg, insumoId) => coletor.add(insumoId, kg, "Embalagem", dia));
   return total;
 }
-function insumosDoDiaCafeCompra(cafeRow, diaKey, numPessoas){
+function insumosDoDiaCafeCompra(cafeRow, diaKey, numPessoas, dia, coletor){
   const total = new Map();
   const itensDia = (cafeRow && cafeRow.dias && cafeRow.dias[diaKey] && cafeRow.dias[diaKey].itens) || [];
-  itensDia.forEach(it => mergeInsumosInto(total, insumosItemCardapioCompra(it, numPessoas)));
+  itensDia.forEach(it => {
+    const porItem = insumosItemCardapioCompra(it, numPessoas);
+    mergeInsumosInto(total, porItem);
+    if(coletor){
+      const nome = nomeReceitaDoItemCardapio(it);
+      if(nome) porItem.forEach((kg, insumoId) => coletor.add(insumoId, kg, nome, dia));
+    }
+  });
   return total;
 }
-// espelha custoUnidadeItemVenda, mesmo dispatch por tipo_custo, acumulando insumo em vez de R$
-function insumosUnidadeItemCompra(almocoIdx, cafeIdx, produtoId, contrato, semana, dia, quantidade){
+// espelha custoUnidadeItemVenda, mesmo dispatch por tipo_custo, acumulando insumo em vez de R$.
+// coletor (opcional) registra receita/dia de cada insumo — só usado pela Lista de compra; outras telas (Orçamento) chamam sem esse parâmetro.
+function insumosUnidadeItemCompra(almocoIdx, cafeIdx, produtoId, contrato, semana, dia, quantidade, coletor){
   const total = new Map();
   if(!produtoId || !quantidade) return total;
   const cat = catalogoPorProduto(produtoId);
@@ -6913,27 +6954,27 @@ function insumosUnidadeItemCompra(almocoIdx, cafeIdx, produtoId, contrato, seman
   switch(cat.tipo_custo){
     case "cardapio_refeicao": {
       const row = contrato.cardapio_refeicao_num!=null ? almocoIdx.get(`${contrato.cardapio_refeicao_num}|${semana}|${dia}`) : null;
-      return row ? insumosDoDiaRefeicaoCompra(row, quantidade) : total;
+      return row ? insumosDoDiaRefeicaoCompra(row, quantidade, dia, coletor) : total;
     }
     case "cardapio_marmita": {
       const row = contrato.cardapio_marmita_num!=null ? almocoIdx.get(`${contrato.cardapio_marmita_num}|${semana}|${dia}`) : null;
-      return row ? insumosDoDiaRefeicaoCompra(row, quantidade) : total;
+      return row ? insumosDoDiaRefeicaoCompra(row, quantidade, dia, coletor) : total;
     }
     case "cardapio_marmita_especial": {
       if(contrato.marmita_especial_ativo && contrato.cardapio_marmita_especial_num){
         const row = almocoIdx.get(`${contrato.cardapio_marmita_especial_num}|${semana}|${dia}`);
-        if(row) return insumosDoDiaRefeicaoCompra(row, quantidade);
+        if(row) return insumosDoDiaRefeicaoCompra(row, quantidade, dia, coletor);
       }
       const base = contrato.cardapio_marmita_num!=null ? almocoIdx.get(`${contrato.cardapio_marmita_num}|${semana}|${dia}`) : null;
       if(!base) return total;
-      return insumosDoDiaRefeicaoCompra(base, quantidade * (cat.multiplicador || 1));
+      return insumosDoDiaRefeicaoCompra(base, quantidade * (cat.multiplicador || 1), dia, coletor);
     }
     case "cardapio_cafe": {
       const ehFdsFeriado = dia === "SABADO" || dia === "DOMINGO";
       const num = (ehFdsFeriado && contrato.cafe_especial_ativo && contrato.cardapio_cafe_especial_num) ? contrato.cardapio_cafe_especial_num : contrato.cardapio_cafe_num;
       if(num == null) return total;
       const row = cafeIdx.get(`${num}|${semana}`);
-      return row ? insumosDoDiaCafeCompra(row, DIA_KEY_CAFE[dia], quantidade) : total;
+      return row ? insumosDoDiaCafeCompra(row, DIA_KEY_CAFE[dia], quantidade, dia, coletor) : total;
     }
     case "ficha": {
       if(!cat.ficha_id) return total;
@@ -6941,7 +6982,9 @@ function insumosUnidadeItemCompra(almocoIdx, cafeIdx, produtoId, contrato, seman
       if(!f) return total;
       const rendimentoUnd = f.rendimento_und || 1;
       const kgPorUnidade = (f.rendimento_kg && rendimentoUnd) ? (f.rendimento_kg/rendimentoUnd) : 0;
-      return insumosParaKgNecessario(cat.ficha_id, kgPorUnidade * quantidade);
+      const res = insumosParaKgNecessario(cat.ficha_id, kgPorUnidade * quantidade);
+      if(coletor) res.forEach((kg, insumoId) => coletor.add(insumoId, kg, f.nome, dia));
+      return res;
     }
     default:
       return total; // "fixo"/"zero": sem rastreio de insumo nesta V1, mesma simplificação do motor de custo
@@ -7471,8 +7514,10 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale){
   if(!area) return;
   const almocoIdx = indiceCardapioAlmoco();
   const cafeIdx = indiceCafeSemana();
+  const coletor = criarColetorReceitas(); // registra receita+dia de uso de cada insumo, p/ exibir na lista
   const totalInsumos = new Map(); // insumo_id -> kg/und (bruto, antes de abater estoque)
   const porUnidadeInsumo = new Map(); // insumo_id -> {matriz: kg, filial: kg}
+  const demandaPorDiaInsumo = new Map(); // insumo_id -> Map(dia -> {matriz, filial}) — base p/ abate de estoque dia a dia
   let temAjusteTotalIgnorado = false; // algum ajuste de total digitado não tinha base nos clientes selecionados pra ratear
   contratoIds.forEach(id => {
     const ct = contratos.get(id);
@@ -7489,29 +7534,49 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale){
           if(fator == null){ temAjusteTotalIgnorado = true; }
           else q = q * fator;
         }
-        const porItem = insumosUnidadeItemCompra(almocoIdx, cafeIdx, item.produto_id, ct, semana, dia, q);
+        const porItem = insumosUnidadeItemCompra(almocoIdx, cafeIdx, item.produto_id, ct, semana, dia, q, coletor);
         mergeInsumosInto(totalInsumos, porItem);
         porItem.forEach((kg, insumoId) => {
           const acc = porUnidadeInsumo.get(insumoId) || {matriz:0, filial:0};
           acc[un] += kg;
           porUnidadeInsumo.set(insumoId, acc);
+
+          if(!demandaPorDiaInsumo.has(insumoId)) demandaPorDiaInsumo.set(insumoId, new Map());
+          const porDia = demandaPorDiaInsumo.get(insumoId);
+          const accDia = porDia.get(dia) || {matriz:0, filial:0};
+          accDia[un] += kg;
+          porDia.set(dia, accDia);
         });
       });
     });
   });
-  // abate a contagem de Estoque mais recente da semana, cada unidade só abatendo a própria (igual sistema antigo)
+  // abate a contagem de Estoque mais recente da semana, cada unidade só abatendo a própria (igual sistema antigo),
+  // distribuída dia a dia: a contagem abate a necessidade dos primeiros dias da semana primeiro (segunda em diante)
+  // até se esgotar — assim o que aparece nos dias finais já é o que de fato precisa ser comprado.
   let temContagemNaSemana = false;
   const emEstoquePorInsumo = new Map();
+  const netPorDiaInsumo = new Map(); // insumo_id -> Map(dia -> kg líquido, matriz+filial já somados)
   porUnidadeInsumo.forEach((porUn, insumoId) => {
     let emEstoque = 0;
+    const porDia = demandaPorDiaInsumo.get(insumoId) || new Map();
+    const netMap = new Map();
     ["matriz","filial"].forEach(u => {
       if(porUn[u] > 0){
-        const contado = contagemInsumoNaSemana(insumoId, u, semana);
+        let contado = contagemInsumoNaSemana(insumoId, u, semana) || 0;
         if(contado > 0) temContagemNaSemana = true;
         emEstoque += Math.min(porUn[u], contado);
+        DIAS_ORDEM.forEach(dia => {
+          const demandaDia = (porDia.get(dia) || {})[u] || 0;
+          const abate = Math.min(contado, demandaDia);
+          contado -= abate;
+          netMap.set(dia, (netMap.get(dia)||0) + (demandaDia - abate));
+        });
+      } else {
+        DIAS_ORDEM.forEach(dia => { if(!netMap.has(dia)) netMap.set(dia, 0); });
       }
     });
     if(emEstoque > 0) emEstoquePorInsumo.set(insumoId, emEstoque);
+    netPorDiaInsumo.set(insumoId, netMap);
   });
 
   const idsAjuste = ajusteSegLinhasVisiveis(semana).filter(iid => ajusteSegValorAtual(semana, iid) > 0);
@@ -7523,40 +7588,131 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale){
     const extra = ajusteSegValorAtual(semana, insumoId);
     const kg = Math.max(0, kgBruto - emEstoque) + extra;
     const custo = ins && ins.custo_kg_l_und != null ? kg * ins.custo_kg_l_und : null;
-    return { nome: ins ? ins.nome : insumoId, grupo: ins?.grupo_compra || "(sem grupo)", kg, kgBruto, emEstoque, extra, unidade: ins ? unidadeCustoInsumo(ins) : "kg", custo };
+    const netDias = netPorDiaInsumo.get(insumoId) || new Map();
+    const porDiaKg = DIAS_ORDEM.map(dia => netDias.get(dia) || 0);
+    // receita/data de uso: agrupado por dia, cada dia lista as receitas que consomem este insumo naquele dia
+    const porReceita = coletor.get(insumoId); // Map("dia|receita" -> kg)
+    const usoPorDia = DIAS_ORDEM.map(dia => {
+      const receitas = [...porReceita.entries()]
+        .filter(([k]) => k.startsWith(dia + "|"))
+        .map(([k,kg]) => ({ receita: k.slice(dia.length+1), kg }))
+        .sort((a,b) => b.kg - a.kg);
+      return { dia, receitas };
+    }).filter(d => d.receitas.length);
+    return { insumoId, nome: ins ? ins.nome : insumoId, grupo: ins?.grupo_compra || "(sem grupo)", kg, kgBruto, emEstoque, extra, porDiaKg, usoPorDia, unidade: ins ? unidadeCustoInsumo(ins) : "kg", custo };
   }).sort((a,b) => normalizeText(a.grupo).localeCompare(normalizeText(b.grupo)) || normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
 
   let totCusto = 0, semCusto = 0;
+  const totalPorDia = DIAS_ORDEM.map(() => 0);
   const linhasHtml = linhas.map(l => {
     if(l.custo != null) totCusto += l.custo; else semCusto++;
+    l.porDiaKg.forEach((kg,i) => totalPorDia[i] += kg);
     const notas = [];
     if(l.emEstoque > 0) notas.push(`bruto ${fmtNum(l.kgBruto,3)} − estoque ${fmtNum(l.emEstoque,3)}`);
-    if(l.extra > 0) notas.push(`+ ${fmtNum(l.extra,3)} ajuste de segurança`);
+    if(l.extra > 0) notas.push(`+ ${fmtNum(l.extra,3)} ajuste de segurança (não detalhado por dia)`);
+    const usoHtml = l.usoPorDia.length ? `<div class="footnote" style="margin:4px 0 0; line-height:1.5;">${l.usoPorDia.map(d => `<strong>${DIA_LABEL[d.dia].slice(0,3)}:</strong> ${d.receitas.map(r => `${escapeHtml(r.receita)} (${fmtNum(r.kg,2)})`).join(", ")}`).join(" · ")}</div>` : "";
     return `<tr>
-      <td class="name-cell">${escapeHtml(l.nome)}${notas.length ? `<div class="footnote" style="margin:2px 0 0;">${notas.join(" · ")}</div>` : ""}</td>
+      <td class="name-cell">${escapeHtml(l.nome)}${notas.length ? `<div class="footnote" style="margin:2px 0 0;">${notas.join(" · ")}</div>` : ""}${usoHtml}</td>
       <td style="font-size:12.5px;">${escapeHtml(l.grupo)}</td>
-      <td class="num-cell">${fmtNum(l.kg, 3)}</td>
+      ${l.porDiaKg.map(kg => `<td class="num-cell">${kg>0 ? fmtNum(kg,3) : "—"}</td>`).join("")}
+      <td class="num-cell"><strong>${fmtNum(l.kg, 3)}</strong></td>
       <td>${l.unidade}</td>
       <td class="num-cell">${l.custo != null ? fmtMoney(l.custo) : "—"}</td>
     </tr>`;
-  }).join("") || `<tr><td colspan="5" class="empty-state">Nenhuma previsão de consumo para os clientes e semana selecionados.</td></tr>`;
+  }).join("") || `<tr><td colspan="${3+DIAS_ORDEM.length+3}" class="empty-state">Nenhuma previsão de consumo para os clientes e semana selecionados.</td></tr>`;
 
   area.innerHTML = `
-    <div class="footnote" style="margin:16px 0 10px;">Lista gerada para <strong>${escapeHtml(rotuloSemana(semana))}</strong> (${escapeHtml(intervaloSemana(semana))}) — ${contratoIds.length} ${contratoIds.length===1?"cliente":"clientes"}. ${temContagemNaSemana ? "Estoque contado nesta semana já abatido (cada unidade só abate a própria contagem)." : "Sem contagem de estoque nesta semana — necessidade bruta."}${temAjusteTotalIgnorado ? " Um ou mais ajustes feitos na tabela de Totais não puderam ser aplicados (nenhum cliente selecionado tinha previsão para esse item/dia)." : ""}</div>
+    <div class="footnote" style="margin:16px 0 10px;">Lista gerada para <strong>${escapeHtml(rotuloSemana(semana))}</strong> (${escapeHtml(intervaloSemana(semana))}) — ${contratoIds.length} ${contratoIds.length===1?"cliente":"clientes"}. ${temContagemNaSemana ? "Estoque contado nesta semana já abatido, consumindo primeiro a necessidade dos primeiros dias da semana (cada unidade só abate a própria contagem)." : "Sem contagem de estoque nesta semana — necessidade bruta."}${temAjusteTotalIgnorado ? " Um ou mais ajustes feitos na tabela de Totais não puderam ser aplicados (nenhum cliente selecionado tinha previsão para esse item/dia)." : ""} O ajuste de segurança (quando lançado) entra só no total da semana — ainda não é possível detalhá-lo por dia.</div>
     <div class="panel">
-      <div class="panel-head"><h3>Lista de compra — insumos</h3></div>
+      <div class="panel-head">
+        <h3>Lista de compra — insumos</h3>
+        <button type="button" class="btn small ghost" id="cx-imprimir-lista">Imprimir</button>
+      </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Insumo</th><th>Grupo de compra</th><th style="text-align:right;">Quantidade</th><th>Unidade</th><th style="text-align:right;">Custo estimado</th></tr></thead>
+          <thead><tr><th>Insumo</th><th>Grupo de compra</th>${DIAS_ORDEM.map(dia => `<th style="text-align:right;">${DIA_LABEL[dia].slice(0,3)}</th>`).join("")}<th style="text-align:right;">Total semana</th><th>Unidade</th><th style="text-align:right;">Custo estimado</th></tr></thead>
           <tbody>${linhasHtml}</tbody>
           <tfoot><tr class="row-total">
-            <td class="name-cell">Total${semCusto ? ` (${semCusto} insumo(s) sem custo cadastrado)` : ""}</td><td></td><td></td><td></td>
+            <td class="name-cell">Total${semCusto ? ` (${semCusto} insumo(s) sem custo cadastrado)` : ""}</td><td></td>
+            ${totalPorDia.map(kg => `<td class="num-cell">${kg>0?fmtNum(kg,3):"—"}</td>`).join("")}
+            <td></td><td></td>
             <td class="num-cell">${fmtMoney(totCusto)}</td>
           </tr></tfoot>
         </table>
       </div>
     </div>
   `;
+  document.getElementById("cx-imprimir-lista")?.addEventListener("click", () => imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto));
+}
+
+function imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto){
+  const w = window.open("", "_blank");
+  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
+
+  const clientesInfo = contratoIds.map(id => {
+    const ct = contratos.get(id);
+    if(!ct) return null;
+    const itensContrato = itensRefeicaoDoContrato(id);
+    let totalRefeicoes = 0;
+    DIAS_ORDEM.forEach(dia => {
+      if(!contratoVigenteNoDia(ct, semana, dia)) return;
+      itensContrato.forEach(item => { totalRefeicoes += quantidadePrevista(id, item.produto_id, dia, semana) || 0; });
+    });
+    const cardapios = [];
+    if(ct.cardapio_refeicao_num != null) cardapios.push(labelNumeroCardapio("refeicao", ct.cardapio_refeicao_num));
+    if(ct.cardapio_marmita_num != null) cardapios.push(labelNumeroCardapio("marmita", ct.cardapio_marmita_num));
+    if(ct.marmita_especial_ativo && ct.cardapio_marmita_especial_num != null) cardapios.push(labelNumeroCardapio("marmita", ct.cardapio_marmita_especial_num) + " (especial)");
+    if(ct.cardapio_cafe_num != null) cardapios.push(labelNumeroCardapio("cafe", ct.cardapio_cafe_num));
+    if(ct.cafe_especial_ativo && ct.cardapio_cafe_especial_num != null) cardapios.push(labelNumeroCardapio("cafe", ct.cardapio_cafe_especial_num) + " (especial)");
+    return { nome: ct.nome_cliente, unidade: ct.unidade === "filial" ? "Filial" : "Matriz", cardapios, totalRefeicoes };
+  }).filter(Boolean).sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
+  const totalRefeicoesGeral = clientesInfo.reduce((s,c) => s + c.totalRefeicoes, 0);
+
+  const linhasHtml = linhas.map(l => `<tr>
+      <td>${escapeHtml(l.nome)}<div class="sub-receita">${l.usoPorDia.map(d => `<strong>${DIA_LABEL[d.dia].slice(0,3)}:</strong> ${d.receitas.map(r => escapeHtml(r.receita)).join(", ")}`).join(" · ")}</div></td>
+      <td>${escapeHtml(l.grupo)}</td>
+      ${l.porDiaKg.map(kg => `<td class="num">${kg>0 ? fmtNum(kg,3) : "—"}</td>`).join("")}
+      <td class="num"><strong>${fmtNum(l.kg,3)}</strong></td>
+      <td>${l.unidade}</td>
+    </tr>`).join("");
+
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Lista de compra — ${escapeHtml(rotuloSemana(semana))}</title>
+    <style>
+      body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;}
+      h1{font-size:18px; margin:0 0 4px;}
+      h2{font-size:14px; margin:22px 0 8px;}
+      .sub{font-size:12px; color:#555; margin-bottom:16px;}
+      table{width:100%; border-collapse:collapse; font-size:11.5px; margin-bottom:10px;}
+      th,td{border:1px solid #ccc; padding:5px 6px; text-align:left; vertical-align:top;}
+      th{background:#f0f0f0;}
+      td.num,th.num{text-align:right; white-space:nowrap;}
+      .sub-receita{font-size:10px; color:#666; margin-top:2px; line-height:1.4;}
+      .clientes-table td.num{text-align:right;}
+      tfoot td{font-weight:700; background:#f7f7f7;}
+      @media print{ .no-print{display:none;} }
+      ${printHeadStyle()}
+    </style></head><body>
+    ${printHeadHtml()}
+    <h1>Lista de compra — insumos</h1>
+    <div class="sub">${escapeHtml(rotuloSemana(semana))} (${escapeHtml(intervaloSemana(semana))}) — ${contratoIds.length} ${contratoIds.length===1?"cliente":"clientes"} · ${fmtNum(totalRefeicoesGeral,0)} refeições na semana</div>
+
+    <h2>Clientes atendidos nesta lista</h2>
+    <table class="clientes-table">
+      <thead><tr><th>Cliente</th><th>Unidade</th><th>Cardápios</th><th class="num">Refeições na semana</th></tr></thead>
+      <tbody>${clientesInfo.map(c => `<tr><td>${escapeHtml(c.nome)}</td><td>${escapeHtml(c.unidade)}</td><td>${escapeHtml(c.cardapios.join(", ") || "—")}</td><td class="num">${fmtNum(c.totalRefeicoes,0)}</td></tr>`).join("")}</tbody>
+      <tfoot><tr><td colspan="3">Total</td><td class="num">${fmtNum(totalRefeicoesGeral,0)}</td></tr></tfoot>
+    </table>
+
+    <h2>Insumos por dia</h2>
+    <table>
+      <thead><tr><th>Insumo</th><th>Grupo de compra</th>${DIAS_ORDEM.map(dia => `<th class="num">${DIA_LABEL[dia].slice(0,3)}</th>`).join("")}<th class="num">Total semana</th><th>Unid.</th></tr></thead>
+      <tbody>${linhasHtml}</tbody>
+      <tfoot><tr><td>Total</td><td></td>${totalPorDia.map(kg => `<td class="num">${kg>0?fmtNum(kg,3):"—"}</td>`).join("")}<td></td><td></td></tr></tfoot>
+    </table>
+    <div class="sub">Custo total estimado: ${fmtMoney(totCusto)}. A coluna "Total semana" dos insumos pode incluir ajuste de segurança lançado para a semana (não detalhado por dia).</div>
+    <script>window.onload = () => window.print();<\/script>
+    </body></html>`);
+  w.document.close();
 }
 
 function renderComprasLista(content, tabsHtml, wireTabs){
@@ -7596,12 +7752,11 @@ function renderComprasLista(content, tabsHtml, wireTabs){
     return `<button type="button" class="chip-dia ${ativo?"on":""}" data-atalho="${key}" ${ids.length?"":"disabled"}>${escapeHtml(label)} (${ids.length})</button>`;
   };
   const grupoClientesHtml = (titulo, lista) => {
-    if(!lista.length) return "";
-    return `<div style="margin-bottom:10px;">
-      <div class="footnote" style="margin:0 0 4px; font-weight:600;">${titulo}</div>
-      <div class="kk-dias-chips" style="flex-wrap:wrap;">
+    return `<div class="grid2-box">
+      <div class="footnote" style="margin:0 0 8px; font-weight:600;">${titulo} (${lista.length})</div>
+      ${lista.length ? `<div class="kk-dias-chips" style="flex-wrap:wrap;">
         ${lista.map(([id,c]) => `<button type="button" class="chip-dia cp-cli-chip ${comprasSelecao.has(id)?"on":""}" data-id="${id}">${escapeHtml(c.nome_cliente)}</button>`).join("")}
-      </div>
+      </div>` : `<div class="footnote">Nenhum contrato ativo.</div>`}
     </div>`;
   };
 
