@@ -141,6 +141,8 @@ tbody tr:hover{background:var(--surface-alt);}
 .wrap-cell{white-space:normal;max-width:260px;}
 .inc-table th,.inc-table td{padding:6px 8px;font-size:12.5px;}
 .inc-table .name-cell{max-width:220px;}
+.tb-lista-compra .name-cell{max-width:440px;min-width:260px;}
+.tb-lista-compra th,.tb-lista-compra td{padding:8px 10px;font-size:12.5px;}
 .inc-table input[type=number]{width:100%;max-width:56px;padding:5px 6px;text-align:right;box-sizing:border-box;font:inherit;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);}
 .inc-dias{display:flex;flex-wrap:wrap;gap:8px 14px;}
 .inc-dia{display:flex;align-items:center;gap:5px;font-size:13px;white-space:nowrap;}
@@ -7631,7 +7633,7 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale){
         <button type="button" class="btn small ghost" id="cx-imprimir-lista">Imprimir</button>
       </div>
       <div class="table-wrap">
-        <table>
+        <table class="tb-lista-compra">
           <thead><tr><th>Insumo</th><th>Grupo de compra</th>${DIAS_ORDEM.map(dia => `<th style="text-align:right;">${DIA_LABEL[dia].slice(0,3)}</th>`).join("")}<th style="text-align:right;">Total semana</th><th>Unidade</th><th style="text-align:right;">Custo estimado</th></tr></thead>
           <tbody>${linhasHtml}</tbody>
           <tfoot><tr class="row-total">
