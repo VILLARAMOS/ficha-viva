@@ -10015,17 +10015,17 @@ function pcpOrdemGrupo(grupo){
   const i = GRUPOS_FICHA_BASE.indexOf(grupo);
   return i === -1 ? GRUPOS_FICHA_BASE.length : i;
 }
-const PCP_GRUPOS_PORCAO = new Set(["SALADA","SOBREMESA","SUCO SIMPLES","SUCO NATURAL"]);
-// "un" (ficha servida por unidade — ovo, hambúrguer…), true (porção — salada/sobremesa/suco) ou false (kg)
-function pcpEhPorcao(f){
-  if(!f) return false;
-  if(fichaServidaPorUnidade(f)) return "un";
-  return PCP_GRUPOS_PORCAO.has(f.grupo) ? true : false;
-}
-function pcpFmtQtd(q, porPorcao){
+// CORREÇÃO (mesma sessão, antes de ir pra Fase 2): cheguei a tratar Salada/Sobremesa/Suco como "porção"
+// e ficha "servida por unidade" como "un.", copiando uma distinção que existia no protótipo antigo
+// (artifact). Não existe aqui — confirmei no código real: `gramagem_kg` é tratado como kg de verdade em
+// TODO item de cardápio, sem excessão por grupo (insumosItemCardapioCompra faz `gramagem_kg × pessoas`
+// igual pra proteína, salada, sobremesa ou suco), e `servido_por_unidade` só controla uma coluna
+// informativa ("Custo / un") na tela de Fichas técnicas — nunca muda a unidade usada em Compras. Se eu
+// tivesse deixado "porção"/"un." aqui, a Produção ia mostrar um número que não bate com o kg que a Lista
+// de compra calcula pro MESMO item do MESMO cardápio. Removido — fica só kg, igual ao resto do sistema.
+function pcpFmtQtd(q){
   if(q === null || q === undefined || !isFinite(q)) return "—";
-  if(porPorcao === "un") return `${fmtNum(q,1)} un.`;
-  return porPorcao ? `${fmtNum(q,1)} porç.` : `${fmtNum(q,2)} kg`;
+  return `${fmtNum(q,2)} kg`;
 }
 
 // os únicos tipo_custo que são, de fato, refeição produzida na cozinha — café é terceirizado (fica fora,
@@ -10055,7 +10055,7 @@ function pcpAcumularDia(dayDoc, numPessoas, contratoId, nomeCliente, produtoId, 
     const chave = contratoId + "|" + produtoId;
     if(r.fichaId){
       const f = fichas.get(r.fichaId);
-      const R = receitas.get(r.fichaId) || { fichaId: r.fichaId, nome: f ? f.nome : (it.nome || r.fichaId), grupo: pcpGrupoFicha(f), porPorcao: pcpEhPorcao(f), total: 0, porCliente: new Map() };
+      const R = receitas.get(r.fichaId) || { fichaId: r.fichaId, nome: f ? f.nome : (it.nome || r.fichaId), grupo: pcpGrupoFicha(f), total: 0, porCliente: new Map() };
       R.total += r.qtd;
       const pc = R.porCliente.get(chave) || { contratoId, nome: nomeCliente, produtoId, qtd: 0, pessoas: 0 };
       pc.qtd += r.qtd; pc.pessoas += numPessoas;
@@ -10128,7 +10128,7 @@ function pcpCalcularDia(semana, dia, unidadeFiltro){
     });
 
   const lista = [...receitas.values()].sort((a, b) => pcpOrdemGrupo(a.grupo) - pcpOrdemGrupo(b.grupo) || b.total - a.total);
-  const kgTotal = lista.filter(r => !r.porPorcao).reduce((s, r) => s + r.total, 0);
+  const kgTotal = lista.reduce((s, r) => s + r.total, 0);
   return { semana, dia, unidade: unidadeFiltro || "todos", receitas: lista, diretos: [...diretos.values()].sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR')), clientes: [...clientes.values()].sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome))), avisos, pessoasTot, kgTotal };
 }
 
@@ -10154,9 +10154,9 @@ function pcpProducaoHtml(res, margemPct){
   const linhasReceita = res.receitas.map(r => {
     const novoGrupo = r.grupo !== grupoAtual;
     grupoAtual = r.grupo;
-    const qtdComMargem = r.porPorcao ? r.total : r.total * fator;
+    const qtdComMargem = r.total * fator;
     return (novoGrupo ? `<tr><th colspan="4" style="background:var(--surface-alt); font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted);">${escapeHtml(r.grupo)}</th></tr>` : "") +
-      `<tr><td class="name-cell">${escapeHtml(r.nome)}</td><td class="num-cell">${pcpFmtQtd(qtdComMargem, r.porPorcao)}</td><td class="num-cell">${r.porCliente.size}</td><td class="footnote" style="margin:0;">${[...new Set([...r.porCliente.values()].map(p => p.nome))].join(", ")}</td></tr>`;
+      `<tr><td class="name-cell">${escapeHtml(r.nome)}</td><td class="num-cell">${pcpFmtQtd(qtdComMargem)}</td><td class="num-cell">${r.porCliente.size}</td><td class="footnote" style="margin:0;">${[...new Set([...r.porCliente.values()].map(p => p.nome))].join(", ")}</td></tr>`;
   }).join("");
   const linhasDiretos = res.diretos.map(d => `<tr><td class="name-cell">${escapeHtml(d.nome)}</td><td class="num-cell">${fmtNum(d.total,2)} ${escapeHtml(d.unidade||"")}</td><td class="num-cell">${d.porCliente.size}</td><td class="footnote" style="margin:0;">${[...new Set([...d.porCliente.values()].map(p=>p.nome))].join(", ")}</td></tr>`).join("");
   return `
@@ -10177,27 +10177,27 @@ function pcpVolumeHtml(res){
   if(!res.clientes.length) return `<div class="empty-state">Nenhum cliente com produção prevista para este dia.</div>`;
   const cards = res.clientes.map(cli => {
     const linhas = [];
-    res.receitas.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: r.nome, qtd: p.qtd, porPorcao: r.porPorcao}); });
-    res.diretos.forEach(d => { const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: d.nome, qtd: p.qtd, porPorcao: false, unidade: d.unidade}); });
+    res.receitas.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: r.nome, qtd: p.qtd}); });
+    res.diretos.forEach(d => { const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: d.nome, qtd: p.qtd, unidade: d.unidade}); });
     if(!linhas.length) return "";
     return `<div class="panel" data-pcp-cliente-card="${cli.id}">
       <div class="panel-head"><h3>${escapeHtml(cli.nome)}</h3><span class="hint">${fmtNum(cli.pessoas,0)} pessoas · ${nomeUnidadeCompra(cli.unidade)}</span></div>
-      <div class="panel-body"><div class="table-wrap"><table><tbody>${linhas.map(l => `<tr><td class="name-cell">${escapeHtml(l.nome)}</td><td class="num-cell">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd, l.porPorcao)}</td></tr>`).join("")}</tbody></table></div></div>
+      <div class="panel-body"><div class="table-wrap"><table><tbody>${linhas.map(l => `<tr><td class="name-cell">${escapeHtml(l.nome)}</td><td class="num-cell">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd)}</td></tr>`).join("")}</tbody></table></div></div>
     </div>`;
   }).join("");
-  return `<p class="footnote" style="margin:0 0 14px;">Volume <b>líquido</b> por cliente, sem margem de produção — é o que vai pra etiqueta da cuba. Kg, porções e unidades nunca são somados entre si.</p>${cards}`;
+  return `<p class="footnote" style="margin:0 0 14px;">Volume <b>líquido</b> por cliente, sem margem de produção — é o que vai pra etiqueta da cuba.</p>${cards}`;
 }
 
 function pcpEtiquetaImprimir(res){
   const partes = [];
   res.clientes.forEach(cli => {
     const linhas = [];
-    res.receitas.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: r.nome, qtd: p.qtd, porPorcao: r.porPorcao}); });
+    res.receitas.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: r.nome, qtd: p.qtd}); });
     if(!linhas.length) return;
     partes.push(`<div style="break-inside:avoid; page-break-inside:avoid; border:1px solid #333; border-radius:6px; padding:12px 14px; margin-bottom:12px;">
       <div style="font-weight:700; font-size:14px; margin-bottom:2px;">${escapeHtml(cli.nome)}</div>
       <div style="font-size:11px; color:#666; margin-bottom:8px;">${escapeHtml(DIA_LABEL[res.dia])} · ${escapeHtml(rotuloSemana(res.semana))} · ${fmtNum(cli.pessoas,0)} pessoas</div>
-      <table style="width:100%; border-collapse:collapse; font-size:12px;">${linhas.map(l => `<tr><td style="padding:3px 0; border-top:1px solid #ddd;">${escapeHtml(l.nome)}</td><td style="padding:3px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${pcpFmtQtd(l.qtd, l.porPorcao)}</td></tr>`).join("")}</table>
+      <table style="width:100%; border-collapse:collapse; font-size:12px;">${linhas.map(l => `<tr><td style="padding:3px 0; border-top:1px solid #ddd;">${escapeHtml(l.nome)}</td><td style="padding:3px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${pcpFmtQtd(l.qtd)}</td></tr>`).join("")}</table>
     </div>`);
   });
   const w = window.open("", "_blank");
