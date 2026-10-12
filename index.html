@@ -7266,8 +7266,8 @@ function comprasTotalBase(produtoId, dia, semana, selecionados){
 }
 function itensUniaoSelecao(selecionados){
   const porId = new Map();
-  selecionados.forEach(([cid]) => {
-    itensRefeicaoDoContrato(cid).forEach(item => {
+  selecionados.forEach(([cid, ct]) => {
+    itensComprasDoContrato(ct, cid).forEach(item => { // refeição + café (se não for 100% terceirizado)
       if(item.produto_id && !porId.has(item.produto_id)) porId.set(item.produto_id, item.nome);
     });
   });
@@ -7466,9 +7466,9 @@ function renderComprasQuantidades(area, selecionados){
   if(!area) return;
   const semana = comprasSemana;
   if(!selecionados.length){ area.innerHTML = `<div class="empty-state">Selecione ao menos um cliente em "Clientes da lista".</div>`; return; }
-  const grupos = selecionados.map(([cid, ct]) => ({ cid, ct, itens: itensRefeicaoDoContrato(cid) })).filter(g => g.itens.length);
-  const semRefeicao = selecionados.filter(([cid]) => !itensRefeicaoDoContrato(cid).length).map(([,ct]) => ct.nome_cliente);
-  if(!grupos.length){ area.innerHTML = `<div class="empty-state">Nenhum dos clientes selecionados tem item de refeição cadastrado.</div>`; return; }
+  const grupos = selecionados.map(([cid, ct]) => ({ cid, ct, itens: itensComprasDoContrato(ct, cid) })).filter(g => g.itens.length);
+  const semItem = selecionados.filter(([cid, ct]) => !itensComprasDoContrato(ct, cid).length).map(([,ct]) => ct.nome_cliente);
+  if(!grupos.length){ area.innerHTML = `<div class="empty-state">Nenhum dos clientes selecionados tem item de refeição ou café cadastrado.</div>`; return; }
 
   area.innerHTML = `
     <div class="panel">
@@ -7477,7 +7477,7 @@ function renderComprasQuantidades(area, selecionados){
         <span class="hint">${escapeHtml(intervaloSemana(semana))}</span>
       </div>
       <div class="panel-body">
-        <div class="footnote" style="margin:0 0 14px;">Sem ajuste, a célula mostra a <strong>sugestão automática</strong> como placeholder (passe o mouse pra ver a origem): lançado em Vendas → mediana do mês (mín. 2 lançamentos) → ciclo de 9 semanas → quantidade contratada por dia. Digite um número pra sobrepor; apague o campo pra voltar à sugestão. As mudanças ficam pendentes até clicar em "Salvar alterações". Só itens de <strong>refeição</strong> aqui — café entra direto na lista de compra pela sugestão automática (sem ajuste manual por cliente ainda); "outros" (refrigerante, lanche etc.) continua fora.</div>
+        <div class="footnote" style="margin:0 0 14px;">Sem ajuste, a célula mostra a <strong>sugestão automática</strong> como placeholder (passe o mouse pra ver a origem): lançado em Vendas → mediana do mês (mín. 2 lançamentos) → ciclo de 9 semanas → quantidade contratada por dia. Digite um número pra sobrepor; apague o campo pra voltar à sugestão. As mudanças ficam pendentes até clicar em "Salvar alterações". Itens de <strong>refeição e café</strong> aqui (café só se o cliente não for marcado como 100% terceirizado); "outros" (refrigerante, lanche etc.) continua fora.</div>
         ${grupos.map(g => `
           <div style="margin-bottom:18px;">
             <div class="footnote" style="font-weight:600; margin-bottom:6px;">${escapeHtml(g.ct.nome_cliente)}</div>
@@ -7503,7 +7503,7 @@ function renderComprasQuantidades(area, selecionados){
             </div>
           </div>
         `).join("")}
-        ${semRefeicao.length ? `<div class="footnote">Sem item de refeição contratado (só café/extras): ${escapeHtml(semRefeicao.join(", "))}.</div>` : ""}
+        ${semItem.length ? `<div class="footnote">Sem item de refeição nem café contratado (só "outros"): ${escapeHtml(semItem.join(", "))}.</div>` : ""}
       </div>
     </div>
   `;
@@ -8322,21 +8322,33 @@ function orcadoPorBlocoSemana(mesId, escopo){
   const contratosEscopo = [...contratos.entries()].filter(([,c]) => c.ativo && (escopo === "todos" || c.unidade === escopo));
   const almocoIdx = indiceCardapioAlmoco(), cafeIdx = indiceCafeSemana();
   const porSemanaBloco = mes.semanas.map(semana => {
-    const insumosSemana = new Map();
+    const insumosRefeicao = new Map();
+    const insumosCafe = new Map(); // separado: custo de café vai pro bloco "CAFÉ", não pro grupo_compra do insumo
     contratosEscopo.forEach(([id,ct]) => {
-      const itensContrato = itensComprasDoContrato(ct, id); // refeição + café (se não for 100% terceirizado)
+      const itensRef = itensRefeicaoDoContrato(id);
+      const itensCafe = ct.cafe_terceirizado ? [] : itensCafeDoContrato(id);
       DIAS_ORDEM.forEach(dia => {
         if(mesDoDia(semana,dia) !== mes.id) return;
         if(!contratoVigenteNoDia(ct,semana,dia)) return;
-        itensContrato.forEach(item => {
+        itensRef.forEach(item => {
           const q = quantidadePrevista(id,item.produto_id,dia,semana);
           if(!q) return;
-          mergeInsumosInto(insumosSemana, insumosUnidadeItemCompra(almocoIdx,cafeIdx,item.produto_id,ct,semana,dia,q));
+          mergeInsumosInto(insumosRefeicao, insumosUnidadeItemCompra(almocoIdx,cafeIdx,item.produto_id,ct,semana,dia,q));
+        });
+        itensCafe.forEach(item => {
+          const q = quantidadePrevista(id,item.produto_id,dia,semana);
+          if(!q) return;
+          mergeInsumosInto(insumosCafe, insumosUnidadeItemCompra(almocoIdx,cafeIdx,item.produto_id,ct,semana,dia,q));
         });
       });
     });
     const porBloco = new Map();
-    insumosSemana.forEach((kg,insumoId) => {
+    insumosCafe.forEach((kg,insumoId) => {
+      const ins = insumos.get(insumoId);
+      const custo = ins && ins.custo_kg_l_und != null ? kg*ins.custo_kg_l_und : 0;
+      porBloco.set("CAFÉ", (porBloco.get("CAFÉ")||0) + custo);
+    });
+    insumosRefeicao.forEach((kg,insumoId) => {
       const ins = insumos.get(insumoId);
       const grupo = (ins && ins.grupo_compra) || "SEM GRUPO";
       const custo = ins && ins.custo_kg_l_und != null ? kg*ins.custo_kg_l_und : 0;
@@ -8383,7 +8395,7 @@ function renderOrcamento(){
   const orc = orcadoPorBlocoSemana(orcamentoMesSel, orcamentoEscopoSel);
   const comp = compradoPorBlocoSemana(orcamentoMesSel, orcamentoEscopoSel);
   const mes = orc.mes;
-  const blocos = blocosCadastro().concat(["SEM GRUPO"]);
+  const blocos = ["CAFÉ", ...blocosCadastro(), "SEM GRUPO"];
 
   const totalMesBloco = lista => lista.map(porSB => {
     const t = new Map(); porSB.porSemanaBloco.forEach(sb => sb.porBloco.forEach((v,g) => t.set(g,(t.get(g)||0)+v))); return t;
@@ -8403,7 +8415,7 @@ function renderOrcamento(){
   }
 
   content.innerHTML = `
-    <div class="footnote" style="margin-bottom:14px;">V1 só CMV: Orçado é o custo de insumo da demanda (mesmo motor da Lista de compra); Comprado é a soma dos Pedidos cuja semana de uso cai neste mês. Ainda sem "fora do CMV" (serviço, limpeza, consumível, escritório) nem embalagem configurável — e sem os recortes menores do sistema antigo (RB, Cardápio 1/2), só Grupo inteiro/Matriz/Filial.</div>
+    <div class="footnote" style="margin-bottom:14px;">V1 só CMV: Orçado é o custo de insumo da demanda (mesmo motor da Lista de compra); Comprado é a soma dos Pedidos cuja semana de uso cai neste mês. O bloco <strong>CAFÉ</strong> junta todo insumo consumido pelo cardápio de café (independente do grupo de compra do insumo) — mas como os Pedidos não são lançados separando café de refeição, essa linha só tem Orçado, nunca Comprado/Saldo. Ainda sem "fora do CMV" (serviço, limpeza, consumível, escritório) nem embalagem configurável — e sem os recortes menores do sistema antigo (RB, Cardápio 1/2), só Grupo inteiro/Matriz/Filial.</div>
     <div class="menu-controls">
       <select id="or-mes">${meses.map(m => `<option value="${m.id}" ${m.id===orcamentoMesSel?"selected":""}>${escapeHtml(m.nome)}</option>`).join("")}</select>
       <div class="seg-toggle" id="or-escopo">
