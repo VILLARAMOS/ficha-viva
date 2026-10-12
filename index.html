@@ -8233,6 +8233,59 @@ function destinoOpcoes(){
     {rotulo:"Filial", ids:idsFilial},
   ];
 }
+// compara o preço de cada item do pedido com a média paga (qualquer fornecedor) no mês anterior ao da data do
+// pedido — mesma base do alerta que já aparece embaixo do campo "Preço unit." ao digitar. Usado pra gerar uma
+// conferência explícita no momento de salvar, pra não depender só de alguém reparar no texto da linha.
+function itensComAlertaDePreco(itensValidos, dataPedido, limiar){
+  limiar = limiar == null ? ALERTA_PRECO_LIMIAR : limiar;
+  const vistos = new Map(); // insumo_id -> {nome, preco, media, diffPct} — maior variação por insumo, se repetido
+  itensValidos.forEach(l => {
+    if(!l.insumo_id || !(l.preco_unitario > 0)) return;
+    const media = precoMedioMesAnterior(l.insumo_id, dataPedido);
+    if(media == null) return;
+    const diffPct = ((l.preco_unitario - media) / media) * 100;
+    if(diffPct <= limiar*100) return;
+    const atual = vistos.get(l.insumo_id);
+    if(!atual || diffPct > atual.diffPct) vistos.set(l.insumo_id, { nome: l.nome, preco: l.preco_unitario, media, diffPct });
+  });
+  return [...vistos.values()].sort((a,b) => b.diffPct - a.diffPct);
+}
+// modal de conferência de preço mostrado ao clicar em "Salvar pedido" quando algum item está acima da média do
+// mês anterior — "Revisar pedido" volta pro formulário sem salvar; "Confirmar preços e salvar" segue o salvamento.
+function confirmarPrecosPedido(itens){
+  return new Promise(resolve => {
+    const root = document.getElementById("confirm-root");
+    const linhas = itens.map(v => `<tr>
+        <td class="name-cell">${escapeHtml(v.nome)}</td>
+        <td class="num-cell">${fmtMoney(v.media)}</td>
+        <td class="num-cell">${fmtMoney(v.preco)}</td>
+        <td class="num-cell" style="color:var(--critical);">▲ ${v.diffPct.toFixed(0)}%</td>
+      </tr>`).join("");
+    root.innerHTML = `
+      <div class="modal-overlay" id="cfp-ov">
+        <div class="modal" style="max-width:600px;">
+          <div class="modal-head"><h2>Confira o preço antes de salvar</h2></div>
+          <div class="modal-body">
+            <p style="margin:0 0 10px; font-size:14px; line-height:1.5;">${itens.length} ${itens.length===1?"item está":"itens estão"} mais de ${(ALERTA_PRECO_LIMIAR*100).toFixed(0)}% acima da média paga (qualquer fornecedor) no mês anterior. Vale conferir se não é erro de digitação antes de salvar:</p>
+            <div class="table-wrap">
+              <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                <thead><tr><th style="text-align:left;">Insumo</th><th style="text-align:right;">Média mês anterior</th><th style="text-align:right;">Preço lançado</th><th style="text-align:right;">Variação</th></tr></thead>
+                <tbody>${linhas}</tbody>
+              </table>
+            </div>
+          </div>
+          <div class="modal-foot">
+            <button class="btn ghost" id="cfp-revisar">Revisar pedido</button>
+            <button class="btn primary" id="cfp-confirmar">Confirmar preços e salvar</button>
+          </div>
+        </div>
+      </div>`;
+    const cleanup = (val) => { root.innerHTML = ""; resolve(val); };
+    document.getElementById("cfp-revisar").onclick = () => cleanup(false);
+    document.getElementById("cfp-confirmar").onclick = () => cleanup(true);
+    document.getElementById("cfp-ov").addEventListener("click", e => { if(e.target.id==="cfp-ov") cleanup(false); });
+  });
+}
 // calcula, pra uma lista de itens de pedido já validados (preco_unitario = custo normalizado por kg/L/un),
 // quais insumos teriam o custo do cadastro atualizado e quais deles variam mais de 15% frente ao custo atual —
 // usado ao salvar o pedido (Registrar/Editar), que é o gatilho da atualização de custo nesta versão.
@@ -8616,6 +8669,13 @@ function openPedidoModal(id, opts){
     if(!data_pedido){ errEl.textContent = "Informe a data do pedido."; return; }
     const itensValidos = draft.itens.filter(l => l.insumo_id && l.quantidade > 0);
     if(!itensValidos.length){ errEl.textContent = "Adicione ao menos um item com insumo e quantidade."; return; }
+    // conferência de preço: se algum item está >15% acima da média paga no mês anterior, pede confirmação antes
+    // de salvar — quem lança pode voltar e corrigir se for erro de digitação, em vez de só reparar no aviso da linha.
+    const itensAlerta = itensComAlertaDePreco(itensValidos, data_pedido);
+    if(itensAlerta.length){
+      const confirmouPrecos = await confirmarPrecosPedido(itensAlerta);
+      if(!confirmouPrecos) return;
+    }
     // custo dos insumos é atualizado ao salvar o pedido (impacta todas as fichas técnicas na hora) — se algum item
     // variar mais de 15% frente ao custo atual, confirma antes; abaixo disso, atualiza direto sem perguntar.
     const { todas: itensCusto, grandes: itensGrandeVariacao } = itensComVariacaoDeCusto(itensValidos);
