@@ -8184,6 +8184,7 @@ function renderTabPedidos(){
           <td class="num-cell">${fmtMoney(p.valor_total)}</td>
           <td>${statusChip(st)}</td>
           <td style="text-align:right; white-space:nowrap;">
+            <button class="btn small ghost pd-imprimir" data-id="${id}">imprimir</button>
             <button class="btn small ghost pd-conferir" data-id="${id}">conferir</button>
             <button class="btn small ghost pd-dup" data-id="${id}">duplicar</button>
             <button class="btn small ghost pd-editar" data-id="${id}">editar</button>
@@ -8193,6 +8194,7 @@ function renderTabPedidos(){
       }).join("") || `<tr><td colspan="8" class="empty-state">${vazio}</td></tr>`;
       document.getElementById("pd-tfoot").innerHTML = lista.length
         ? `<tr class="row-total"><td colspan="5" class="name-cell"><b>Total</b></td><td class="num-cell"><b>${fmtMoney(total)}</b></td><td colspan="2"></td></tr>` : "";
+      document.querySelectorAll(".pd-imprimir").forEach(b => b.addEventListener("click", () => imprimirPedido(b.dataset.id)));
       document.querySelectorAll(".pd-conferir").forEach(b => b.addEventListener("click", () => openPedidoDetalhe(b.dataset.id)));
       document.querySelectorAll(".pd-dup").forEach(b => b.addEventListener("click", () => openPedidoModal(null, {duplicarDe: b.dataset.id})));
       document.querySelectorAll(".pd-editar").forEach(b => b.addEventListener("click", () => openPedidoModal(b.dataset.id)));
@@ -8230,6 +8232,200 @@ function destinoOpcoes(){
     {rotulo:"Matriz", ids:idsMatriz},
     {rotulo:"Filial", ids:idsFilial},
   ];
+}
+// calcula, pra uma lista de itens de pedido já validados (preco_unitario = custo normalizado por kg/L/un),
+// quais insumos teriam o custo do cadastro atualizado e quais deles variam mais de 15% frente ao custo atual —
+// usado ao salvar o pedido (Registrar/Editar), que é o gatilho da atualização de custo nesta versão.
+function itensComVariacaoDeCusto(itensValidos, limiar){
+  limiar = limiar == null ? ALERTA_PRECO_LIMIAR : limiar;
+  const porInsumo = new Map(); // insumo_id -> {insumo, insumoId, novoKg, antigoKg} — último item do pedido pra esse insumo
+  itensValidos.forEach(l => {
+    if(!l.insumo_id || !(l.preco_unitario > 0)) return;
+    const ins = insumos.get(l.insumo_id);
+    if(!ins) return;
+    porInsumo.set(l.insumo_id, { insumo: ins, insumoId: l.insumo_id, novoKg: l.preco_unitario, antigoKg: ins.custo_kg_l_und });
+  });
+  const todas = [...porInsumo.values()].filter(v => v.antigoKg == null || Math.abs(v.novoKg - v.antigoKg) > 0.0001);
+  const grandes = todas.filter(v => v.antigoKg > 0 && Math.abs(v.novoKg - v.antigoKg)/v.antigoKg > limiar);
+  return { todas, grandes };
+}
+// modal de confirmação específica pra quando um pedido vai atualizar o custo de algum insumo com variação grande
+// (>15%) frente ao cadastro atual — pra erro de digitação ou compra pontual mais cara não virar sozinho a
+// referência de custo de todas as fichas técnicas que usam esse insumo. O pedido é salvo de qualquer forma;
+// essa escolha é só sobre atualizar (ou não) o custo no cadastro de Insumos.
+function confirmarAtualizacaoCustos(grandes, totalItens){
+  return new Promise(resolve => {
+    const root = document.getElementById("confirm-root");
+    const linhas = grandes.map(v => {
+      const base = v.antigoKg > 0 ? v.antigoKg : null;
+      const diffPct = base ? ((v.novoKg - base) / base) * 100 : null;
+      const sinal = diffPct == null ? "" : (diffPct > 0 ? "▲" : "▼");
+      return `<tr>
+        <td class="name-cell">${escapeHtml(v.insumo.nome)}</td>
+        <td class="num-cell">${v.antigoKg != null ? fmtMoney(v.antigoKg) : "—"}</td>
+        <td class="num-cell">${fmtMoney(v.novoKg)}</td>
+        <td class="num-cell" style="color:${diffPct>0?'var(--critical)':'inherit'};">${diffPct==null?"novo":sinal+" "+Math.abs(diffPct).toFixed(0)+"%"}</td>
+      </tr>`;
+    }).join("");
+    root.innerHTML = `
+      <div class="modal-overlay" id="cfc-ov">
+        <div class="modal" style="max-width:600px;">
+          <div class="modal-head"><h2>Atualizar custo dos insumos?</h2></div>
+          <div class="modal-body">
+            <p style="margin:0 0 10px; font-size:14px; line-height:1.5;">Esse pedido vai atualizar o custo de ${totalItens} insumo(s) usado nas fichas técnicas. ${grandes.length} ${grandes.length===1?"deles está":"deles estão"} com variação grande (acima de ${(ALERTA_PRECO_LIMIAR*100).toFixed(0)}%) frente ao custo atual — confira antes de confirmar:</p>
+            <div class="table-wrap">
+              <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                <thead><tr><th style="text-align:left;">Insumo</th><th style="text-align:right;">Custo atual (kg/L/un)</th><th style="text-align:right;">Novo custo</th><th style="text-align:right;">Variação</th></tr></thead>
+                <tbody>${linhas}</tbody>
+              </table>
+            </div>
+            <p style="margin:10px 0 0; font-size:12.5px; color:var(--text-faint);">Isso muda o custo usado em todas as fichas técnicas que levam esse insumo. O pedido é salvo de qualquer forma — essa escolha é só sobre atualizar ou não o custo no cadastro de Insumos.</p>
+          </div>
+          <div class="modal-foot">
+            <button class="btn ghost" id="cfc-nao">Manter custos atuais</button>
+            <button class="btn primary" id="cfc-sim">Atualizar custos</button>
+          </div>
+        </div>
+      </div>`;
+    const cleanup = (val) => { root.innerHTML = ""; resolve(val); };
+    document.getElementById("cfc-nao").onclick = () => cleanup(false);
+    document.getElementById("cfc-sim").onclick = () => cleanup(true);
+    document.getElementById("cfc-ov").addEventListener("click", e => { if(e.target.id==="cfc-ov") cleanup(false); });
+  });
+}
+// aplica o custo normalizado (por kg/L/un) de cada item do pedido ao cadastro de Insumos — mesmo rastro de
+// histórico/"pedido de DD/MM" que uma edição manual em Insumos já gera (custo_anterior, custo_atualizado_em,
+// custo_origem, historico_precos). Fichas técnicas leem o custo do insumo na hora, então o impacto é imediato.
+async function atualizarCustosInsumosDoPedido(itensComCusto, dataPedido){
+  for(const v of itensComCusto){
+    const ins = insumos.get(v.insumoId);
+    if(!ins) continue;
+    const conv = ins.unidade_convertida > 0 ? ins.unidade_convertida : 1;
+    const novoUnit = v.novoKg * conv;
+    const data = {
+      custo_unitario: novoUnit,
+      custo_kg_l_und: v.novoKg,
+      custo_anterior: ins.custo_unitario != null ? ins.custo_unitario : null,
+      custo_atualizado_em: dataPedido || hojeYMD(),
+      custo_origem: "pedido",
+      historico_precos: historicoPrecoCom(ins, novoUnit, v.novoKg, "pedido", dataPedido || hojeYMD()),
+      ...carimbo(),
+    };
+    const { error } = await sb.from('insumos').update(data).eq('id', v.insumoId);
+    if(error){ showAlert('Pedido salvo, mas houve erro ao atualizar o custo de "'+(ins.nome||v.insumoId)+'": '+error.message); }
+  }
+  await loadInsumos();
+}
+// texto corrido pronto pra copiar e enviar ao fornecedor (whatsapp/e-mail) — só item/quantidade/unidade, sem
+// preço: o preço lançado no pedido é o custo já normalizado (por kg/L/un) usado nas fichas técnicas, que pode
+// não bater com a forma como o fornecedor cota (por pacote/caixa), então evita confusão na comunicação.
+function textoPedidoFornecedor(p){
+  const linhas = [
+    `Pedido de compra — Grupo Villa Ramos`,
+    p.fornecedor ? `Fornecedor: ${p.fornecedor}` : null,
+    p.data_pedido ? `Data: ${fmtDataYMD(p.data_pedido)}` : null,
+    p.data_entrega_prevista ? `Entrega prevista: ${fmtDataYMD(p.data_entrega_prevista)}` : null,
+    "",
+    "Itens:",
+    ...p.itens.map(l => `- ${l.nome} — ${fmtNum(l.quantidade,3)} ${l.unidade||""}`.trim()),
+  ].filter(l => l !== null);
+  if(p.observacoes) linhas.push("", `Observações: ${p.observacoes}`);
+  return linhas.join("\n");
+}
+function abrirTextoFornecedorModal(texto){
+  const root = document.getElementById("confirm-root");
+  root.innerHTML = `
+    <div class="modal-overlay" id="tf-ov">
+      <div class="modal" style="max-width:560px;">
+        <div class="modal-head"><h2>Texto para o fornecedor</h2><button class="close-x" id="tf-close">&times;</button></div>
+        <div class="modal-body">
+          <textarea id="tf-texto" rows="14" style="width:100%; font-family:inherit; font-size:13px;" readonly>${escapeHtml(texto)}</textarea>
+          <div class="footnote" id="tf-copiado" style="margin-top:6px;"></div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" id="tf-fechar">Fechar</button>
+          <button class="btn primary" id="tf-copiar">Copiar texto</button>
+        </div>
+      </div>
+    </div>`;
+  const cleanup = () => { root.innerHTML = ""; };
+  document.getElementById("tf-close").onclick = cleanup;
+  document.getElementById("tf-fechar").onclick = cleanup;
+  document.getElementById("tf-ov").addEventListener("click", e => { if(e.target.id==="tf-ov") cleanup(); });
+  document.getElementById("tf-copiar").addEventListener("click", async () => {
+    const aviso = document.getElementById("tf-copiado");
+    try{
+      await navigator.clipboard.writeText(texto);
+      aviso.textContent = "Copiado!";
+    }catch(e){
+      document.getElementById("tf-texto").select();
+      aviso.textContent = "Não deu pra copiar automaticamente — texto selecionado, use Ctrl+C.";
+    }
+  });
+}
+// janela de impressão do pedido — vai pra conferência com a entrega na área de recebimento. Imprimir e "salvar
+// como PDF" usam a mesma janela: o destino "Salvar como PDF" já fica disponível na caixa de impressão do navegador.
+function imprimirPedido(id){
+  const p = pedidos.get(id);
+  if(!p) return;
+  const w = window.open("", "_blank");
+  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
+  const f = p.fornecedor_id ? fornecedores.get(p.fornecedor_id) : (fornecedorPorNome(p.fornecedor)||null);
+  const itensHtml = (p.itens||[]).map(it => `<tr>
+      <td>${escapeHtml(it.nome)}</td>
+      <td class="num">${fmtNum(it.quantidade,3)}</td>
+      <td>${escapeHtml(it.unidade||"")}</td>
+      <td class="num">&nbsp;</td>
+    </tr>`).join("");
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Pedido — ${escapeHtml(p.fornecedor||"—")} — ${fmtDataYMD(p.data_pedido)||""}</title>
+    <style>
+      body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;}
+      h1{font-size:18px; margin:0 0 4px;}
+      .sub{font-size:12px; color:#555; margin-bottom:4px;}
+      table{width:100%; border-collapse:collapse; font-size:12.5px; margin:14px 0;}
+      th,td{border:1px solid #ccc; padding:6px 8px; text-align:left; vertical-align:top;}
+      th{background:#f0f0f0;}
+      td.num,th.num{text-align:right; white-space:nowrap;}
+      .info-grid{display:grid; grid-template-columns:1fr 1fr; gap:4px 24px; font-size:12.5px; margin:10px 0 4px;}
+      .info-grid div strong{display:inline-block; min-width:110px;}
+      .conf-box{border:1px solid #999; border-radius:4px; padding:10px 12px; margin-top:16px;}
+      .conf-box h2{font-size:13px; margin:0 0 8px;}
+      .assinatura{display:flex; gap:40px; margin-top:28px;}
+      .assinatura div{flex:1; border-top:1px solid #333; padding-top:4px; font-size:11.5px; color:#555;}
+      ${printHeadStyle()}
+    </style></head><body>
+    ${printHeadHtml()}
+    <h1>Pedido de compra</h1>
+    <div class="sub">Documento de conferência — comparar com a entrega ao receber</div>
+    <div class="info-grid">
+      <div><strong>Fornecedor:</strong> ${escapeHtml(p.fornecedor||"—")}</div>
+      <div><strong>CNPJ:</strong> ${f && f.cnpj ? escapeHtml(f.cnpj) : "—"}</div>
+      <div><strong>Data do pedido:</strong> ${fmtDataYMD(p.data_pedido)||"—"}</div>
+      <div><strong>Entrega prevista:</strong> ${fmtDataYMD(p.data_entrega_prevista)||"—"}</div>
+      <div><strong>Unidade:</strong> ${escapeHtml(nomeUnidadeCompra(pedidoUnidade(p)))}</div>
+      <div><strong>Prazo de pagamento:</strong> ${f && f.prazo_pagamento ? escapeHtml(f.prazo_pagamento) : "—"}</div>
+      <div><strong>Destino:</strong> ${escapeHtml(p.destino_rotulo||"Grupo inteiro")}</div>
+      <div><strong>Valor total do pedido:</strong> ${fmtMoney(p.valor_total)}</div>
+    </div>
+    ${p.observacoes ? `<div class="sub">Observações: ${escapeHtml(p.observacoes)}</div>` : ""}
+    <table>
+      <thead><tr><th>Insumo</th><th class="num">Pedido</th><th>Un.</th><th class="num">Recebido</th></tr></thead>
+      <tbody>${itensHtml}</tbody>
+    </table>
+    <div class="conf-box">
+      <h2>Conferência de recebimento</h2>
+      <div class="info-grid">
+        <div><strong>Nota fiscal nº:</strong> ____________________</div>
+        <div><strong>Data do recebimento:</strong> ____/____/______</div>
+      </div>
+      <div class="assinatura">
+        <div>Recebido por</div>
+        <div>Conferido por</div>
+      </div>
+    </div>
+    <script>window.onload = () => window.print();<\/script>
+    </body></html>`);
+  w.document.close();
 }
 function openPedidoModal(id, opts){
   opts = opts || {};
@@ -8297,7 +8493,10 @@ function openPedidoModal(id, opts){
           <div class="footnote" id="pd-err" style="color:var(--critical); margin-top:6px;"></div>
         </div>
         <div class="modal-foot">
-          <div>${existing ? `<button class="btn danger" id="del-m">Excluir pedido</button>` : ""}</div>
+          <div style="display:flex; gap:8px;">
+            ${existing ? `<button class="btn danger" id="del-m">Excluir pedido</button>` : ""}
+            <button class="btn ghost" id="pd-texto-forn" type="button">Gerar texto para fornecedor</button>
+          </div>
           <div style="display:flex; gap:8px;">
             <button class="btn" id="cancel-m">Cancelar</button>
             <button class="btn primary" id="save-m">Salvar pedido</button>
@@ -8387,6 +8586,18 @@ function openPedidoModal(id, opts){
   renderLines();
   document.getElementById("pd-add-line").addEventListener("click", () => { draft.itens.push(novaLinhaPedido()); renderLines(); refreshTotal(); });
   document.getElementById("pd-data").addEventListener("change", renderLines);
+  document.getElementById("pd-texto-forn").addEventListener("click", () => {
+    const itensValidos = draft.itens.filter(l => l.insumo_id && l.quantidade > 0);
+    if(!itensValidos.length){ showAlert("Adicione ao menos um item com insumo e quantidade antes de gerar o texto."); return; }
+    const texto = textoPedidoFornecedor({
+      fornecedor: document.getElementById("pd-fornecedor").value.trim(),
+      data_pedido: document.getElementById("pd-data").value,
+      data_entrega_prevista: document.getElementById("pd-entrega").value,
+      observacoes: document.getElementById("pd-obs").value.trim(),
+      itens: itensValidos,
+    });
+    abrirTextoFornecedorModal(texto);
+  });
 
   if(existing) document.getElementById("del-m").onclick = async () => {
     if(!(await confirmDialog(`Excluir o pedido de "${draft.fornecedor||"—"}"?`))) return;
@@ -8405,6 +8616,13 @@ function openPedidoModal(id, opts){
     if(!data_pedido){ errEl.textContent = "Informe a data do pedido."; return; }
     const itensValidos = draft.itens.filter(l => l.insumo_id && l.quantidade > 0);
     if(!itensValidos.length){ errEl.textContent = "Adicione ao menos um item com insumo e quantidade."; return; }
+    // custo dos insumos é atualizado ao salvar o pedido (impacta todas as fichas técnicas na hora) — se algum item
+    // variar mais de 15% frente ao custo atual, confirma antes; abaixo disso, atualiza direto sem perguntar.
+    const { todas: itensCusto, grandes: itensGrandeVariacao } = itensComVariacaoDeCusto(itensValidos);
+    let atualizarCustos = itensCusto.length > 0;
+    if(itensGrandeVariacao.length){
+      atualizarCustos = await confirmarAtualizacaoCustos(itensGrandeVariacao, itensCusto.length);
+    }
     const destIdx = +document.getElementById("pd-destino").value;
     const dest = destinos[destIdx] || destinos[0];
     const semrefVal = document.getElementById("pd-semref").value;
@@ -8435,6 +8653,7 @@ function openPedidoModal(id, opts){
         if(error) throw error;
       }
       await loadPedidos();
+      if(atualizarCustos && itensCusto.length) await atualizarCustosInsumosDoPedido(itensCusto, data_pedido);
       root.innerHTML = "";
       renderCompras();
     }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
