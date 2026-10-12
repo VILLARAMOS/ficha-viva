@@ -963,6 +963,12 @@ function semanaDaData(ymd){
 
 /* ---- pedidos (compras — fornecedor, itens de insumo, conferência de recebimento) ---- */
 const UNIDADES_COMPRA = [{id:"matriz", nome:"Matriz"}, {id:"filial", nome:"Filial"}];
+// bloco de compra "de apoio" (limpeza, descartáveis, embalagens, material de escritório) — não entra na
+// Lista de compra (demanda por ficha técnica), pois não é insumo de receita: o orçado dele é um valor fixo
+// por refeição servida, hoje R$2,50 (referência do controle manual). Editar o valor abaixo se o custo de
+// referência mudar; o comprado continua vindo normalmente dos pedidos lançados com insumo desse bloco.
+const GRUPO_LIMPEZA_DESCARTAVEIS = "LIMPEZA E DESCARTÁVEIS";
+const ORCAMENTO_LIMPEZA_POR_REFEICAO = 2.50;
 let pedidos = new Map(); // id -> {fornecedor, data_pedido, data_entrega_prevista, unidade, destino_rotulo, destino_ids, semana, semana_referencia, itens:[{insumo_id,nome,unidade,quantidade,preco_unitario,quantidade_recebida}], valor_total, observacoes, recebimento:{nota_fiscal,recebido_por,data,obs}}
 
 async function loadPedidos(){
@@ -8377,6 +8383,7 @@ function orcadoPorBlocoSemana(mesId, escopo){
   const porSemanaBloco = mes.semanas.map(semana => {
     const insumosRefeicao = new Map();
     const insumosCafe = new Map(); // separado: custo de café vai pro bloco "CAFÉ", não pro grupo_compra do insumo
+    let refeicoesSemana = 0; // base para o orçado fixo por refeição do bloco "LIMPEZA E DESCARTÁVEIS"
     contratosEscopo.forEach(([id,ct]) => {
       const itensRef = itensRefeicaoDoContrato(id);
       const itensCafe = ct.cafe_terceirizado ? [] : itensCafeDoContrato(id);
@@ -8386,6 +8393,7 @@ function orcadoPorBlocoSemana(mesId, escopo){
         itensRef.forEach(item => {
           const q = quantidadePrevista(id,item.produto_id,dia,semana);
           if(!q) return;
+          refeicoesSemana += q;
           mergeInsumosInto(insumosRefeicao, insumosUnidadeItemCompra(almocoIdx,cafeIdx,item.produto_id,ct,semana,dia,q));
         });
         itensCafe.forEach(item => {
@@ -8396,6 +8404,7 @@ function orcadoPorBlocoSemana(mesId, escopo){
       });
     });
     const porBloco = new Map();
+    if(refeicoesSemana > 0) porBloco.set(GRUPO_LIMPEZA_DESCARTAVEIS, refeicoesSemana * ORCAMENTO_LIMPEZA_POR_REFEICAO);
     insumosCafe.forEach((kg,insumoId) => {
       const ins = insumos.get(insumoId);
       const custo = ins && ins.custo_kg_l_und != null ? kg*ins.custo_kg_l_und : 0;
