@@ -453,6 +453,7 @@ table.cardapio-table .autocomplete{position:relative;}
 
     <div class="nav-group">
       <div class="group-label">Suprimentos &amp; financeiro</div>
+      <button class="nav-btn" data-view="fornecedores" title="Fornecedores"><i class="ico" data-lucide="truck"></i><span class="label">Fornecedores</span></button>
       <button class="nav-btn" data-view="compras" title="Compras"><i class="ico" data-lucide="shopping-cart"></i><span class="label">Compras</span></button>
       <button class="nav-btn" data-view="orcamento" title="Orçamento"><i class="ico" data-lucide="wallet"></i><span class="label">Orçamento</span></button>
       <button class="nav-btn" disabled title="PCP / Expedição — em construção"><i class="ico" data-lucide="truck"></i><span class="label">PCP / Expedição</span></button>
@@ -521,6 +522,7 @@ const VIEWS = {
   incidencia: renderIncidencia,
   vendas: renderVendas,
   faturamento: renderFaturamento,
+  fornecedores: renderFornecedores,
   compras: renderCompras,
   orcamento: renderOrcamento,
 };
@@ -573,7 +575,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadConjuntosCompra(), loadAjusteSeguranca(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadFornecedores(), loadConjuntosCompra(), loadAjusteSeguranca(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas()]);
   goToView(currentView);
 }
 
@@ -971,13 +973,40 @@ const UNIDADES_COMPRA = [{id:"matriz", nome:"Matriz"}, {id:"filial", nome:"Filia
 // virar um campo configurável (ex.: tabela de parâmetros) em vez de constante no código.
 const GRUPO_LIMPEZA_DESCARTAVEIS = "LIMPEZA E DESCARTÁVEIS";
 const ORCAMENTO_LIMPEZA_POR_REFEICAO = 1.00;
-let pedidos = new Map(); // id -> {fornecedor, data_pedido, data_entrega_prevista, unidade, destino_rotulo, destino_ids, semana, semana_referencia, itens:[{insumo_id,nome,unidade,quantidade,preco_unitario,quantidade_recebida}], valor_total, observacoes, recebimento:{nota_fiscal,recebido_por,data,obs}}
+let pedidos = new Map(); // id -> {fornecedor, fornecedor_id, data_pedido, data_entrega_prevista, unidade, destino_rotulo, destino_ids, semana, semana_referencia, itens:[{insumo_id,nome,unidade,quantidade,preco_unitario,quantidade_recebida}], valor_total, observacoes, recebimento:{nota_fiscal,recebido_por,data,obs}}
 
 async function loadPedidos(){
   const { data, error } = await sb.from('pedidos').select('*').order('data_pedido', {ascending:false});
   pedidos = new Map();
   if (error){ showAlert('Erro ao carregar pedidos: ' + error.message); return; }
   (data || []).forEach(row => { const { id, ...rest } = row; pedidos.set(id, rest); });
+}
+
+/* ---- fornecedores (cadastro — nome, CNPJ, prazo de pagamento, departamento, anexos de lista de preços) ---- */
+let fornecedores = new Map(); // id -> {nome, cnpj, prazo_pagamento, departamentos:[grupo_compra,...], observacoes, ativo, anexos:[{path,nome,tamanho,enviado_em,enviado_por}]}
+async function loadFornecedores(){
+  const { data, error } = await sb.from('fornecedores').select('*').order('nome');
+  fornecedores = new Map();
+  if (error){ showAlert('Erro ao carregar fornecedores: ' + error.message); return; }
+  (data || []).forEach(row => { const { id, ...rest } = row; fornecedores.set(id, rest); });
+}
+function fornecedorPorNome(nome){ // casa por nome normalizado (acento/pontuação/maiúscula não importam) — mesma regra da migração
+  const chave = normalizeText(nome||"").replace(/[^a-z0-9]/g,"");
+  if(!chave) return null;
+  for(const [id,f] of fornecedores){ if(normalizeText(f.nome||"").replace(/[^a-z0-9]/g,"") === chave) return {id, ...f}; }
+  return null;
+}
+// usado ao salvar um pedido: acha o fornecedor pelo nome digitado, ou cria um cadastro novo (sem CNPJ/prazo —
+// a compradora/você completa depois em Fornecedores) pra nunca deixar um pedido sem fornecedor_id.
+async function resolverOuCriarFornecedor(nomeDigitado){
+  const nome = (nomeDigitado||"").trim();
+  if(!nome) return null;
+  const existente = fornecedorPorNome(nome);
+  if(existente) return existente.id;
+  const { data, error } = await sb.from('fornecedores').insert({ nome, departamentos: [], ...carimbo() }).select('id').single();
+  if(error){ showAlert('Erro ao criar fornecedor "'+nome+'": '+error.message); return null; }
+  await loadFornecedores();
+  return data.id;
 }
 
 async function loadConjuntosCompra(){
@@ -1001,9 +1030,48 @@ function blocoDoInsumo(insumoId){
   const ins = insumos.get(insumoId);
   return (ins && ins.grupo_compra) || "SEM GRUPO";
 }
-// nomes de fornecedor já usados nos pedidos, pra autocompletar e não duplicar "Frigorífico X" / "frigorifico x"
+
+/* ---- histórico de preço por insumo e sugestão de fornecedor — base pro alerta de preço e pros pedidos sugeridos ---- */
+const ALERTA_PRECO_LIMIAR = 0.15; // 15% acima da média do mês anterior já acende o alerta na tela do pedido
+function mesAnteriorYMD(ymd){ // "2026-09" a partir de qualquer data desse mês
+  if(!ymd) return null;
+  const [y,m] = ymd.split("-").map(Number);
+  const d = new Date(Date.UTC(y, m-2, 1)); // m-1 é o mês atual (0-index), -1 mais = mês anterior
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}`;
+}
+// preço médio ponderado (valor/quantidade) pago por um insumo no mês anterior ao da data informada, qualquer fornecedor.
+// null se não há nenhuma compra desse insumo no mês anterior (sem base de comparação, não é "sem alerta" = "preço ok").
+function precoMedioMesAnterior(insumoId, dataRefYMD){
+  const alvo = mesAnteriorYMD(dataRefYMD);
+  if(!alvo) return null;
+  let somaValor = 0, somaQtd = 0;
+  pedidos.forEach(p => {
+    if(!p.data_pedido || !p.data_pedido.startsWith(alvo)) return;
+    (p.itens||[]).forEach(it => {
+      if(it.insumo_id !== insumoId || !(it.quantidade > 0)) return;
+      somaValor += it.quantidade * (it.preco_unitario||0);
+      somaQtd += it.quantidade;
+    });
+  });
+  return somaQtd > 0 ? somaValor/somaQtd : null;
+}
+// fornecedor que mais recentemente vendeu esse insumo (base pra sugestão de pedido) — null se nunca comprado.
+function fornecedorSugeridoParaInsumo(insumoId){
+  let melhor = null; // {fornecedor_id, fornecedor, data_pedido, preco_unitario}
+  pedidos.forEach(p => {
+    if(!p.fornecedor_id || !p.data_pedido) return;
+    (p.itens||[]).forEach(it => {
+      if(it.insumo_id !== insumoId) return;
+      if(!melhor || p.data_pedido > melhor.data_pedido) melhor = {fornecedor_id: p.fornecedor_id, fornecedor: p.fornecedor, data_pedido: p.data_pedido, preco_unitario: it.preco_unitario};
+    });
+  });
+  return melhor;
+}
+// nomes de fornecedor pro autocompletar — prioriza o cadastro (fornecedores), cai pro histórico de pedidos
+// só pra nomes antigos que por algum motivo não entraram no cadastro ainda.
 function fornecedoresConhecidos(){
   const mapa = new Map();
+  [...fornecedores.values()].forEach(f => { const nome=(f.nome||"").trim(); if(nome) mapa.set(normalizeText(nome), nome); });
   [...pedidos.values()].sort((a,b) => (a.data_pedido||"").localeCompare(b.data_pedido||"")).forEach(p => {
     const nome = (p.fornecedor||"").trim();
     if(!nome) return;
@@ -8134,7 +8202,7 @@ function openPedidoModal(id, opts){
         <div class="modal-head"><h2>${existing ? "Editar pedido" : (origem ? "Novo pedido (repetido)" : "Registrar pedido")}</h2><button class="close-x" id="close-m">&times;</button></div>
         <div class="modal-body">
           <div class="field-row">
-            <div class="field" style="flex:2;"><label for="pd-fornecedor">Fornecedor</label><input type="text" id="pd-fornecedor" list="pd-forn-list" autocomplete="off" value="${escapeHtml(draft.fornecedor)}" placeholder="Nome do fornecedor"><datalist id="pd-forn-list">${fornecedoresConhecidos().map(f => `<option value="${escapeHtml(f)}"></option>`).join("")}</datalist></div>
+            <div class="field" style="flex:2;"><label for="pd-fornecedor">Fornecedor</label><input type="text" id="pd-fornecedor" list="pd-forn-list" autocomplete="off" value="${escapeHtml(draft.fornecedor)}" placeholder="Nome do fornecedor"><datalist id="pd-forn-list">${fornecedoresConhecidos().map(f => `<option value="${escapeHtml(f)}"></option>`).join("")}</datalist><div class="footnote" id="pd-forn-info" style="margin-top:3px;"></div></div>
             <div class="field"><label for="pd-data">Data do pedido</label><input type="date" id="pd-data" value="${draft.data_pedido}"></div>
             <div class="field"><label for="pd-entrega">Entrega prevista (opcional)</label><input type="date" id="pd-entrega" value="${draft.data_entrega_prevista}"></div>
           </div>
@@ -8176,6 +8244,23 @@ function openPedidoModal(id, opts){
   document.getElementById("cancel-m").onclick = () => root.innerHTML = "";
   document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
 
+  const fornEl = document.getElementById("pd-fornecedor");
+  function refreshFornInfo(){
+    const f = fornecedorPorNome(fornEl.value);
+    const info = document.getElementById("pd-forn-info");
+    if(!fornEl.value.trim()){ info.innerHTML = ""; return; }
+    if(!f){ info.innerHTML = `<span style="color:var(--warn,#b8860b);">fornecedor novo — será criado no cadastro ao salvar</span>`; return; }
+    const partes = [];
+    partes.push(f.cnpj ? `CNPJ ${escapeHtml(f.cnpj)}` : "CNPJ não cadastrado");
+    partes.push(f.prazo_pagamento ? `prazo ${escapeHtml(f.prazo_pagamento)}` : "prazo não cadastrado");
+    if(f.departamentos && f.departamentos.length) partes.push(escapeHtml(f.departamentos.join(", ")));
+    info.innerHTML = `${partes.join(" · ")} — <a href="#" id="pd-forn-editar" style="color:var(--accent);">editar cadastro</a>`;
+    const a = document.getElementById("pd-forn-editar");
+    if(a) a.onclick = (e) => { e.preventDefault(); openFornecedorModal(f.id, {voltarPara: () => openPedidoModal(id, opts)}); };
+  }
+  fornEl.addEventListener("input", refreshFornInfo);
+  refreshFornInfo();
+
   const wrap = document.getElementById("pd-lines");
   function linhaHtml(l,i){
     return `
@@ -8183,10 +8268,20 @@ function openPedidoModal(id, opts){
         <div class="field" style="flex:2;"><label>Insumo</label><input type="text" class="pd-nome" list="pd-insumo-list" autocomplete="off" value="${escapeHtml(l.nome||"")}" placeholder="Buscar insumo…"><div class="footnote" style="margin-top:2px;">${l.insumo_id ? escapeHtml(blocoDoInsumo(l.insumo_id)) : (l.nome ? '<span style="color:var(--critical);">insumo não encontrado — escolha da lista</span>' : "")}</div></div>
         <div class="field"><label>Quantidade</label><input type="number" step="0.001" min="0" class="pd-qtd" value="${l.quantidade!=null?l.quantidade:""}"></div>
         <div class="field"><label>Un.</label><input type="text" class="pd-un" value="${escapeHtml(l.unidade||"")}" disabled></div>
-        <div class="field"><label>Preço unit. (R$)</label><input type="number" step="0.01" min="0" class="pd-preco" value="${l.preco_unitario!=null?l.preco_unitario:""}"></div>
+        <div class="field"><label>Preço unit. (R$)</label><input type="number" step="0.01" min="0" class="pd-preco" value="${l.preco_unitario!=null?l.preco_unitario:""}"><div class="footnote pd-alerta" style="margin-top:2px;"></div></div>
         <div class="field"><label>Valor</label><div class="val small" style="padding:9px 0;">${fmtMoney((l.quantidade||0)*(l.preco_unitario||0))}</div></div>
         <div class="field"><button type="button" class="btn small ghost pd-rm" style="color:var(--critical);">remover</button></div>
       </div>`;
+  }
+  // compara o preço lançado com a média paga (qualquer fornecedor) no mês anterior ao da data do pedido
+  function alertaPrecoHtml(l){
+    if(!l.insumo_id || !(l.preco_unitario > 0)) return "";
+    const dataYMD = document.getElementById("pd-data").value;
+    const media = precoMedioMesAnterior(l.insumo_id, dataYMD);
+    if(media == null) return "";
+    const diff = (l.preco_unitario - media) / media;
+    if(diff > ALERTA_PRECO_LIMIAR) return `<span style="color:var(--critical);">▲ ${(diff*100).toFixed(0)}% acima da média do mês anterior (${fmtMoney(media)})</span>`;
+    return `<span style="opacity:.65;">média mês anterior: ${fmtMoney(media)}</span>`;
   }
   function renderLines(){ wrap.innerHTML = draft.itens.map(linhaHtml).join(""); wireLines(); }
   function refreshTotal(){
@@ -8195,6 +8290,8 @@ function openPedidoModal(id, opts){
   function wireLines(){
     wrap.querySelectorAll(".pd-line").forEach(row => {
       const i = +row.dataset.i, l = draft.itens[i];
+      const alertaEl = row.querySelector(".pd-alerta");
+      if(alertaEl) alertaEl.innerHTML = alertaPrecoHtml(l);
       row.querySelector(".pd-nome").addEventListener("change", e => {
         const texto = e.target.value;
         const match = insumosOrdenados.find(([,ins]) => normalizeText(ins.nome) === normalizeText(texto));
@@ -8207,12 +8304,13 @@ function openPedidoModal(id, opts){
         renderLines(); refreshTotal();
       });
       row.querySelector(".pd-qtd").addEventListener("input", e => { l.quantidade = e.target.value===""?null:parseFloat(e.target.value); row.querySelector(".val.small").textContent = fmtMoney((l.quantidade||0)*(l.preco_unitario||0)); refreshTotal(); });
-      row.querySelector(".pd-preco").addEventListener("input", e => { l.preco_unitario = e.target.value===""?null:parseFloat(e.target.value); row.querySelector(".val.small").textContent = fmtMoney((l.quantidade||0)*(l.preco_unitario||0)); refreshTotal(); });
+      row.querySelector(".pd-preco").addEventListener("input", e => { l.preco_unitario = e.target.value===""?null:parseFloat(e.target.value); row.querySelector(".val.small").textContent = fmtMoney((l.quantidade||0)*(l.preco_unitario||0)); if(alertaEl) alertaEl.innerHTML = alertaPrecoHtml(l); refreshTotal(); });
       row.querySelector(".pd-rm").addEventListener("click", () => { draft.itens.splice(i,1); if(!draft.itens.length) draft.itens.push(novaLinhaPedido()); renderLines(); refreshTotal(); });
     });
   }
   renderLines();
   document.getElementById("pd-add-line").addEventListener("click", () => { draft.itens.push(novaLinhaPedido()); renderLines(); refreshTotal(); });
+  document.getElementById("pd-data").addEventListener("change", renderLines);
 
   if(existing) document.getElementById("del-m").onclick = async () => {
     if(!(await confirmDialog(`Excluir o pedido de "${draft.fornecedor||"—"}"?`))) return;
@@ -8234,8 +8332,11 @@ function openPedidoModal(id, opts){
     const destIdx = +document.getElementById("pd-destino").value;
     const dest = destinos[destIdx] || destinos[0];
     const semrefVal = document.getElementById("pd-semref").value;
+    const nomeFornecedor = document.getElementById("pd-fornecedor").value.trim();
+    const fornecedor_id = await resolverOuCriarFornecedor(nomeFornecedor);
     const payload = {
-      fornecedor: document.getElementById("pd-fornecedor").value.trim(),
+      fornecedor: nomeFornecedor,
+      fornecedor_id,
       data_pedido,
       data_entrega_prevista: document.getElementById("pd-entrega").value || null,
       unidade: document.getElementById("pd-unidade").value,
@@ -8366,6 +8467,212 @@ function openPedidoDetalhe(id){
       root.innerHTML = "";
       renderCompras();
     }catch(e){ document.getElementById("cf-err").textContent = "Erro ao salvar: " + (e.message||e.code||e); }
+  };
+}
+
+/* ===================================================================== FORNECEDORES (cadastro — CNPJ, prazo de
+   pagamento, departamento de fornecimento, anexos de lista de preços; ligado ao pedido via fornecedor_id) */
+let fornecedoresFiltro = "";
+let fornecedoresBusca = "";
+function pedidosDoFornecedor(fornecedorId){
+  return [...pedidos.values()].filter(p => p.fornecedor_id === fornecedorId).sort((a,b) => (b.data_pedido||"").localeCompare(a.data_pedido||""));
+}
+function renderFornecedores(){
+  document.getElementById("page-title").textContent = "Fornecedores";
+  document.getElementById("page-desc").textContent = "Cadastro de fornecedores — CNPJ, prazo de pagamento, departamento de fornecimento e histórico de compras";
+  const content = document.getElementById("content");
+  const lista = [...fornecedores.entries()]
+    .filter(([,f]) => !fornecedoresFiltro || (f.departamentos||[]).includes(fornecedoresFiltro))
+    .filter(([,f]) => !fornecedoresBusca || normalizeText(f.nome||"").includes(normalizeText(fornecedoresBusca)) || normalizeText(f.cnpj||"").includes(normalizeText(fornecedoresBusca)))
+    .sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+  const departamentos = [...new Set([...fornecedores.values()].flatMap(f => f.departamentos||[]))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
+  content.innerHTML = `
+    <div class="footnote" style="margin:16px 0 10px;">O nome do fornecedor nos pedidos vem daqui — ao digitar um nome novo num pedido, ele entra automaticamente no cadastro (sem CNPJ/prazo, pra completar depois).</div>
+    <div class="panel">
+      <div class="panel-head">
+        <h3>Fornecedores (${lista.length})</h3>
+        <button class="btn small primary" id="fn-novo">+ Novo fornecedor</button>
+      </div>
+      <div class="panel-body" style="display:flex; gap:10px; flex-wrap:wrap; padding-bottom:0;">
+        <select id="fn-filtro-dep" aria-label="Filtrar por departamento">
+          <option value="">Todos os departamentos</option>
+          ${departamentos.map(d => `<option value="${escapeHtml(d)}" ${fornecedoresFiltro===d?"selected":""}>${escapeHtml(d)}</option>`).join("")}
+        </select>
+        <input type="text" id="fn-busca" placeholder="Buscar nome ou CNPJ…" value="${escapeHtml(fornecedoresBusca)}" style="flex:1; min-width:180px;">
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Nome</th><th>CNPJ</th><th>Prazo de pagamento</th><th>Departamento(s)</th><th>Anexos</th><th style="text-align:right;">Pedidos lançados</th><th></th></tr></thead>
+          <tbody>
+            ${lista.map(([fid,f]) => `
+            <tr>
+              <td class="name-cell">${escapeHtml(f.nome)}${f.ativo===false ? ' <span class="chip">inativo</span>' : ""}</td>
+              <td>${f.cnpj ? escapeHtml(f.cnpj) : '<span class="footnote">—</span>'}</td>
+              <td>${f.prazo_pagamento ? escapeHtml(f.prazo_pagamento) : '<span class="footnote">—</span>'}</td>
+              <td style="font-size:12.5px;">${(f.departamentos||[]).map(escapeHtml).join(", ") || '<span class="footnote">—</span>'}</td>
+              <td>${(f.anexos||[]).length || '<span class="footnote">—</span>'}</td>
+              <td class="num-cell">${pedidosDoFornecedor(fid).length}</td>
+              <td><button type="button" class="btn small ghost" data-editar="${fid}">editar</button></td>
+            </tr>`).join("") || `<tr><td colspan="7" class="empty-state">Nenhum fornecedor encontrado.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+    </div>`;
+  document.getElementById("fn-novo").addEventListener("click", () => openFornecedorModal(null));
+  document.getElementById("fn-filtro-dep").addEventListener("change", e => { fornecedoresFiltro = e.target.value; renderFornecedores(); });
+  document.getElementById("fn-busca").addEventListener("input", e => { fornecedoresBusca = e.target.value; renderFornecedores(); });
+  content.querySelectorAll("[data-editar]").forEach(b => b.addEventListener("click", () => openFornecedorModal(b.dataset.editar)));
+}
+
+function openFornecedorModal(id, opts){
+  opts = opts || {};
+  const existing = id ? fornecedores.get(id) : null;
+  const draft = existing
+    ? { nome: existing.nome||"", cnpj: existing.cnpj||"", prazo_pagamento: existing.prazo_pagamento||"", departamentos: [...(existing.departamentos||[])], observacoes: existing.observacoes||"", ativo: existing.ativo !== false, anexos: [...(existing.anexos||[])] }
+    : { nome:"", cnpj:"", prazo_pagamento:"", departamentos:[], observacoes:"", ativo:true, anexos:[] };
+  const root = document.getElementById("modal-root");
+  const deptosDisponiveis = blocosCadastro(); // mesmos grupos de compra usados em Insumos — um fornecedor pode atender vários
+
+  root.innerHTML = `
+    <div class="modal-overlay" id="ov">
+      <div class="modal" style="max-width:640px;">
+        <div class="modal-head"><h2>${existing ? "Editar fornecedor" : "Novo fornecedor"}</h2><button class="close-x" id="close-m">&times;</button></div>
+        <div class="modal-body">
+          <div class="field-row">
+            <div class="field" style="flex:2;"><label for="fn-nome">Nome</label><input type="text" id="fn-nome" value="${escapeHtml(draft.nome)}" placeholder="Nome do fornecedor"></div>
+            <div class="field"><label><input type="checkbox" id="fn-ativo" style="width:auto; display:inline-block; margin-right:6px;" ${draft.ativo?"checked":""}> Ativo</label></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label for="fn-cnpj">CNPJ</label><input type="text" id="fn-cnpj" value="${escapeHtml(draft.cnpj)}" placeholder="00.000.000/0000-00"></div>
+            <div class="field"><label for="fn-prazo">Prazo de pagamento</label><input type="text" id="fn-prazo" value="${escapeHtml(draft.prazo_pagamento)}" placeholder="Ex.: 30 dias, à vista, 15/30/45"></div>
+          </div>
+          <div class="field"><label>Departamento(s) de fornecimento</label>
+            <div id="fn-deptos-chips" style="display:flex; flex-wrap:wrap; gap:6px; margin-top:4px;">
+              ${deptosDisponiveis.map(d => `<button type="button" class="chip-dia ${draft.departamentos.includes(d)?"on":""}" data-dep="${escapeHtml(d)}">${escapeHtml(d)}</button>`).join("")}
+            </div>
+            <div class="footnote" style="margin-top:4px;">Usado pra organizar a lista de fornecedores por departamento — um fornecedor pode atender mais de um.</div>
+          </div>
+          <div class="field" style="margin-top:10px;"><label for="fn-obs">Observações</label><textarea id="fn-obs" rows="2">${escapeHtml(draft.observacoes)}</textarea></div>
+
+          <h3 style="font-size:14px; margin:18px 0 8px;">Listas de produtos × preços (anexos)</h3>
+          ${existing ? `
+          <div id="fn-anexos-wrap"></div>
+          <div class="field-row" style="align-items:flex-end; margin-top:8px;">
+            <div class="field" style="flex:1;"><input type="file" id="fn-anexo-file"></div>
+            <button type="button" class="btn small" id="fn-anexo-add">Anexar</button>
+          </div>
+          <div class="footnote" id="fn-anexo-err" style="color:var(--critical);"></div>
+          ` : `<div class="footnote">Salve o fornecedor primeiro para anexar listas de preço.</div>`}
+
+          <div class="footnote" id="fn-err" style="color:var(--critical); margin-top:12px;"></div>
+        </div>
+        <div class="modal-foot">
+          <div>${existing ? `<button class="btn danger" id="del-m">Excluir fornecedor</button>` : ""}</div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn" id="cancel-m">Cancelar</button>
+            <button class="btn primary" id="save-m">Salvar</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+  const fechar = () => { root.innerHTML = ""; if(opts.voltarPara) opts.voltarPara(); };
+  document.getElementById("close-m").onclick = fechar;
+  document.getElementById("cancel-m").onclick = fechar;
+  document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") fechar(); });
+
+  document.querySelectorAll("#fn-deptos-chips .chip-dia").forEach(b => b.addEventListener("click", () => {
+    const d = b.dataset.dep;
+    const i = draft.departamentos.indexOf(d);
+    if(i>=0) draft.departamentos.splice(i,1); else draft.departamentos.push(d);
+    b.classList.toggle("on");
+  }));
+
+  function renderAnexos(){
+    const wrap = document.getElementById("fn-anexos-wrap");
+    if(!wrap) return;
+    wrap.innerHTML = draft.anexos.length ? `<table style="margin-bottom:4px;"><tbody>${draft.anexos.map((a,i) => `
+      <tr><td>${escapeHtml(a.nome)}</td><td class="footnote">${a.enviado_em ? fmtDataBr(a.enviado_em.slice(0,10)) : "—"}</td>
+      <td style="text-align:right;"><button type="button" class="btn small ghost" data-baixar-anexo="${i}">baixar</button> <button type="button" class="btn small ghost" data-rm-anexo="${i}" style="color:var(--critical);">remover</button></td></tr>`).join("")}</tbody></table>`
+      : `<div class="footnote">Nenhum arquivo anexado ainda.</div>`;
+    wrap.querySelectorAll("[data-baixar-anexo]").forEach(b => b.addEventListener("click", async () => {
+      const a = draft.anexos[+b.dataset.baixarAnexo];
+      const { data, error } = await sb.storage.from('fornecedores-anexos').createSignedUrl(a.path, 60);
+      if(error){ showAlert("Erro ao gerar link: "+error.message); return; }
+      window.open(data.signedUrl, "_blank");
+    }));
+    wrap.querySelectorAll("[data-rm-anexo]").forEach(b => b.addEventListener("click", async () => {
+      const i = +b.dataset.rmAnexo, a = draft.anexos[i];
+      if(!(await confirmDialog(`Remover o arquivo "${a.nome}"?`))) return;
+      try{
+        await sb.storage.from('fornecedores-anexos').remove([a.path]);
+        draft.anexos.splice(i,1);
+        const { error } = await sb.from('fornecedores').update({ anexos: draft.anexos, ...carimbo() }).eq('id', id);
+        if(error) throw error;
+        await loadFornecedores();
+        renderAnexos();
+      }catch(e){ document.getElementById("fn-anexo-err").textContent = "Erro ao remover: "+(e.message||e.code||e); }
+    }));
+  }
+  renderAnexos();
+  if(existing){
+    document.getElementById("fn-anexo-add").addEventListener("click", async () => {
+      const fileEl = document.getElementById("fn-anexo-file");
+      const file = fileEl.files[0];
+      const errEl = document.getElementById("fn-anexo-err");
+      errEl.textContent = "";
+      if(!file){ errEl.textContent = "Escolha um arquivo primeiro."; return; }
+      const path = `${id}/${Date.now()}_${file.name}`;
+      try{
+        const { error: upErr } = await sb.storage.from('fornecedores-anexos').upload(path, file, { upsert: true });
+        if(upErr) throw upErr;
+        draft.anexos.push({ path, nome: file.name, tamanho: file.size, enviado_em: new Date().toISOString(), enviado_por: usuarioId||null });
+        const { error } = await sb.from('fornecedores').update({ anexos: draft.anexos, ...carimbo() }).eq('id', id);
+        if(error) throw error;
+        await loadFornecedores();
+        fileEl.value = "";
+        renderAnexos();
+      }catch(e){ errEl.textContent = "Erro ao anexar: "+(e.message||e.code||e); }
+    });
+  }
+
+  if(existing) document.getElementById("del-m").onclick = async () => {
+    const nPedidos = pedidosDoFornecedor(id).length;
+    const aviso = nPedidos ? `Este fornecedor tem ${nPedidos} pedido${nPedidos===1?"":"s"} lançado${nPedidos===1?"":"s"}, que ficará(ão) sem fornecedor vinculado. ` : "";
+    if(!(await confirmDialog(`${aviso}Excluir o fornecedor "${draft.nome}"?`))) return;
+    try{
+      (draft.anexos||[]).forEach(a => sb.storage.from('fornecedores-anexos').remove([a.path]));
+      const { error } = await sb.from('fornecedores').delete().eq('id', id);
+      if(error) throw error;
+      await loadFornecedores();
+      fechar();
+      renderFornecedores();
+    }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
+  };
+
+  document.getElementById("save-m").onclick = async () => {
+    const errEl = document.getElementById("fn-err");
+    const nome = document.getElementById("fn-nome").value.trim();
+    if(!nome){ errEl.textContent = "Informe o nome do fornecedor."; return; }
+    const duplicado = fornecedorPorNome(nome);
+    if(duplicado && duplicado.id !== id){ errEl.textContent = `Já existe um fornecedor cadastrado com esse nome ("${duplicado.nome}") — edite-o em vez de criar outro.`; return; }
+    const payload = {
+      nome, cnpj: document.getElementById("fn-cnpj").value.trim()||null, prazo_pagamento: document.getElementById("fn-prazo").value.trim()||null,
+      departamentos: draft.departamentos, observacoes: document.getElementById("fn-obs").value.trim()||null,
+      ativo: document.getElementById("fn-ativo").checked, ...carimbo(),
+    };
+    try{
+      if(existing){
+        const { error } = await sb.from('fornecedores').update(payload).eq('id', id);
+        if(error) throw error;
+      } else {
+        const { error } = await sb.from('fornecedores').insert(payload);
+        if(error) throw error;
+      }
+      await loadFornecedores();
+      fechar();
+      renderFornecedores();
+    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
   };
 }
 
