@@ -6904,9 +6904,11 @@ function insumosItemCardapioCompra(it, numPessoas){
   return m;
 }
 function nomeReceitaDoItemCardapio(it){
+  // só identifica "receita" quando o insumo está dentro de uma ficha técnica — é essa relação escondida
+  // que vale a pena mostrar pro comprador. Insumo lançado direto no cardápio (sem ficha) não tem receita:
+  // o nome dele já é a própria linha da tabela, repetir aqui seria ruído.
   if(!it) return null;
-  if(it.ficha_id) return fichas.get(it.ficha_id)?.nome || "Ficha técnica";
-  if(it.insumo_id) return insumos.get(it.insumo_id)?.nome || "Insumo";
+  if(it.ficha_id) return it.nome || fichas.get(it.ficha_id)?.nome || "Ficha técnica";
   return null;
 }
 function insumosEmbalagemDiaCompra(dayDoc, numPessoas){
