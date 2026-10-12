@@ -7245,6 +7245,7 @@ let comprasMostrarPorCliente = false; // Totais é a visão padrão; detalhament
 let ajusteSegurancaDraft = new Map(); // "semana|insumo_id" -> quantidade (null = remover ajuste salvo) — mesmo rascunho pendente da previsão, salva junto em "Salvar alterações"
 let ajusteSegExtras = new Set(); // "semana|insumo_id" adicionados via "+ Adicionar insumo" nesta visita, mesmo antes de digitar valor
 let pedidosSemanaFiltro = "todas";
+let pedidosMesFiltro = "todos"; // id de MESES_REFERENCIA (ex. "2026-10") ou "todos" — filtra pelo mês real de data_pedido, independente da semana
 let pedidosFornecedorFiltro = "";
 let pedidosUnidadeFiltro = "todas";
 let pedidosStatusFiltro = "todos";
@@ -8099,6 +8100,9 @@ function renderTabPedidos(){
     const semanaAtual = semanaDaData(hojeYMD()) || 1;
     const opcoesFiltro = [...new Set([...semanasComPedido, semanaAtual])].sort((a,b)=>a-b);
     if(pedidosSemanaFiltro !== "todas" && !opcoesFiltro.includes(pedidosSemanaFiltro)) pedidosSemanaFiltro = "todas";
+    const mesesComPedido = [...new Set([...pedidos.values()].map(p => (p.data_pedido||"").slice(0,7)).filter(Boolean))];
+    const opcoesMes = MESES_REFERENCIA.filter(m => mesesComPedido.includes(m.id) || m.id === mesAtualId());
+    if(pedidosMesFiltro !== "todos" && !opcoesMes.some(m => m.id === pedidosMesFiltro)) pedidosMesFiltro = "todos";
     const fornecedores = fornecedoresConhecidos();
     if(pedidosFornecedorFiltro && !fornecedores.some(f => normalizeText(f) === normalizeText(pedidosFornecedorFiltro))) pedidosFornecedorFiltro = "";
 
@@ -8106,6 +8110,10 @@ function renderTabPedidos(){
     body.innerHTML = `
       <div class="footnote" style="margin-bottom:14px;">Todo pedido fica salvo com data, fornecedor e itens — é o histórico de compras. Use "duplicar" pra repetir uma compra antiga, e "conferir" pra lançar a quantidade recebida de cada item.</div>
       <div class="search-bar">
+        <select id="pd-mes-filtro" aria-label="Filtrar por mês">
+          <option value="todos" ${pedidosMesFiltro==="todos"?"selected":""}>Todos os meses</option>
+          ${opcoesMes.map(m=>`<option value="${m.id}" ${m.id===pedidosMesFiltro?"selected":""}>${escapeHtml(m.nome)}${m.id===mesAtualId()?" (atual)":""}</option>`).join("")}
+        </select>
         <select id="pd-semana-filtro" aria-label="Filtrar por semana">
           <option value="todas" ${pedidosSemanaFiltro==="todas"?"selected":""}>Todas as semanas</option>
           ${opcoesFiltro.map(s=>`<option value="${s}" ${s===pedidosSemanaFiltro?"selected":""}>${escapeHtml(rotuloSemana(s))}${s===semanaAtual?" (atual)":""}</option>`).join("")}
@@ -8140,6 +8148,7 @@ function renderTabPedidos(){
       return [...pedidos.entries()]
         .filter(([id,p]) => {
           if(pedidosSemanaFiltro !== "todas" && p.semana !== pedidosSemanaFiltro) return false;
+          if(pedidosMesFiltro !== "todos" && (p.data_pedido||"").slice(0,7) !== pedidosMesFiltro) return false;
           if(pedidosFornecedorFiltro && normalizeText((p.fornecedor||"").trim()) !== normalizeText(pedidosFornecedorFiltro)) return false;
           if(pedidosStatusFiltro !== "todos" && pedidoStatus(p).key !== pedidosStatusFiltro) return false;
           if(pedidosUnidadeFiltro !== "todas" && pedidoUnidade(p) !== pedidosUnidadeFiltro) return false;
@@ -8199,6 +8208,7 @@ function renderTabPedidos(){
     updateTable();
 
     document.getElementById("pd-semana-filtro").addEventListener("change", e => { pedidosSemanaFiltro = e.target.value === "todas" ? "todas" : parseInt(e.target.value,10); updateTable(); });
+    document.getElementById("pd-mes-filtro").addEventListener("change", e => { pedidosMesFiltro = e.target.value; updateTable(); });
     document.getElementById("pd-forn-filtro").addEventListener("change", e => { pedidosFornecedorFiltro = e.target.value; updateTable(); });
     document.getElementById("pd-status-filtro").addEventListener("change", e => { pedidosStatusFiltro = e.target.value; updateTable(); });
     document.getElementById("pd-unidade-filtro").addEventListener("change", e => { pedidosUnidadeFiltro = e.target.value; updateTable(); });
@@ -8319,13 +8329,13 @@ function openPedidoModal(id, opts){
   const wrap = document.getElementById("pd-lines");
   function linhaHtml(l,i){
     return `
-      <div class="field-row pd-line" data-i="${i}" style="align-items:flex-end;">
+      <div class="field-row pd-line" data-i="${i}" style="align-items:flex-start;">
         <div class="field" style="flex:2;"><label>Insumo</label><input type="text" class="pd-nome" list="pd-insumo-list" autocomplete="off" value="${escapeHtml(l.nome||"")}" placeholder="Buscar insumo…"><div class="footnote" style="margin-top:2px;">${l.insumo_id ? escapeHtml(blocoDoInsumo(l.insumo_id)) : (l.nome ? '<span style="color:var(--critical);">insumo não encontrado — escolha da lista</span>' : "")}</div><div class="footnote pd-ultimo" style="margin-top:2px;"></div></div>
         <div class="field"><label>Quantidade</label><input type="number" step="0.001" min="0" class="pd-qtd" value="${l.quantidade!=null?l.quantidade:""}"></div>
         <div class="field"><label>Un.</label><input type="text" class="pd-un" value="${escapeHtml(l.unidade||"")}" disabled></div>
         <div class="field"><label>Preço unit. (R$)</label><input type="number" step="0.01" min="0" class="pd-preco" value="${l.preco_unitario!=null?l.preco_unitario:""}"><div class="footnote pd-alerta" style="margin-top:2px;"></div></div>
         <div class="field"><label>Valor</label><div class="val small" style="padding:9px 0;">${fmtMoney((l.quantidade||0)*(l.preco_unitario||0))}</div></div>
-        <div class="field"><button type="button" class="btn small ghost pd-rm" style="color:var(--critical);">remover</button></div>
+        <div class="field"><label>&nbsp;</label><button type="button" class="btn small ghost pd-rm" style="color:var(--critical);">remover</button></div>
       </div>`;
   }
   // mostra o último preço pago por esse insumo (qualquer fornecedor) assim que ele é escolhido — só na tela,
@@ -8364,7 +8374,7 @@ function openPedidoModal(id, opts){
         if(match){
           l.insumo_id = match[0];
           l.unidade = unidadeCustoInsumo(match[1]);
-          if(l.preco_unitario == null && match[1].custo_unitario != null) l.preco_unitario = match[1].custo_unitario;
+          if(l.preco_unitario == null && match[1].custo_kg_l_und != null) l.preco_unitario = match[1].custo_kg_l_und;
         } else { l.insumo_id = null; l.unidade = ""; }
         renderLines(); refreshTotal();
       });
