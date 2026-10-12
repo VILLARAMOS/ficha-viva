@@ -965,10 +965,12 @@ function semanaDaData(ymd){
 const UNIDADES_COMPRA = [{id:"matriz", nome:"Matriz"}, {id:"filial", nome:"Filial"}];
 // bloco de compra "de apoio" (limpeza, descartáveis, embalagens, material de escritório) — não entra na
 // Lista de compra (demanda por ficha técnica), pois não é insumo de receita: o orçado dele é um valor fixo
-// por refeição servida, hoje R$2,50 (referência do controle manual). Editar o valor abaixo se o custo de
-// referência mudar; o comprado continua vindo normalmente dos pedidos lançados com insumo desse bloco.
+// por refeição servida, hoje R$1,00 (referência do controle manual, ajustada em 12/10/2026 — era R$2,50).
+// Editar o valor abaixo se o custo de referência mudar; o comprado continua vindo normalmente dos pedidos
+// lançados com insumo desse bloco. TODO: ainda não é editável pela UI — se isso mudar com frequência, vale
+// virar um campo configurável (ex.: tabela de parâmetros) em vez de constante no código.
 const GRUPO_LIMPEZA_DESCARTAVEIS = "LIMPEZA E DESCARTÁVEIS";
-const ORCAMENTO_LIMPEZA_POR_REFEICAO = 2.50;
+const ORCAMENTO_LIMPEZA_POR_REFEICAO = 1.00;
 let pedidos = new Map(); // id -> {fornecedor, data_pedido, data_entrega_prevista, unidade, destino_rotulo, destino_ids, semana, semana_referencia, itens:[{insumo_id,nome,unidade,quantidade,preco_unitario,quantidade_recebida}], valor_total, observacoes, recebimento:{nota_fiscal,recebido_por,data,obs}}
 
 async function loadPedidos(){
