@@ -127,7 +127,13 @@ button{font-family:inherit;}
 .btn.small{padding:5px 10px;font-size:12.5px;}
 
 .panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);margin-bottom:20px;}
-.table-wrap{overflow-x:auto;}
+.table-wrap{overflow:auto; max-height:min(62vh, 560px); cursor:grab;}
+.table-wrap.tw-dragging{cursor:grabbing; user-select:none;}
+.table-wrap::-webkit-scrollbar{width:12px; height:12px;}
+.table-wrap::-webkit-scrollbar-track{background:var(--surface-alt);}
+.table-wrap::-webkit-scrollbar-thumb{background:var(--border); border-radius:8px; border:3px solid var(--surface-alt);}
+.table-wrap::-webkit-scrollbar-thumb:hover{background:var(--text-faint);}
+.table-wrap::-webkit-scrollbar-corner{background:var(--surface-alt);}
 table{width:100%;border-collapse:collapse;font-size:13px;}
 th,td{padding:10px 14px;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap;}
 th{font-size:11.5px;text-transform:uppercase;letter-spacing:.04em;color:var(--text-faint);font-weight:600;background:var(--surface-alt);position:sticky;top:0;}
@@ -231,8 +237,7 @@ tbody tr:hover{background:var(--surface-alt);}
 .painel-notas[open] summary{margin-bottom:8px;}
 .painel-notas .footnote{margin:0;}
 /* ---------- v129: Insumos — tabela compacta com scroll duplo/arrastar + Estoque (kardex) ---------- */
-.insumo-table-wrap{max-width:900px; overflow-x:auto; cursor:grab;}
-.insumo-table-wrap.dragging{cursor:grabbing; user-select:none;}
+.insumo-table-wrap{max-width:900px;}
 .insumo-table-wrap table{font-size:12.5px;}
 .insumo-table-wrap th, .insumo-table-wrap td{padding:7px 9px;}
 .scroll-mirror{max-width:900px; overflow-x:auto; overflow-y:hidden; height:14px; margin-bottom:-2px;}
@@ -356,7 +361,7 @@ textarea{font:inherit;color:var(--text);background:var(--bg);border:1px solid va
 table.cardapio-table{border-collapse:collapse; width:100%; min-width:900px; font-size:11px;}
 table.cardapio-table th, table.cardapio-table td{border:1px solid var(--border); padding:3px 4px; vertical-align:top;}
 table.cardapio-table thead th{background:var(--surface-alt); position:sticky; top:0; z-index:2; font-size:10px; text-align:left; padding:5px 6px;}
-table.cardapio-table td.cat-col, table.cardapio-table th.cat-col{position:sticky; left:0; background:var(--surface); z-index:1; min-width:96px; max-width:110px; font-size:9.5px; color:var(--text-muted); line-height:1.2;}
+table.cardapio-table td.cat-col, table.cardapio-table th.cat-col{position:sticky; left:0; background:var(--surface); z-index:1; min-width:110px; max-width:150px; font-size:9.5px; color:var(--text-muted); line-height:1.2; white-space:normal; word-break:break-word;}
 table.cardapio-table thead th.cat-col{background:var(--surface-alt); z-index:3;}
 table.cardapio-table td.cel{min-width:118px; max-width:130px;}
 table.cardapio-table .cel-nome-row{display:flex; align-items:center; gap:3px; margin-bottom:2px;}
@@ -1235,23 +1240,40 @@ let insumoSort = {field:"nome", dir:"asc"};
 let insumoTabSel = "cadastro"; // "cadastro" | "estoque"
 let estoqueSubTab = "contagem"; // "contagem" | "entradas" | "movimentar" | "baixa"
 
-// liga um .table-wrap a uma barra de rolagem espelhada em cima + permite segurar e arrastar com o mouse
+// liga um .table-wrap a uma barra de rolagem espelhada em cima (arrastar com o mouse já é genérico, ver initTableDragScroll abaixo)
 function habilitarScrollDuplo(wrapEl, mirrorEl){
-  if(!wrapEl) return;
-  if(mirrorEl){
-    const inner = mirrorEl.querySelector(".scroll-mirror-inner");
-    const table = wrapEl.querySelector("table");
-    if(inner && table) inner.style.width = table.scrollWidth + "px";
-    let syncing = false;
-    mirrorEl.addEventListener("scroll", () => { if(syncing) return; syncing = true; wrapEl.scrollLeft = mirrorEl.scrollLeft; syncing = false; });
-    wrapEl.addEventListener("scroll", () => { if(syncing) return; syncing = true; mirrorEl.scrollLeft = wrapEl.scrollLeft; syncing = false; });
-  }
-  let down = false, startX = 0, startScroll = 0;
-  wrapEl.addEventListener("mousedown", e => { down = true; startX = e.pageX; startScroll = wrapEl.scrollLeft; wrapEl.classList.add("dragging"); });
-  window.addEventListener("mouseup", () => { down = false; wrapEl.classList.remove("dragging"); });
-  wrapEl.addEventListener("mouseleave", () => { down = false; wrapEl.classList.remove("dragging"); });
-  wrapEl.addEventListener("mousemove", e => { if(!down) return; e.preventDefault(); wrapEl.scrollLeft = startScroll - (e.pageX - startX); });
+  if(!wrapEl || !mirrorEl) return;
+  const inner = mirrorEl.querySelector(".scroll-mirror-inner");
+  const table = wrapEl.querySelector("table");
+  if(inner && table) inner.style.width = table.scrollWidth + "px";
+  let syncing = false;
+  mirrorEl.addEventListener("scroll", () => { if(syncing) return; syncing = true; wrapEl.scrollLeft = mirrorEl.scrollLeft; syncing = false; });
+  wrapEl.addEventListener("scroll", () => { if(syncing) return; syncing = true; mirrorEl.scrollLeft = wrapEl.scrollLeft; syncing = false; });
 }
+// segurar e arrastar (nas duas direções) em qualquer tabela do sistema — qualquer .table-wrap, sem precisar
+// ligar tela por tela. Delegado no document pra funcionar mesmo depois de um re-render (innerHTML troca o conteúdo
+// mas o listener continua valendo). Não inicia o arrasto em cima de campo clicável (input/select/botão/link),
+// senão quebraria digitação e cliques normais nas tabelas.
+(function initTableDragScroll(){
+  let el = null, startX = 0, startY = 0, baseLeft = 0, baseTop = 0, moved = false;
+  const LIMIAR = 4; // px de tolerância antes de virar arrasto — abaixo disso continua sendo um clique normal
+  document.addEventListener("mousedown", e => {
+    if(e.button !== 0) return;
+    const wrap = e.target.closest(".table-wrap");
+    if(!wrap) return;
+    if(e.target.closest("input, select, button, textarea, a, [contenteditable]")) return;
+    el = wrap; startX = e.pageX; startY = e.pageY; baseLeft = wrap.scrollLeft; baseTop = wrap.scrollTop; moved = false;
+  });
+  document.addEventListener("mousemove", e => {
+    if(!el) return;
+    const dx = e.pageX - startX, dy = e.pageY - startY;
+    if(!moved && (Math.abs(dx) > LIMIAR || Math.abs(dy) > LIMIAR)){ moved = true; el.classList.add("tw-dragging"); }
+    if(moved){ el.scrollLeft = baseLeft - dx; el.scrollTop = baseTop - dy; e.preventDefault(); }
+  });
+  const soltar = () => { if(el) el.classList.remove("tw-dragging"); el = null; };
+  window.addEventListener("mouseup", soltar);
+  document.addEventListener("mouseleave", soltar);
+})();
 
 function renderInsumos(){
   document.getElementById("page-title").textContent = "Insumos";
