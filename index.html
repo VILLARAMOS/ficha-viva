@@ -10033,6 +10033,14 @@ function acougueItemEhInNatura(ins){
 function acougueItensPadrao(){
   return [...insumos.entries()].filter(([, ins]) => acougueItemEhInNatura(ins)).map(([id]) => id);
 }
+// PONTO CEGO conhecido (registrado em 12/10/26): nome composto (4+ palavras) sem bater em nenhuma palavra
+// de ACOUGUE_PALAVRAS_FORA é um sinal de alerta — bastante prato pronto no bloco PROTEÍNAS tem nome assim
+// (ex. "CARNE DE PANELA À MINEIRA"), mas corte cru com nome longo também existe (ex. "COXA E SOBRECOXA DE
+// FRANGO C/OSSO"). Não dá pra decidir com certeza só pelo nome — em vez de arriscar um default errado
+// calado, isso só marca "revisar" na tela de configuração, pra alguém que conhece o insumo decidir.
+function acougueNomeAmbiguo(nome){
+  return normalizeText(nome).split(/\s+/).filter(Boolean).length >= 4;
+}
 function pcpAcougueCustom(){
   const c = pcpConfig.get("geral");
   return (c && Array.isArray(c.acougue_itens)) ? c.acougue_itens : null;
@@ -10418,7 +10426,7 @@ function pcpAcougueHtml(cobertura){
   }
   const rotulo = cobertura.diasCobertos.map(d => DIA_LABEL[d]).join(" + ");
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3>Açougue</h3><span class="hint">corte de hoje — cobre ${escapeHtml(rotulo)}</span></div>
+    <div class="panel-head"><h3>Açougue</h3><span class="hint">corte de hoje — cobre ${escapeHtml(rotulo)}</span>${cobertura.itensTotal.length ? `<button class="btn small ghost" id="pcp-acg-imprimir" style="margin-left:auto;">Imprimir ficha de corte</button>` : ""}</div>
     <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Insumo</th><th style="text-align:right;">Quantidade total</th></tr></thead><tbody>
       ${cobertura.itensTotal.length ? cobertura.itensTotal.map(it => `<tr><td class="name-cell">${escapeHtml(it.nome)}</td><td class="num-cell">${fmtNum(it.kg,3)} ${escapeHtml(it.unidade)}</td></tr>`).join("") : `<tr><td colspan="2" class="footnote">Nada a cortar neste dia.</td></tr>`}
     </tbody></table></div>
@@ -10427,14 +10435,34 @@ function pcpAcougueHtml(cobertura){
   </div>`;
 }
 
+// ordem de serviço do açougue, pra imprimir e deixar na bancada — mesmo padrão de pcpEtiquetaImprimir.
+function pcpImprimirCortesDia(cobertura, semana, diaSel, unidadeLabel){
+  const rotulo = cobertura.diasCobertos.map(d => DIA_LABEL[d]).join(" + ");
+  const linhasTotal = cobertura.itensTotal.map(it => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(it.nome)}</td><td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(it.kg,3)} ${escapeHtml(it.unidade)}</td></tr>`).join("");
+  const quebra = cobertura.diasCobertos.length > 1 ? cobertura.porDia.map(pd => `
+    <h2 style="font-size:13px; margin:16px 0 4px;">${escapeHtml(DIA_LABEL[pd.dia])}</h2>
+    <table style="width:100%; border-collapse:collapse; font-size:12px;">${pd.itens.map(it => `<tr><td style="padding:3px 0; border-top:1px solid #ddd;">${escapeHtml(it.nome)}</td><td style="padding:3px 0; border-top:1px solid #ddd; text-align:right;">${fmtNum(it.kg,3)} ${escapeHtml(it.unidade)}</td></tr>`).join("")}</table>`).join("") : "";
+  const w = window.open("", "_blank");
+  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Ficha de corte — Açougue</title>
+    <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()}</style></head><body>
+    ${printHeadHtml()}<h1>Açougue — ficha de corte</h1>
+    <div style="font-size:12px; color:#666; margin-bottom:14px;">${escapeHtml(unidadeLabel)} · cobre ${escapeHtml(rotulo)}</div>
+    <table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr><th style="text-align:left; padding-bottom:4px;">Insumo</th><th style="text-align:right; padding-bottom:4px;">Total a cortar</th></tr></thead><tbody>${linhasTotal || `<tr><td colspan="2">Nada a cortar neste dia.</td></tr>`}</tbody></table>
+    ${quebra}
+    </body></html>`);
+  w.document.close(); w.focus(); w.print();
+}
+
 function pcpAbrirConfigAcougue(){
   const root = document.getElementById("modal-root");
   const custom = pcpAcougueCustom();
   const selecionados = new Set(custom || acougueItensPadrao());
   const candidatos = [...insumos.entries()]
     .filter(([, ins]) => ins.grupo_compra === "PROTEÍNAS")
-    .map(([id, ins]) => ({ id, nome: ins.nome }))
-    .sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR'));
+    .map(([id, ins]) => ({ id, nome: ins.nome, ambiguo: acougueNomeAmbiguo(ins.nome) }))
+    .sort((a,b) => (b.ambiguo - a.ambiguo) || a.nome.localeCompare(b.nome,'pt-BR'));
+  const qtdAmbiguos = candidatos.filter(c => c.ambiguo).length;
   const diasChk = (dias) => DIAS_ORDEM
     .map(d => `<label style="display:inline-flex; align-items:center; gap:4px; margin-right:12px;"><input type="checkbox" data-dia="${d}" ${dias.includes(d)?"checked":""}> ${DIA_LABEL[d]}</label>`).join("");
   root.innerHTML = `
@@ -10443,8 +10471,9 @@ function pcpAbrirConfigAcougue(){
         <div class="modal-head"><h2>Cortes e dias — Açougue / Requisição</h2><button class="close-x" id="acg-close">&times;</button></div>
         <div class="modal-body">
           <p class="footnote">Não existe hoje um campo no cadastro de insumos pra dizer se uma proteína chega em natura (passa pelo açougue) ou já pronta. A lista abaixo começa com um padrão por nome — desmarque o que não deveria ir pro açougue, ou marque o que falta.</p>
+          ${qtdAmbiguos ? `<p class="chip warn" style="display:flex; width:fit-content; height:auto; white-space:normal; padding:6px 10px; margin-bottom:8px;">${qtdAmbiguos} item${qtdAmbiguos===1?"":"ns"} com nome composto (destacados abaixo) — o padrão automático não teve certeza, pode ser corte cru ou prato já pronto. Confira antes de salvar.</p>` : ""}
           <div style="max-height:280px; overflow:auto; border:1px solid var(--border); border-radius:8px; padding:10px; margin:10px 0;">
-            ${candidatos.map(c => `<label style="display:flex; align-items:center; gap:8px; padding:3px 0;"><input type="checkbox" data-acg-item="${c.id}" ${selecionados.has(c.id)?"checked":""}> ${escapeHtml(c.nome)}</label>`).join("") || "<span class='footnote'>Nenhum insumo no bloco de compra PROTEÍNAS.</span>"}
+            ${candidatos.map(c => `<label style="display:flex; align-items:center; gap:8px; padding:3px 4px; ${c.ambiguo ? "background:var(--warn-soft); border-radius:4px;" : ""}"><input type="checkbox" data-acg-item="${c.id}" ${selecionados.has(c.id)?"checked":""}> ${escapeHtml(c.nome)} ${c.ambiguo ? `<span class="chip warn" style="margin-left:auto; height:auto; padding:1px 8px; font-size:11px;">revisar</span>` : ""}</label>`).join("") || "<span class='footnote'>Nenhum insumo no bloco de compra PROTEÍNAS.</span>"}
           </div>
           <div class="field"><label>Dias em que o açougue opera</label><div id="acg-dias">${diasChk(pcpAcgDias())}</div></div>
           <div class="field" style="margin-top:10px;"><label>Dias em que a separação de estoque opera</label><div id="est-dias">${diasChk(pcpEstDias())}</div></div>
@@ -10526,6 +10555,8 @@ function renderPCP(){
   content.querySelector("#pcp-semana").addEventListener("change", e => { pcpSemanaSel = parseInt(e.target.value,10); renderPCP(); });
   if(ehRequisicao){
     document.getElementById("pcp-acg-config").addEventListener("click", pcpAbrirConfigAcougue);
+    const btnImprimirCortes = document.getElementById("pcp-acg-imprimir");
+    if(btnImprimirCortes) btnImprimirCortes.addEventListener("click", () => pcpImprimirCortesDia(acougueCobertura, pcpSemanaSel, pcpDiaSel, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial"));
   } else {
     document.getElementById("pcp-margem-salvar").addEventListener("click", async () => {
       const v = parseFloat(document.getElementById("pcp-margem").value);
