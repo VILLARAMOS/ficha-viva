@@ -13,6 +13,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <style>
 :root{
   /* identidade Villa Ramos: base areia (claro) / marrom (escuro), vindas do logo e do Instagram oficial */
@@ -10470,6 +10471,105 @@ function pcpCalcularAcougueComCobertura(semana, diaSel, unidadeFiltro){
   return { diasCobertos, itensTotal, porDia, mapaCarnes };
 }
 
+// Mapa da semana: visão lida e portada (13/10/2026, a pedido do Marcelo) de um protótipo mais avançado do
+// Ficha Viva — mostra os 7 dias da semana numa tabela só (kg por corte por dia de PRODUÇÃO), com o dia em
+// que o açougue efetivamente corta pra cobrir cada coluna. Ajuda a planejar com antecedência (ex.: tirar
+// peça grande do freezer 48–72h antes do preparo), sem precisar clicar dia a dia. Não substitui o Mapa de
+// carnes acima (que é o detalhe por receita do dia selecionado) — é a visão panorâmica.
+// Dia de preparo de cada dia da semana: 1 passada sobre DIAS_ORDEM carregando o último dia de operação
+// visto. Se a semana começasse num dia sem operação (ex.: açougue não abre segunda), não teríamos o
+// prep anterior dentro da mesma semana — nesse caso (raro; padrão é seg-sex) caímos no último dia
+// operante da PRÓPRIA semana como aproximação, já que o sistema não modela datas cruzando semanas aqui.
+function pcpPreparoPorDiaSemana(diasOp){
+  const prep = {};
+  let atual = null;
+  DIAS_ORDEM.forEach(d => { if(diasOp.includes(d)) atual = d; prep[d] = atual; });
+  if(prep[DIAS_ORDEM[0]] === null){
+    const ultimo = [...DIAS_ORDEM].reverse().find(d => diasOp.includes(d)) || DIAS_ORDEM[0];
+    DIAS_ORDEM.forEach(d => { if(prep[d] === null) prep[d] = ultimo; });
+  }
+  return prep;
+}
+function pcpMapaCarnesSemana(semana, unidadeFiltro){
+  const diasOp = pcpAcgDias();
+  const prepPorDia = pcpPreparoPorDiaSemana(diasOp);
+  const porDia = DIAS_ORDEM.map(dia => {
+    const res = pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro);
+    const bucket = res.porSetor.find(s => s.setor === "acougue");
+    return { dia, prep: prepPorDia[dia], itens: bucket ? bucket.itens : [] };
+  });
+  const porCorte = new Map(); // insumoId -> {nome, unidade, porDia:[kg×7], total}
+  porDia.forEach((pd, idx) => {
+    pd.itens.forEach(it => {
+      const c = porCorte.get(it.insumoId) || { nome: it.nome, unidade: it.unidade, porDia: DIAS_ORDEM.map(() => 0), total: 0 };
+      c.porDia[idx] += it.kg;
+      c.total += it.kg;
+      porCorte.set(it.insumoId, c);
+    });
+  });
+  const cortes = [...porCorte.values()].sort((a,b) => b.total - a.total || a.nome.localeCompare(b.nome,'pt-BR'));
+  return { porDia, cortes };
+}
+
+// ---------- Etiquetas de segurança alimentar do açougue (idem: adaptado do mesmo protótipo, 13/10/2026) ----------
+// Estampa corte, receita de destino, unidade, data de processamento (= o dia selecionado na tela — é
+// quando o açougue está cortando AGORA), data de uso (dia da linha do Mapa de carnes — pode ser outro dia
+// coberto pela mesma cobertura), VALIDADE (processamento + prazo por tipo de carne) e temperatura de
+// conservação. Peso real e responsável ficam em branco pra anotar à mão.
+// ATENÇÃO: os prazos abaixo são um padrão CONSERVADOR só pra o sistema não ficar sem nenhum número — não
+// são uma orientação de segurança alimentar validada. Precisam ser confirmados (e ajustados se for o
+// caso) pela nutricionista responsável, conforme o Manual de Boas Práticas da casa, antes de confiar
+// nessa validade pra decisão real de descarte/uso.
+const PCP_ETQA_PADRAO = {
+  carne:   { nome: "Carnes cruas (bovina, suína, aves)", dias: 3, temp: "Resfriado até 4 °C" },
+  moida:   { nome: "Moída, linguiça fresca, hambúrguer, almôndega", dias: 2, temp: "Resfriado até 4 °C" },
+  pescado: { nome: "Pescados e frutos do mar", dias: 1, temp: "Resfriado até 2 °C" },
+  orient: "Produto cru · manter refrigerado · não recongelar após descongelado · cozinhar completamente",
+  kg_emb: 10
+};
+const PCP_ETIQUETAS = {
+  "100x50": { w: 100, h: 50, nome: "100 × 50 mm" },
+  "100x40": { w: 100, h: 40, nome: "100 × 40 mm" },
+  "80x50":  { w: 80,  h: 50, nome: "80 × 50 mm" },
+  "60x40":  { w: 60,  h: 40, nome: "60 × 40 mm" }
+};
+let pcpEtiquetaTam = "100x50";
+function pcpEtqaRegras(){
+  const c = pcpConfig.get("geral");
+  const g = (c && c.acougue_etiqueta) || {};
+  const r = { orient: g.orient || PCP_ETQA_PADRAO.orient, kg_emb: Number(g.kg_emb) > 0 ? Number(g.kg_emb) : PCP_ETQA_PADRAO.kg_emb };
+  ["carne","moida","pescado"].forEach(k => {
+    const x = g[k] || {};
+    r[k] = { nome: PCP_ETQA_PADRAO[k].nome, dias: (Number.isFinite(Number(x.dias)) && x.dias !== "" && x.dias !== null) ? Number(x.dias) : PCP_ETQA_PADRAO[k].dias, temp: x.temp || PCP_ETQA_PADRAO[k].temp };
+  });
+  return r;
+}
+async function pcpSalvarEtiquetaRegras(r){
+  const row = { chave: "geral", acougue_etiqueta: { orient: r.orient, kg_emb: r.kg_emb, carne: {dias: r.carne.dias, temp: r.carne.temp}, moida: {dias: r.moida.dias, temp: r.moida.temp}, pescado: {dias: r.pescado.dias, temp: r.pescado.temp} }, alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
+  const { error } = await sb.from('pcp_config').upsert(row);
+  if(error){ showAlert("Erro ao salvar regras de validade: " + error.message); return; }
+  pcpConfig.set("geral", { ...(pcpConfig.get("geral")||{}), ...row });
+}
+function pcpTipoCarne(nome){
+  const n = normalizeText(nome);
+  if(/peixe|tilapia|merluza|panga|salm|camar|cacao|polaca|porquinho|pescad|bacalh/.test(n)) return "pescado";
+  if(/moid|massa|hamburg|almondeg|linguic/.test(n)) return "moida";
+  return "carne";
+}
+// 1 linha de etiqueta por linha do Mapa de carnes (corte×receita×dia) — a quantidade de etiquetas (quantas
+// embalagens físicas) é decidida na tela, não aqui.
+function pcpEtqaLinhas(mapaCarnes, semana, diaSel, regras){
+  const dataProc = dataDoDia(semana, diaSel);
+  return mapaCarnes.map(l => {
+    const tipo = pcpTipoCarne(l.corte);
+    const rg = regras[tipo];
+    const dataUso = dataDoDia(semana, l.dia);
+    const validade = new Date(dataProc.getTime() + rg.dias * 86400000);
+    return { ...l, tipo, temp: rg.temp, dataProc, dataUso, validade, venceAntes: validade.getTime() < dataUso.getTime() };
+  });
+}
+function pcpEtqaQtdPadrao(l, kgEmb){ return l.unidade === "kg" ? Math.max(1, Math.ceil(l.kg / kgEmb - 1e-9)) : 1; }
+
 /* ---------- tela ---------- */
 let pcpSubView = "producao"; // "producao" | "volume"
 let pcpUnidadeSel = "matriz"; // "matriz" | "filial" | "todos"
@@ -10730,6 +10830,36 @@ function pcpImprimirMapaCarnes(cobertura, semana, unidadeLabel){
   w.document.close(); w.focus(); w.print();
 }
 
+// Mapa da semana: visão panorâmica dos 7 dias (kg por corte por dia de produção + o dia em que o açougue
+// de fato corta pra cobrir cada um) — complementa o Mapa de carnes acima, que só olha a cobertura do dia
+// selecionado. Lida e portada de um protótipo mais avançado do Ficha Viva (13/10/2026).
+function pcpMapaSemanaHtml(mapaSemana, unidadeLabel){
+  if(!mapaSemana.cortes.length) return `<div class="panel" style="margin-bottom:14px;"><div class="panel-head"><h3>Mapa da semana</h3></div><div class="panel-body"><div class="empty-state">Sem cortes na semana.</div></div></div>`;
+  const cab = mapaSemana.porDia.map(pd => `<th style="text-align:right;">${DIA_LABEL[pd.dia].slice(0,3)}<div class="footnote" style="margin:2px 0 0;">prep. ${DIA_LABEL[pd.prep].slice(0,3)}</div></th>`).join("");
+  return `<div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head"><h3>Mapa da semana</h3><span class="hint">${escapeHtml(unidadeLabel)} — kg por dia de produção; "prep." é quando o açougue corta pra cobrir aquele dia</span><button class="btn small ghost" id="pcp-mapa-sem-imprimir" style="margin-left:auto;">Imprimir semana</button></div>
+    <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Corte</th>${cab}<th style="text-align:right;">Total</th></tr></thead><tbody>
+      ${mapaSemana.cortes.map(c => `<tr><td class="name-cell">${escapeHtml(c.nome)}</td>${c.porDia.map(q => `<td class="num-cell">${q ? fmtNum(q,2) : "—"}</td>`).join("")}<td class="num-cell"><strong>${fmtNum(c.total,2)} ${escapeHtml(c.unidade)}</strong></td></tr>`).join("")}
+    </tbody></table></div>
+    <p class="footnote" style="margin-top:10px;">Peça grande congelada: use esta visão pra tirar do freezer com antecedência (48–72h antes do dia de preparo).</p>
+    </div>
+  </div>`;
+}
+function pcpImprimirMapaSemana(mapaSemana, semana, unidadeLabel){
+  const cab = mapaSemana.porDia.map(pd => `<th style="text-align:right; padding-bottom:2px;">${DIA_LABEL[pd.dia].slice(0,3)}<br><span style="font-weight:400; font-size:10px; color:#666;">prep. ${DIA_LABEL[pd.prep].slice(0,3)}</span></th>`).join("");
+  const linhas = mapaSemana.cortes.map(c => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(c.nome)}</td>${c.porDia.map(q => `<td style="padding:4px 0; border-top:1px solid #ddd; text-align:right;">${q ? fmtNum(q,2) : "—"}</td>`).join("")}<td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(c.total,2)}</td></tr>`).join("");
+  const w = window.open("", "_blank");
+  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Mapa da semana — Açougue</title>
+    <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()}</style></head><body>
+    ${printHeadHtml()}<h1>Açougue — mapa da semana</h1>
+    <div style="font-size:12px; color:#666; margin-bottom:14px;">${escapeHtml(unidadeLabel)} · ${escapeHtml(rotuloSemana(semana))}</div>
+    <table style="width:100%; border-collapse:collapse; font-size:12px;"><thead><tr><th style="text-align:left; padding-bottom:2px;">Corte</th>${cab}<th style="text-align:right; padding-bottom:2px;">Total</th></tr></thead><tbody>${linhas || `<tr><td colspan="9">Sem cortes na semana.</td></tr>`}</tbody></table>
+    <p class="print-meta" style="font-size:11px; color:#666; margin-top:12px;">Peça grande congelada: tirar do freezer 48–72h antes do dia de preparo.</p>
+    </body></html>`);
+  w.document.close(); w.focus(); w.print();
+}
+
 // Fichas de corte: 2ª peça — 1 ficha de papel por corte×dia (agrupa as receitas que usam aquele corte
 // naquele dia), pra acompanhar o produto da bancada do açougue até a entrega (confirmado 13/10/2026).
 function pcpFichasCorteAgrupadas(mapaCarnes){
@@ -10750,17 +10880,19 @@ function pcpFichasCorteHtml(fichasAgrupadas){
     <div class="panel-body" style="display:flex; flex-wrap:wrap; gap:12px;">
       ${fichasAgrupadas.map(f => `<div style="border:1px solid var(--border); border-radius:8px; padding:10px 12px; min-width:220px;">
         <div style="font-weight:700;">${escapeHtml(f.corte)}</div>
-        <div class="hint" style="margin-bottom:6px;">${escapeHtml(DIA_LABEL[f.dia]||f.dia)} · ${fmtNum(f.kgTotal,3)} ${escapeHtml(f.unidade)} total</div>
+        <div class="hint" style="margin-bottom:6px;">${escapeHtml(DIA_LABEL[f.dia]||f.dia)} · ${fmtNum(f.kgTotal,3)} ${escapeHtml(f.unidade)} bruto (ficha técnica)</div>
         <table style="width:100%; font-size:12.5px;"><tbody>${f.receitas.map(r => `<tr><td>${escapeHtml(r.receita)}</td><td style="text-align:right;">${fmtNum(r.kg,3)} ${escapeHtml(f.unidade)}</td></tr>`).join("")}</tbody></table>
       </div>`).join("")}
     </div>
+    <p class="footnote" style="margin-top:10px;">Kg mostrado é o peso <b>bruto</b> (mesma conta da ficha técnica/lista de compra). A ficha impressa tem campo em branco pro peso real depois de limpar — eles não são o mesmo número.</p>
   </div>`;
 }
 function pcpImprimirFichasCorte(fichasAgrupadas, semana){
   const paginas = fichasAgrupadas.map(f => `<div style="page-break-after:always; break-inside:avoid; border:1px solid #333; border-radius:8px; padding:20px; max-width:480px;">
     <div style="font-size:11px; color:#666; margin-bottom:4px;">${escapeHtml(rotuloSemana(semana))} · ${escapeHtml(DIA_LABEL[f.dia]||f.dia)}</div>
     <div style="font-size:20px; font-weight:700; margin-bottom:10px;">${escapeHtml(f.corte)}</div>
-    <div style="font-size:16px; font-weight:600; margin-bottom:14px;">${fmtNum(f.kgTotal,3)} ${escapeHtml(f.unidade)} total</div>
+    <div style="font-size:16px; font-weight:600; margin-bottom:4px;">${fmtNum(f.kgTotal,3)} ${escapeHtml(f.unidade)} bruto (ficha técnica)</div>
+    <div style="font-size:13px; margin-bottom:14px;">Peso real depois de limpar: <b>________________ ${escapeHtml(f.unidade)}</b></div>
     <table style="width:100%; border-collapse:collapse; font-size:13px;">${f.receitas.map(r => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(r.receita)}</td><td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(r.kg,3)} ${escapeHtml(f.unidade)}</td></tr>`).join("")}</table>
     <div style="margin-top:30px; border-top:1px dashed #999; padding-top:8px; font-size:11px; color:#666;">Assinatura/conferência: ______________________________</div>
   </div>`).join("");
@@ -10772,27 +10904,167 @@ function pcpImprimirFichasCorte(fichasAgrupadas, semana){
   w.document.close(); w.focus(); w.print();
 }
 
-// Etiquetas: 3ª peça — 1 etiqueta por linha do Mapa de carnes (corte×receita×dia), pra colar na
-// embalagem (confirmado 13/10/2026: sem contagem de embalagens nesta versão — se precisar de mais de 1
-// via da mesma etiqueta, reimprime a folha).
+// Etiquetas: 3ª peça — agora com rastreabilidade de segurança alimentar completa (validade, temperatura,
+// orientações) e quantidade editável, adaptado de um protótipo mais avançado do Ficha Viva (13/10/2026).
+// O painel aqui só abre o modal (pcpAbrirEtiquetasAcougue) — toda a lógica de validade/qtd/impressão/PDF
+// fica lá, porque precisa de estado (quantidade por linha) que não cabe num botão único.
 function pcpEtiquetasCarnesHtml(mapaCarnes){
   if(!mapaCarnes.length) return "";
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3>Etiquetas</h3><span class="hint">${mapaCarnes.length} etiqueta${mapaCarnes.length===1?"":"s"} — 1 por corte+receita+dia, pra colar na embalagem</span><button class="btn small primary" id="pcp-etiquetas-imprimir" style="margin-left:auto;">Imprimir etiquetas</button></div>
+    <div class="panel-head"><h3>Etiquetas</h3><span class="hint">${mapaCarnes.length} linha${mapaCarnes.length===1?"":"s"} do mapa — validade, temperatura e peso em branco pra anotar na embalagem</span><button class="btn small primary" id="pcp-etiquetas-abrir" style="margin-left:auto;">Preparar etiquetas</button></div>
   </div>`;
 }
-function pcpImprimirEtiquetasCarnes(mapaCarnes, semana){
-  const etiquetas = mapaCarnes.map(l => `<div style="break-inside:avoid; border:1px solid #333; border-radius:4px; padding:8px 10px; width:220px; display:inline-block; margin:0 6px 10px 0; vertical-align:top;">
-    <div style="font-weight:700; font-size:13px;">${escapeHtml(l.corte)}</div>
-    <div style="font-size:12px; margin:2px 0;">${escapeHtml(l.receita)}</div>
-    <div style="font-size:12px; color:#333;">${fmtNum(l.kg,3)} ${escapeHtml(l.unidade)} · ${escapeHtml(DIA_LABEL[l.dia]||l.dia)} · ${escapeHtml(rotuloSemana(semana))}</div>
-  </div>`).join("");
+// linha pra tela/impressão/PDF: estampado (corte, receita, datas, validade, temperatura) + em branco
+// (peso real e responsável) + rodapé de orientações.
+function pcpEtqaHtmlPreview(l, orient, unidadeLabel){
+  return `<div class="etqa-card" style="border:1px solid #333; border-radius:6px; padding:8px 10px; width:230px; font-size:11.5px; line-height:1.35;">
+    <div style="display:flex; justify-content:space-between; font-weight:700; font-size:10.5px;"><span>VILLA RAMOS · AÇOUGUE ${escapeHtml(unidadeLabel.toUpperCase())}</span></div>
+    <div style="font-weight:700; font-size:14px; margin:3px 0 1px;">${escapeHtml(l.corte.toUpperCase())}</div>
+    <div>Para: ${escapeHtml(l.receita)}</div>
+    <div style="display:flex; justify-content:space-between; margin-top:3px; font-size:10.5px;"><span>Proc.: ${escapeHtml(fmtData(l.dataProc))} __:__</span><span>Uso: ${escapeHtml(fmtData(l.dataUso))}</span></div>
+    <div style="display:flex; justify-content:space-between; font-weight:700; margin-top:2px; ${l.venceAntes ? "color:#c23b3b;" : ""}"><span>VAL.: ${escapeHtml(fmtData(l.validade))}</span><span>${escapeHtml(l.temp)}</span></div>
+    <div style="border-top:1px solid #ccc; margin-top:3px; padding-top:3px; display:flex; justify-content:space-between; font-weight:700;"><span>${l.unidade === "un" ? "Qtd.: ______ un" : "Peso: ______ kg"}</span><span>Resp.: ____</span></div>
+    <div style="font-size:9px; color:#555; margin-top:3px;">${escapeHtml(orient)}</div>
+  </div>`;
+}
+let pcpEtqaQtdOverride = new Map(); // "dia|corte|receita" -> qtd editado na tela (não persistido, só na sessão de impressão)
+function pcpAbrirRegrasEtiqueta(aoSalvar){
+  const atual = pcpEtqaRegras();
+  const root = document.getElementById("modal-root");
+  const modalAnterior = root.innerHTML;
+  root.innerHTML = `<div class="modal-overlay" id="etqreg-ov"><div class="modal" style="max-width:560px;">
+    <div class="modal-head"><h2>Prazos e orientações da etiqueta</h2><button class="close-x" id="etqreg-close">&times;</button></div>
+    <div class="modal-body">
+      <p class="chip warn" style="display:flex; width:fit-content; height:auto; white-space:normal; padding:6px 10px; margin-bottom:12px;">Esses prazos são um padrão conservador — precisam ser confirmados (e ajustados se for o caso) pela nutricionista responsável, conforme o Manual de Boas Práticas da casa, antes de valer pra decisão real de descarte/uso.</p>
+      ${["carne","moida","pescado"].map(k => `<div class="field-row" style="margin-bottom:10px;">
+        <div class="field" style="flex:2;"><label>${escapeHtml(atual[k].nome)}</label></div>
+        <div class="field"><label>Validade (dias após processar)</label><input type="number" min="0" step="1" data-rg-dias="${k}" value="${atual[k].dias}"></div>
+        <div class="field" style="flex:1.5;"><label>Conservação (estampado)</label><input type="text" data-rg-temp="${k}" value="${escapeHtml(atual[k].temp)}"></div>
+      </div>`).join("")}
+      <div class="field"><label>Orientações (rodapé da etiqueta)</label><input type="text" id="etqreg-orient" value="${escapeHtml(atual.orient)}"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn small ghost" id="etqreg-padrao">Restaurar padrão</button>
+      <button class="btn small primary" id="etqreg-salvar">Salvar</button>
+    </div>
+  </div></div>`;
+  const voltar = () => { root.innerHTML = modalAnterior; if(aoSalvar) aoSalvar(); };
+  document.getElementById("etqreg-close").addEventListener("click", voltar);
+  document.getElementById("etqreg-ov").addEventListener("click", e => { if(e.target.id==="etqreg-ov") voltar(); });
+  document.getElementById("etqreg-padrao").addEventListener("click", () => {
+    root.querySelectorAll("[data-rg-dias]").forEach(i => i.value = PCP_ETQA_PADRAO[i.dataset.rgDias].dias);
+    root.querySelectorAll("[data-rg-temp]").forEach(i => i.value = PCP_ETQA_PADRAO[i.dataset.rgTemp].temp);
+    document.getElementById("etqreg-orient").value = PCP_ETQA_PADRAO.orient;
+  });
+  document.getElementById("etqreg-salvar").addEventListener("click", async e => {
+    e.target.disabled = true;
+    const r = { kg_emb: atual.kg_emb, orient: document.getElementById("etqreg-orient").value.trim() || PCP_ETQA_PADRAO.orient, carne: {}, moida: {}, pescado: {} };
+    ["carne","moida","pescado"].forEach(k => {
+      r[k] = { dias: Math.max(0, Math.floor(Number(root.querySelector(`[data-rg-dias="${k}"]`).value) || 0)), temp: root.querySelector(`[data-rg-temp="${k}"]`).value.trim() || PCP_ETQA_PADRAO[k].temp };
+    });
+    await pcpSalvarEtiquetaRegras(r);
+    voltar();
+  });
+}
+function pcpAbrirEtiquetasAcougue(cobertura, semana, diaSel, unidadeLabel){
+  pcpEtqaQtdOverride = new Map();
+  const root = document.getElementById("modal-root");
+  const desenhar = () => {
+    const regras = pcpEtqaRegras();
+    const linhas = pcpEtqaLinhas(cobertura.mapaCarnes, semana, diaSel, regras);
+    const chaveDe = l => `${l.dia}|${l.corte}|${l.receita}`;
+    const qtdDe = l => { const k = chaveDe(l); return pcpEtqaQtdOverride.has(k) ? pcpEtqaQtdOverride.get(k) : pcpEtqaQtdPadrao(l, regras.kg_emb); };
+    const aviso = linhas.filter(l => l.venceAntes);
+    const total = linhas.reduce((s,l) => s + qtdDe(l), 0);
+    root.innerHTML = `<div class="modal-overlay" id="etqa-ov"><div class="modal" style="max-width:760px;">
+      <div class="modal-head"><h2>Etiquetas de segurança alimentar</h2><button class="close-x" id="etqa-close">&times;</button></div>
+      <div class="modal-body">
+        <p class="footnote">Processamento ${escapeHtml(fmtDataCompleta(dataDoDia(semana, diaSel)))} (hora em branco) · validade = processamento + prazo por tipo de carne.</p>
+        ${aviso.length ? `<div class="chip warn" style="display:flex; width:fit-content; height:auto; white-space:normal; padding:6px 10px; margin-bottom:10px;">⚠ ${escapeHtml([...new Set(aviso.map(l => l.corte + " (uso " + DIA_LABEL[l.dia] + ")"))].join(", "))}: validade vence ANTES do dia de uso — precisa ficar congelado até mais perto do uso, ou a nutricionista aprova um prazo maior.</div>` : ""}
+        <div class="field-row" style="align-items:flex-end; margin-bottom:12px;">
+          <div class="field"><label>Tamanho da etiqueta</label><select id="etqa-tam">${Object.entries(PCP_ETIQUETAS).map(([k,v]) => `<option value="${k}" ${k===pcpEtiquetaTam?"selected":""}>${v.nome}</option>`).join("")}</select></div>
+          <div class="field"><label>Kg por embalagem (padrão de quantidade)</label><input type="number" id="etqa-kgemb" min="0.5" step="0.5" value="${regras.kg_emb}"></div>
+          <button class="btn small ghost" id="etqa-regras" type="button">Prazos e orientações</button>
+        </div>
+        <div style="max-height:40vh; overflow:auto; border:1px solid var(--border); border-radius:8px;"><table><thead><tr><th>Corte</th><th>Receita</th><th>Dia de uso</th><th>Validade</th><th style="text-align:right;">Etiquetas</th></tr></thead><tbody>
+          ${linhas.map((l,i) => `<tr><td class="name-cell">${escapeHtml(l.corte)}</td><td>${escapeHtml(l.receita)}</td><td>${escapeHtml(DIA_LABEL[l.dia])}</td><td ${l.venceAntes ? 'style="color:var(--critical); font-weight:600;"' : ""}>${escapeHtml(fmtData(l.validade))}</td><td class="num-cell"><input type="number" min="0" step="1" data-etqa-qtd="${i}" value="${qtdDe(l)}" style="width:60px; text-align:right;"></td></tr>`).join("") || `<tr><td colspan="5" class="footnote">Nada pra etiquetar.</td></tr>`}
+        </tbody></table></div>
+        <p class="footnote" style="margin-top:8px;">${total} etiqueta${total===1?"":"s"} no total.</p>
+      </div>
+      <div class="modal-foot">
+        <button class="btn small ghost" id="etqa-imprimir" type="button">Imprimir</button>
+        <button class="btn small primary" id="etqa-pdf" type="button">Baixar PDF (${total})</button>
+      </div>
+    </div></div>`;
+    const montarSaida = () => { const saida = []; linhas.forEach(l => { for(let k=0;k<qtdDe(l);k++) saida.push(l); }); return saida; };
+    document.getElementById("etqa-close").addEventListener("click", () => { root.innerHTML = ""; });
+    document.getElementById("etqa-ov").addEventListener("click", e => { if(e.target.id==="etqa-ov") root.innerHTML = ""; });
+    document.getElementById("etqa-tam").addEventListener("change", e => { pcpEtiquetaTam = e.target.value; desenhar(); });
+    document.getElementById("etqa-kgemb").addEventListener("change", async e => {
+      const v = parseFloat(String(e.target.value).replace(",", "."));
+      if(v > 0){ await pcpSalvarEtiquetaRegras({...regras, kg_emb: v}); pcpEtqaQtdOverride = new Map(); }
+      desenhar();
+    });
+    document.getElementById("etqa-regras").addEventListener("click", () => pcpAbrirRegrasEtiqueta(desenhar));
+    root.querySelectorAll("[data-etqa-qtd]").forEach(inp => inp.addEventListener("change", () => {
+      const l = linhas[Number(inp.dataset.etqaQtd)];
+      pcpEtqaQtdOverride.set(chaveDe(l), Math.max(0, Math.floor(Number(inp.value) || 0)));
+    }));
+    document.getElementById("etqa-imprimir").addEventListener("click", () => pcpImprimirEtiquetasAcougueHtml(montarSaida(), regras.orient, unidadeLabel));
+    document.getElementById("etqa-pdf").addEventListener("click", () => pcpBaixarPdfEtiquetasAcougue(montarSaida(), pcpEtiquetaTam, regras.orient, unidadeLabel));
+  };
+  desenhar();
+}
+function pcpImprimirEtiquetasAcougueHtml(linhas, orient, unidadeLabel){
+  if(!linhas.length){ showAlert("Nenhuma etiqueta pra imprimir (quantidade zerada)."); return; }
+  const etiquetas = linhas.map(l => pcpEtqaHtmlPreview(l, orient, unidadeLabel)).join("");
   const w = window.open("", "_blank");
   if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas — Açougue</title>
-    <style>body{font-family:Arial,Helvetica,sans-serif; padding:16px; color:#111;}</style></head><body>
-    ${etiquetas || "<p>Nada pra etiquetar.</p>"}</body></html>`);
+    <style>body{font-family:Arial,Helvetica,sans-serif; padding:16px; color:#111;} .etqa-card{display:inline-block; margin:0 6px 10px 0; vertical-align:top; break-inside:avoid;}</style></head><body>
+    ${etiquetas}</body></html>`);
   w.document.close(); w.focus(); w.print();
+}
+// PDF em tamanho físico exato (mm) pra impressora de etiqueta térmica — 1 página por etiqueta.
+function pcpBaixarPdfEtiquetasAcougue(linhas, tamanho, orient, unidadeLabel){
+  const lib = window.jspdf && window.jspdf.jsPDF;
+  if(!lib){ showAlert("A biblioteca de PDF não carregou — confira a conexão e tente novamente."); return; }
+  if(!linhas.length){ showAlert("Nenhuma etiqueta pra gerar (quantidade zerada)."); return; }
+  const T = PCP_ETIQUETAS[tamanho] || PCP_ETIQUETAS["100x50"];
+  const ori = T.w >= T.h ? "landscape" : "portrait";
+  const doc = new lib({ unit: "mm", format: [T.w, T.h], orientation: ori, compress: true });
+  const m = T.h <= 40 ? 2.5 : 3.5, W = T.w - 2 * m;
+  linhas.forEach((l, i) => {
+    if(i) doc.addPage([T.w, T.h], ori);
+    let y = m;
+    doc.setFont("helvetica", "bold"); doc.setFontSize(7.5);
+    doc.text(`VILLA RAMOS · AÇOUGUE ${unidadeLabel.toUpperCase()}`, m, y + 2.6);
+    doc.setFont("helvetica", "normal");
+    doc.text(l.tipo === "pescado" ? "PESCADO" : "CARNE CRUA", T.w - m, y + 2.6, {align: "right"});
+    y += 4; doc.setLineWidth(0.3); doc.line(m, y, T.w - m, y); y += 3;
+    doc.setFont("helvetica", "bold"); doc.setFontSize(12);
+    doc.splitTextToSize(l.corte.toUpperCase(), W).forEach(t => { doc.text(t, m, y + 3); y += 4; });
+    doc.setFont("helvetica", "normal"); doc.setFontSize(8.5);
+    doc.splitTextToSize("Para: " + l.receita, W).slice(0, 2).forEach(t => { doc.text(t, m, y + 2.6); y += 3.6; });
+    y += 1;
+    doc.setFontSize(7.5);
+    doc.text(`Proc.: ${fmtData(l.dataProc)} __:__`, m, y);
+    doc.text(`Uso: ${fmtData(l.dataUso)}`, T.w - m, y, {align: "right"});
+    y += 4;
+    doc.setFont("helvetica", "bold"); doc.setFontSize(9.5);
+    doc.text(`VAL.: ${fmtData(l.validade)}`, m, y);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(8);
+    doc.text(l.temp, T.w - m, y, {align: "right"});
+    y += 1.2; doc.setLineWidth(0.2); doc.line(m, y, T.w - m, y); y += 4;
+    doc.setFont("helvetica", "bold"); doc.setFontSize(9.5);
+    doc.text(l.unidade === "un" ? "Qtd.: ________ un" : "Peso: ________ kg", m, y);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(7.5);
+    doc.text("Resp.: ________", T.w - m, y, {align: "right"});
+    y += 4;
+    doc.setFontSize(6.5);
+    doc.splitTextToSize(orient, W).slice(0, 2).forEach((t,k) => doc.text(t, m, Math.min(y + k * 2.6, T.h - m)));
+  });
+  doc.save(`etiquetas-acougue-${tamanho}.pdf`);
 }
 
 // ---------- Fase 3: Conferência de expedição ----------
@@ -10983,6 +11255,7 @@ async function renderPCP(){
   const resReq = ehEstoque ? pcpCalcularRequisicaoDia(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
   const acougueCobertura = ehAcougue ? pcpCalcularAcougueComCobertura(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
   const fichasCorte = ehAcougue ? pcpFichasCorteAgrupadas(acougueCobertura.mapaCarnes) : null;
+  const mapaSemana = ehAcougue ? pcpMapaCarnesSemana(pcpSemanaSel, unidadeFiltro) : null;
   let confLinhas = null;
   if(ehConferencia && unidadeFiltro){
     await pcpCarregarConferencia(pcpSemanaSel, pcpDiaSel, unidadeFiltro);
@@ -11006,6 +11279,7 @@ async function renderPCP(){
     </div>
     ${ehAcougue ? `
       ${pcpMapaCarnesHtml(acougueCobertura)}
+      ${pcpMapaSemanaHtml(mapaSemana, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial")}
       ${pcpFichasCorteHtml(fichasCorte)}
       ${pcpEtiquetasCarnesHtml(acougueCobertura.mapaCarnes)}
     ` : ehEstoque ? `
@@ -11036,10 +11310,12 @@ async function renderPCP(){
     document.getElementById("pcp-acg-config").addEventListener("click", pcpAbrirConfigAcougue);
     const btnMapa = document.getElementById("pcp-mapa-imprimir");
     if(btnMapa) btnMapa.addEventListener("click", () => pcpImprimirMapaCarnes(acougueCobertura, pcpSemanaSel, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial"));
+    const btnMapaSem = document.getElementById("pcp-mapa-sem-imprimir");
+    if(btnMapaSem) btnMapaSem.addEventListener("click", () => pcpImprimirMapaSemana(mapaSemana, pcpSemanaSel, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial"));
     const btnFichas = document.getElementById("pcp-fichas-imprimir");
     if(btnFichas) btnFichas.addEventListener("click", () => pcpImprimirFichasCorte(fichasCorte, pcpSemanaSel));
-    const btnEtiquetas = document.getElementById("pcp-etiquetas-imprimir");
-    if(btnEtiquetas) btnEtiquetas.addEventListener("click", () => pcpImprimirEtiquetasCarnes(acougueCobertura.mapaCarnes, pcpSemanaSel));
+    const btnEtiquetas = document.getElementById("pcp-etiquetas-abrir");
+    if(btnEtiquetas) btnEtiquetas.addEventListener("click", () => pcpAbrirEtiquetasAcougue(acougueCobertura, pcpSemanaSel, pcpDiaSel, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial"));
   } else if(ehEstoque){
     document.getElementById("pcp-acg-config").addEventListener("click", pcpAbrirConfigAcougue);
   } else if(ehConferencia){
