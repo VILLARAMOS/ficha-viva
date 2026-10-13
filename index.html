@@ -10364,35 +10364,41 @@ function pcpCalcularDia(semana, dia, unidadeFiltro){
 // único. Suco fica fora (preparado na unidade do cliente — confirmado 12/10/2026). Proteína em natura
 // (pcpAcougueSet) sai da bancada "cozinha" e vai pro bucket "acougue": quem prepara é o açougue, não a
 // cozinha, então essa requisição é separada da requisição de estoque normal.
-function pcpAcumularInsumosDia(dayDoc, numPessoas, acougueSet, buckets, pessoasSubstituidas){
+// `coletor` (opcional, de criarColetorReceitas — o MESMO coletor já usado na Lista de compra) registra,
+// só pros itens que vão pro açougue, qual receita/dia consumiu aquele corte — vira o Mapa de carnes
+// (pcpCalcularAcougueComCobertura). Não é usado pelas outras bancadas, que não precisam desse rastro.
+function pcpAcumularInsumosDia(dayDoc, numPessoas, acougueSet, buckets, pessoasSubstituidas, coletor, dia){
   if(!dayDoc) return;
   (dayDoc.itens || []).forEach(it => {
     const pessoasEf = (pessoasSubstituidas > 0 && categoriaBase(it.categoria) === "Proteína") ? Math.max(0, numPessoas - pessoasSubstituidas) : numPessoas;
     const r = pcpItemProducao(it, pessoasEf);
     if(!r) return;
-    let setor, porInsumo;
+    let setor, porInsumo, nomeReceita = null;
     if(r.fichaId){
       const f = fichas.get(r.fichaId);
       setor = pcpSetorDoGrupo(pcpGrupoFicha(f));
       if(setor === "fora") return;
       porInsumo = insumosParaKgNecessario(r.fichaId, r.qtd);
+      nomeReceita = f ? f.nome : (it.nome || r.fichaId);
     } else if(r.insumoId){
       setor = pcpSetorDoGrupo(pcpGrupoDaCategoria(it.categoria));
       if(setor === "fora") return;
       porInsumo = new Map([[r.insumoId, r.qtd]]);
+      nomeReceita = "Direto no cardápio";
     } else return;
     porInsumo.forEach((kg, insumoId) => {
       const destino = (setor === "cozinha" && acougueSet.has(insumoId)) ? "acougue" : setor;
       const mapa = buckets.get(destino) || new Map();
       mapa.set(insumoId, (mapa.get(insumoId) || 0) + kg);
       buckets.set(destino, mapa);
+      if(coletor && destino === "acougue") coletor.add(insumoId, kg, nomeReceita, dia);
     });
   });
 }
 // motor principal da Requisição: varre os MESMOS contratos/quantidadePrevista/linha-de-cardápio do
 // pcpCalcularDia (via pcpResolveRowProducao, pra nunca dessincronizar) e acumula por setor em vez de por
 // receita. Não repete os avisos de "cardápio não montado" — já aparecem na aba Produção.
-function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro){
+function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor){
   const almocoIdx = new Map();
   cardapiosAlmoco.forEach(row => almocoIdx.set(`${row.cardapio_num}|${row.semana}|${row.dia}`, row));
   const acougueSet = pcpAcougueSet();
@@ -10413,7 +10419,7 @@ function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro){
         const { row, qtdEf } = pcpResolveRowProducao(almocoIdx, cat, ct, semana, dia, qtd);
         if(!row) return;
         teveItem = true;
-        pcpAcumularInsumosDia(row, qtdEf, acougueSet, buckets, pessoasSubst);
+        pcpAcumularInsumosDia(row, qtdEf, acougueSet, buckets, pessoasSubst, coletor, dia);
       });
       if(teveItem) pcpAplicarSubstituicoesInsumos(dia, contratoId, buckets);
     });
@@ -10438,8 +10444,9 @@ function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro){
 function pcpCalcularAcougueComCobertura(semana, diaSel, unidadeFiltro){
   const diasCobertos = pcpDiasCobertos(diaSel, pcpAcgDias());
   const porInsumo = new Map(); // insumoId -> {nome, unidade, kg}
+  const coletor = criarColetorReceitas(); // corte -> "dia|receita" -> kg, alimenta o Mapa de carnes abaixo
   const porDia = diasCobertos.map(dia => {
-    const res = pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro);
+    const res = pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor);
     const bucket = res.porSetor.find(s => s.setor === "acougue");
     const itens = bucket ? bucket.itens : [];
     itens.forEach(it => {
@@ -10450,7 +10457,17 @@ function pcpCalcularAcougueComCobertura(semana, diaSel, unidadeFiltro){
     return { dia, itens };
   });
   const itensTotal = [...porInsumo.values()].sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR'));
-  return { diasCobertos, itensTotal, porDia };
+  // Mapa de carnes: 1 linha por corte×receita×dia — mesmos números do itensTotal, só sem colapsar o
+  // destino. "dia|receita" é desmontado pelo primeiro "|" (nome de receita não pode conter "|").
+  const mapaCarnes = [];
+  porInsumo.forEach((it, insumoId) => {
+    coletor.get(insumoId).forEach((kg, chave) => {
+      const i = chave.indexOf("|");
+      mapaCarnes.push({ corte: it.nome, unidade: it.unidade, kg, dia: chave.slice(0,i), receita: chave.slice(i+1) });
+    });
+  });
+  mapaCarnes.sort((a,b) => DIAS_ORDEM.indexOf(a.dia) - DIAS_ORDEM.indexOf(b.dia) || a.corte.localeCompare(b.corte,'pt-BR') || a.receita.localeCompare(b.receita,'pt-BR'));
+  return { diasCobertos, itensTotal, porDia, mapaCarnes };
 }
 
 /* ---------- tela ---------- */
@@ -10665,8 +10682,9 @@ function pcpAbrirGerenciarRotas(){
   });
 }
 
-// setor "acougue" é renderizado à parte (pcpAcougueHtml), já com a cobertura de múltiplos dias — aqui só
-// entram as bancadas do dia a dia (cozinha/saladas/sobremesas).
+// setor "acougue" agora é a aba separada "Açougue" (pcpMapaCarnesHtml/pcpFichasCorteHtml/
+// pcpEtiquetasCarnesHtml), com a cobertura de múltiplos dias — aqui só entram as bancadas do dia a dia
+// (cozinha/saladas/sobremesas), que são a aba "Requisição do estoque".
 function pcpRequisicaoHtml(res){
   const setores = res.porSetor.filter(s => s.setor !== "acougue");
   if(!setores.length) return `<p class="footnote">Nada a requisitar neste dia.</p>`;
@@ -10678,39 +10696,102 @@ function pcpRequisicaoHtml(res){
   </div>`).join("");
 }
 
-// Açougue: total combinado (o que cortar HOJE pra cobrir todos os dias sem operação logo em seguida) +
-// a quebra por dia, pra rastrear pra qual dia cada quantidade é.
-function pcpAcougueHtml(cobertura){
+// Mapa de carnes: 1ª coisa que o açougue vê — corte × kg × receita de destino × dia de uso, cobrindo o
+// mesmo intervalo de pcpDiasCobertos (hoje corta pra vários dias sem operação, ex. sexta cobre sáb+dom).
+// Confirmado com o Marcelo em 13/10/2026: é a visão de planejamento, não substitui as fichas por item
+// (pcpFichasCorteHtml) nem as etiquetas (pcpEtiquetasCarnesHtml) — são as 3 peças da Fase açougue, nessa
+// ordem, e as 3 são impressas.
+function pcpMapaCarnesHtml(cobertura){
   if(!cobertura.diasCobertos.length){
     return `<p class="footnote">Açougue não opera hoje — a proteína deste dia precisa ter saído num dia anterior de operação.</p>`;
   }
   const rotulo = cobertura.diasCobertos.map(d => DIA_LABEL[d]).join(" + ");
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3>Açougue</h3><span class="hint">corte de hoje — cobre ${escapeHtml(rotulo)}</span>${cobertura.itensTotal.length ? `<button class="btn small ghost" id="pcp-acg-imprimir" style="margin-left:auto;">Imprimir ficha de corte</button>` : ""}</div>
-    <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Insumo</th><th style="text-align:right;">Quantidade total</th></tr></thead><tbody>
-      ${cobertura.itensTotal.length ? cobertura.itensTotal.map(it => `<tr><td class="name-cell">${escapeHtml(it.nome)}</td><td class="num-cell">${fmtNum(it.kg,3)} ${escapeHtml(it.unidade)}</td></tr>`).join("") : `<tr><td colspan="2" class="footnote">Nada a cortar neste dia.</td></tr>`}
+    <div class="panel-head"><h3>Mapa de carnes</h3><span class="hint">corte de hoje — cobre ${escapeHtml(rotulo)}</span>${cobertura.mapaCarnes.length ? `<button class="btn small ghost" id="pcp-mapa-imprimir" style="margin-left:auto;">Imprimir mapa</button>` : ""}</div>
+    <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Corte</th><th style="text-align:right;">Kg</th><th>Receita</th><th>Dia de uso</th></tr></thead><tbody>
+      ${cobertura.mapaCarnes.length ? cobertura.mapaCarnes.map(l => `<tr><td class="name-cell">${escapeHtml(l.corte)}</td><td class="num-cell">${fmtNum(l.kg,3)} ${escapeHtml(l.unidade)}</td><td>${escapeHtml(l.receita)}</td><td>${escapeHtml(DIA_LABEL[l.dia]||l.dia)}</td></tr>`).join("") : `<tr><td colspan="4" class="footnote">Nada a cortar neste dia.</td></tr>`}
     </tbody></table></div>
-    ${cobertura.diasCobertos.length > 1 ? `<div class="footnote" style="margin-top:10px;">Quebra por dia: ${cobertura.porDia.map(pd => `<strong>${escapeHtml(DIA_LABEL[pd.dia])}</strong> (${pd.itens.length} item${pd.itens.length===1?"":"s"})`).join(" · ")}</div>` : ""}
+    <div class="footnote" style="margin-top:10px;">Total combinado por corte: ${cobertura.itensTotal.map(it => `<strong>${escapeHtml(it.nome)}</strong> ${fmtNum(it.kg,3)} ${escapeHtml(it.unidade)}`).join(" · ") || "—"}</div>
     </div>
   </div>`;
 }
 
-// ordem de serviço do açougue, pra imprimir e deixar na bancada — mesmo padrão de pcpEtiquetaImprimir.
-function pcpImprimirCortesDia(cobertura, semana, diaSel, unidadeLabel){
+function pcpImprimirMapaCarnes(cobertura, semana, unidadeLabel){
   const rotulo = cobertura.diasCobertos.map(d => DIA_LABEL[d]).join(" + ");
-  const linhasTotal = cobertura.itensTotal.map(it => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(it.nome)}</td><td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(it.kg,3)} ${escapeHtml(it.unidade)}</td></tr>`).join("");
-  const quebra = cobertura.diasCobertos.length > 1 ? cobertura.porDia.map(pd => `
-    <h2 style="font-size:13px; margin:16px 0 4px;">${escapeHtml(DIA_LABEL[pd.dia])}</h2>
-    <table style="width:100%; border-collapse:collapse; font-size:12px;">${pd.itens.map(it => `<tr><td style="padding:3px 0; border-top:1px solid #ddd;">${escapeHtml(it.nome)}</td><td style="padding:3px 0; border-top:1px solid #ddd; text-align:right;">${fmtNum(it.kg,3)} ${escapeHtml(it.unidade)}</td></tr>`).join("")}</table>`).join("") : "";
+  const linhas = cobertura.mapaCarnes.map(l => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(l.corte)}</td><td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(l.kg,3)} ${escapeHtml(l.unidade)}</td><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(l.receita)}</td><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(DIA_LABEL[l.dia]||l.dia)}</td></tr>`).join("");
   const w = window.open("", "_blank");
   if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
-  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Ficha de corte — Açougue</title>
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Mapa de carnes — Açougue</title>
     <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()}</style></head><body>
-    ${printHeadHtml()}<h1>Açougue — ficha de corte</h1>
-    <div style="font-size:12px; color:#666; margin-bottom:14px;">${escapeHtml(unidadeLabel)} · cobre ${escapeHtml(rotulo)}</div>
-    <table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr><th style="text-align:left; padding-bottom:4px;">Insumo</th><th style="text-align:right; padding-bottom:4px;">Total a cortar</th></tr></thead><tbody>${linhasTotal || `<tr><td colspan="2">Nada a cortar neste dia.</td></tr>`}</tbody></table>
-    ${quebra}
+    ${printHeadHtml()}<h1>Açougue — mapa de carnes</h1>
+    <div style="font-size:12px; color:#666; margin-bottom:14px;">${escapeHtml(unidadeLabel)} · ${escapeHtml(rotuloSemana(semana))} · cobre ${escapeHtml(rotulo)}</div>
+    <table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr><th style="text-align:left; padding-bottom:4px;">Corte</th><th style="text-align:right; padding-bottom:4px;">Kg</th><th style="text-align:left; padding-bottom:4px;">Receita</th><th style="text-align:left; padding-bottom:4px;">Dia</th></tr></thead><tbody>${linhas || `<tr><td colspan="4">Nada a cortar neste dia.</td></tr>`}</tbody></table>
     </body></html>`);
+  w.document.close(); w.focus(); w.print();
+}
+
+// Fichas de corte: 2ª peça — 1 ficha de papel por corte×dia (agrupa as receitas que usam aquele corte
+// naquele dia), pra acompanhar o produto da bancada do açougue até a entrega (confirmado 13/10/2026).
+function pcpFichasCorteAgrupadas(mapaCarnes){
+  const porGrupo = new Map(); // "dia|corte" -> {dia, corte, unidade, kgTotal, receitas:[{receita,kg}]}
+  mapaCarnes.forEach(l => {
+    const chave = l.dia + "|" + l.corte;
+    const g = porGrupo.get(chave) || { dia: l.dia, corte: l.corte, unidade: l.unidade, kgTotal: 0, receitas: [] };
+    g.kgTotal += l.kg;
+    g.receitas.push({ receita: l.receita, kg: l.kg });
+    porGrupo.set(chave, g);
+  });
+  return [...porGrupo.values()].sort((a,b) => DIAS_ORDEM.indexOf(a.dia) - DIAS_ORDEM.indexOf(b.dia) || a.corte.localeCompare(b.corte,'pt-BR'));
+}
+function pcpFichasCorteHtml(fichasAgrupadas){
+  if(!fichasAgrupadas.length) return "";
+  return `<div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head"><h3>Fichas de corte</h3><span class="hint">${fichasAgrupadas.length} ficha${fichasAgrupadas.length===1?"":"s"} — 1 por corte/dia, acompanha o produto até a entrega</span><button class="btn small ghost" id="pcp-fichas-imprimir" style="margin-left:auto;">Imprimir fichas</button></div>
+    <div class="panel-body" style="display:flex; flex-wrap:wrap; gap:12px;">
+      ${fichasAgrupadas.map(f => `<div style="border:1px solid var(--border); border-radius:8px; padding:10px 12px; min-width:220px;">
+        <div style="font-weight:700;">${escapeHtml(f.corte)}</div>
+        <div class="hint" style="margin-bottom:6px;">${escapeHtml(DIA_LABEL[f.dia]||f.dia)} · ${fmtNum(f.kgTotal,3)} ${escapeHtml(f.unidade)} total</div>
+        <table style="width:100%; font-size:12.5px;"><tbody>${f.receitas.map(r => `<tr><td>${escapeHtml(r.receita)}</td><td style="text-align:right;">${fmtNum(r.kg,3)} ${escapeHtml(f.unidade)}</td></tr>`).join("")}</tbody></table>
+      </div>`).join("")}
+    </div>
+  </div>`;
+}
+function pcpImprimirFichasCorte(fichasAgrupadas, semana){
+  const paginas = fichasAgrupadas.map(f => `<div style="page-break-after:always; break-inside:avoid; border:1px solid #333; border-radius:8px; padding:20px; max-width:480px;">
+    <div style="font-size:11px; color:#666; margin-bottom:4px;">${escapeHtml(rotuloSemana(semana))} · ${escapeHtml(DIA_LABEL[f.dia]||f.dia)}</div>
+    <div style="font-size:20px; font-weight:700; margin-bottom:10px;">${escapeHtml(f.corte)}</div>
+    <div style="font-size:16px; font-weight:600; margin-bottom:14px;">${fmtNum(f.kgTotal,3)} ${escapeHtml(f.unidade)} total</div>
+    <table style="width:100%; border-collapse:collapse; font-size:13px;">${f.receitas.map(r => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(r.receita)}</td><td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(r.kg,3)} ${escapeHtml(f.unidade)}</td></tr>`).join("")}</table>
+    <div style="margin-top:30px; border-top:1px dashed #999; padding-top:8px; font-size:11px; color:#666;">Assinatura/conferência: ______________________________</div>
+  </div>`).join("");
+  const w = window.open("", "_blank");
+  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Fichas de corte</title>
+    <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} ${printHeadStyle()}</style></head><body>
+    ${printHeadHtml()}${paginas || "<p>Nada a cortar.</p>"}</body></html>`);
+  w.document.close(); w.focus(); w.print();
+}
+
+// Etiquetas: 3ª peça — 1 etiqueta por linha do Mapa de carnes (corte×receita×dia), pra colar na
+// embalagem (confirmado 13/10/2026: sem contagem de embalagens nesta versão — se precisar de mais de 1
+// via da mesma etiqueta, reimprime a folha).
+function pcpEtiquetasCarnesHtml(mapaCarnes){
+  if(!mapaCarnes.length) return "";
+  return `<div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head"><h3>Etiquetas</h3><span class="hint">${mapaCarnes.length} etiqueta${mapaCarnes.length===1?"":"s"} — 1 por corte+receita+dia, pra colar na embalagem</span><button class="btn small primary" id="pcp-etiquetas-imprimir" style="margin-left:auto;">Imprimir etiquetas</button></div>
+  </div>`;
+}
+function pcpImprimirEtiquetasCarnes(mapaCarnes, semana){
+  const etiquetas = mapaCarnes.map(l => `<div style="break-inside:avoid; border:1px solid #333; border-radius:4px; padding:8px 10px; width:220px; display:inline-block; margin:0 6px 10px 0; vertical-align:top;">
+    <div style="font-weight:700; font-size:13px;">${escapeHtml(l.corte)}</div>
+    <div style="font-size:12px; margin:2px 0;">${escapeHtml(l.receita)}</div>
+    <div style="font-size:12px; color:#333;">${fmtNum(l.kg,3)} ${escapeHtml(l.unidade)} · ${escapeHtml(DIA_LABEL[l.dia]||l.dia)} · ${escapeHtml(rotuloSemana(semana))}</div>
+  </div>`).join("");
+  const w = window.open("", "_blank");
+  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas — Açougue</title>
+    <style>body{font-family:Arial,Helvetica,sans-serif; padding:16px; color:#111;}</style></head><body>
+    ${etiquetas || "<p>Nada pra etiquetar.</p>"}</body></html>`);
   w.document.close(); w.focus(); w.print();
 }
 
@@ -10875,10 +10956,11 @@ async function renderPCP(){
   const opcoesSemana = pcpOpcoesSemana();
   if(pcpSemanaSel === null || !opcoesSemana.includes(pcpSemanaSel)) pcpSemanaSel = opcoesSemana[opcoesSemana.length - 1];
   const margemPct = pcpMargemPct();
-  const ehRequisicao = pcpSubView === "requisicao";
+  const ehAcougue = pcpSubView === "acougue";
+  const ehEstoque = pcpSubView === "estoque";
   const ehConferencia = pcpSubView === "conferencia";
   const ehRomaneio = pcpSubView === "romaneio";
-  document.getElementById("topbar-actions").innerHTML = ehRequisicao ? `
+  document.getElementById("topbar-actions").innerHTML = (ehAcougue || ehEstoque) ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-acg-config">Cortes e dias</button>
     </div>` : ehConferencia ? "" : ehRomaneio ? `
@@ -10897,9 +10979,10 @@ async function renderPCP(){
   // precisa carregar a semana INTEIRA (não só o dia selecionado) porque a cobertura do açougue chama a
   // Requisição de outros dias internamente — ver comentário em pcpSubstituicoesCache.
   await pcpCarregarSubstituicoes(pcpSemanaSel, unidadeFiltro);
-  const res = ehRequisicao ? null : pcpCalcularDia(pcpSemanaSel, pcpDiaSel, unidadeFiltro);
-  const resReq = ehRequisicao ? pcpCalcularRequisicaoDia(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
-  const acougueCobertura = ehRequisicao ? pcpCalcularAcougueComCobertura(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
+  const res = (ehAcougue || ehEstoque) ? null : pcpCalcularDia(pcpSemanaSel, pcpDiaSel, unidadeFiltro);
+  const resReq = ehEstoque ? pcpCalcularRequisicaoDia(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
+  const acougueCobertura = ehAcougue ? pcpCalcularAcougueComCobertura(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
+  const fichasCorte = ehAcougue ? pcpFichasCorteAgrupadas(acougueCobertura.mapaCarnes) : null;
   let confLinhas = null;
   if(ehConferencia && unidadeFiltro){
     await pcpCarregarConferencia(pcpSemanaSel, pcpDiaSel, unidadeFiltro);
@@ -10911,7 +10994,8 @@ async function renderPCP(){
     <div class="seg-toggle" id="pcp-subview-tabs" style="margin-bottom:14px; width:fit-content;">
       <button type="button" data-pcpsub="producao" class="${pcpSubView==="producao"?"active":""}">Produção da cozinha</button>
       <button type="button" data-pcpsub="volume" class="${pcpSubView==="volume"?"active":""}">Volume por cliente</button>
-      <button type="button" data-pcpsub="requisicao" class="${pcpSubView==="requisicao"?"active":""}">Açougue / Requisição do estoque</button>
+      <button type="button" data-pcpsub="acougue" class="${pcpSubView==="acougue"?"active":""}">Açougue</button>
+      <button type="button" data-pcpsub="estoque" class="${pcpSubView==="estoque"?"active":""}">Requisição do estoque</button>
       <button type="button" data-pcpsub="conferencia" class="${pcpSubView==="conferencia"?"active":""}">Conferência de expedição</button>
       <button type="button" data-pcpsub="romaneio" class="${pcpSubView==="romaneio"?"active":""}">Romaneio por rota</button>
     </div>
@@ -10920,8 +11004,11 @@ async function renderPCP(){
       <select id="pcp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===pcpSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))}</option>`).join("")}</select>
       <div class="seg-toggle" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" data-pcpdia="${d}" class="${pcpDiaSel===d?"active":""}">${DIA_LABEL[d].slice(0,3)}</button>`).join("")}</div>
     </div>
-    ${ehRequisicao ? `
-      ${pcpAcougueHtml(acougueCobertura)}
+    ${ehAcougue ? `
+      ${pcpMapaCarnesHtml(acougueCobertura)}
+      ${pcpFichasCorteHtml(fichasCorte)}
+      ${pcpEtiquetasCarnesHtml(acougueCobertura.mapaCarnes)}
+    ` : ehEstoque ? `
       ${pcpRequisicaoHtml(resReq)}
     ` : ehConferencia ? (
       !unidadeFiltro
@@ -10945,10 +11032,16 @@ async function renderPCP(){
   content.querySelector("#pcp-uni-tabs").addEventListener("click", e => { const b = e.target.closest("button[data-pcpuni]"); if(!b) return; pcpUnidadeSel = b.dataset.pcpuni; renderPCP(); });
   content.querySelector("#pcp-dia-tabs").addEventListener("click", e => { const b = e.target.closest("button[data-pcpdia]"); if(!b) return; pcpDiaSel = b.dataset.pcpdia; renderPCP(); });
   content.querySelector("#pcp-semana").addEventListener("change", e => { pcpSemanaSel = parseInt(e.target.value,10); renderPCP(); });
-  if(ehRequisicao){
+  if(ehAcougue){
     document.getElementById("pcp-acg-config").addEventListener("click", pcpAbrirConfigAcougue);
-    const btnImprimirCortes = document.getElementById("pcp-acg-imprimir");
-    if(btnImprimirCortes) btnImprimirCortes.addEventListener("click", () => pcpImprimirCortesDia(acougueCobertura, pcpSemanaSel, pcpDiaSel, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial"));
+    const btnMapa = document.getElementById("pcp-mapa-imprimir");
+    if(btnMapa) btnMapa.addEventListener("click", () => pcpImprimirMapaCarnes(acougueCobertura, pcpSemanaSel, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial"));
+    const btnFichas = document.getElementById("pcp-fichas-imprimir");
+    if(btnFichas) btnFichas.addEventListener("click", () => pcpImprimirFichasCorte(fichasCorte, pcpSemanaSel));
+    const btnEtiquetas = document.getElementById("pcp-etiquetas-imprimir");
+    if(btnEtiquetas) btnEtiquetas.addEventListener("click", () => pcpImprimirEtiquetasCarnes(acougueCobertura.mapaCarnes, pcpSemanaSel));
+  } else if(ehEstoque){
+    document.getElementById("pcp-acg-config").addEventListener("click", pcpAbrirConfigAcougue);
   } else if(ehConferencia){
     const wrap = document.getElementById("pcp-conf-wrap");
     if(wrap) wrap.addEventListener("change", async e => {
