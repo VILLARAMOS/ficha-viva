@@ -10297,6 +10297,29 @@ function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro){
   return { semana, dia, unidade: unidadeFiltro || "todos", porSetor };
 }
 
+// combina a Requisição do açougue do dia selecionado com os dias seguintes em que ele NÃO opera (ex.:
+// sexta cobre sábado+domingo, se o açougue só funciona seg-sex) — as outras bancadas (cozinha/saladas/
+// sobremesas) continuam só do dia selecionado, porque são preparadas todo dia; só o açougue acumula.
+// Se o dia selecionado não é dia de operação do açougue, não há cobertura própria aqui — ela já devia
+// ter saído num dia anterior (a tela mostra um aviso separado pra esse caso).
+function pcpCalcularAcougueComCobertura(semana, diaSel, unidadeFiltro){
+  const diasCobertos = pcpDiasCobertos(diaSel, pcpAcgDias());
+  const porInsumo = new Map(); // insumoId -> {nome, unidade, kg}
+  const porDia = diasCobertos.map(dia => {
+    const res = pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro);
+    const bucket = res.porSetor.find(s => s.setor === "acougue");
+    const itens = bucket ? bucket.itens : [];
+    itens.forEach(it => {
+      const atual = porInsumo.get(it.insumoId) || { nome: it.nome, unidade: it.unidade, kg: 0 };
+      atual.kg += it.kg;
+      porInsumo.set(it.insumoId, atual);
+    });
+    return { dia, itens };
+  });
+  const itensTotal = [...porInsumo.values()].sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR'));
+  return { diasCobertos, itensTotal, porDia };
+}
+
 /* ---------- tela ---------- */
 let pcpSubView = "producao"; // "producao" | "volume"
 let pcpUnidadeSel = "matriz"; // "matriz" | "filial" | "todos"
@@ -10374,14 +10397,34 @@ function pcpEtiquetaImprimir(res){
   w.document.close(); w.focus(); w.print();
 }
 
+// setor "acougue" é renderizado à parte (pcpAcougueHtml), já com a cobertura de múltiplos dias — aqui só
+// entram as bancadas do dia a dia (cozinha/saladas/sobremesas).
 function pcpRequisicaoHtml(res){
-  if(!res.porSetor.length) return `<p class="footnote">Nada a requisitar neste dia.</p>`;
-  return res.porSetor.map(s => `<div class="panel" style="margin-bottom:14px;">
+  const setores = res.porSetor.filter(s => s.setor !== "acougue");
+  if(!setores.length) return `<p class="footnote">Nada a requisitar neste dia.</p>`;
+  return setores.map(s => `<div class="panel" style="margin-bottom:14px;">
     <div class="panel-head"><h3>${escapeHtml(s.label)}</h3><span class="hint">${s.itens.length} item${s.itens.length===1?"":"s"}</span></div>
     <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Insumo</th><th style="text-align:right;">Quantidade</th></tr></thead><tbody>
       ${s.itens.map(it => `<tr><td class="name-cell">${escapeHtml(it.nome)}</td><td class="num-cell">${fmtNum(it.kg,3)} ${escapeHtml(it.unidade)}</td></tr>`).join("")}
     </tbody></table></div></div>
   </div>`).join("");
+}
+
+// Açougue: total combinado (o que cortar HOJE pra cobrir todos os dias sem operação logo em seguida) +
+// a quebra por dia, pra rastrear pra qual dia cada quantidade é.
+function pcpAcougueHtml(cobertura){
+  if(!cobertura.diasCobertos.length){
+    return `<p class="footnote">Açougue não opera hoje — a proteína deste dia precisa ter saído num dia anterior de operação.</p>`;
+  }
+  const rotulo = cobertura.diasCobertos.map(d => DIA_LABEL[d]).join(" + ");
+  return `<div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head"><h3>Açougue</h3><span class="hint">corte de hoje — cobre ${escapeHtml(rotulo)}</span></div>
+    <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Insumo</th><th style="text-align:right;">Quantidade total</th></tr></thead><tbody>
+      ${cobertura.itensTotal.length ? cobertura.itensTotal.map(it => `<tr><td class="name-cell">${escapeHtml(it.nome)}</td><td class="num-cell">${fmtNum(it.kg,3)} ${escapeHtml(it.unidade)}</td></tr>`).join("") : `<tr><td colspan="2" class="footnote">Nada a cortar neste dia.</td></tr>`}
+    </tbody></table></div>
+    ${cobertura.diasCobertos.length > 1 ? `<div class="footnote" style="margin-top:10px;">Quebra por dia: ${cobertura.porDia.map(pd => `<strong>${escapeHtml(DIA_LABEL[pd.dia])}</strong> (${pd.itens.length} item${pd.itens.length===1?"":"s"})`).join(" · ")}</div>` : ""}
+    </div>
+  </div>`;
 }
 
 function pcpAbrirConfigAcougue(){
@@ -10449,6 +10492,7 @@ function renderPCP(){
   const unidadeFiltro = pcpUnidadeSel === "todos" ? null : pcpUnidadeSel;
   const res = ehRequisicao ? null : pcpCalcularDia(pcpSemanaSel, pcpDiaSel, unidadeFiltro);
   const resReq = ehRequisicao ? pcpCalcularRequisicaoDia(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
+  const acougueCobertura = ehRequisicao ? pcpCalcularAcougueComCobertura(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
   const content = document.getElementById("content");
   content.innerHTML = `
     <div class="seg-toggle" id="pcp-subview-tabs" style="margin-bottom:14px; width:fit-content;">
@@ -10462,7 +10506,7 @@ function renderPCP(){
       <div class="seg-toggle" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" data-pcpdia="${d}" class="${pcpDiaSel===d?"active":""}">${DIA_LABEL[d].slice(0,3)}</button>`).join("")}</div>
     </div>
     ${ehRequisicao ? `
-      ${!pcpAcgDias().includes(pcpDiaSel) ? `<div style="margin-bottom:14px;">${pcpAvisoChip({tipo:"warn", txt:`O açougue não opera em ${DIA_LABEL[pcpDiaSel]} — essa proteína precisa ter saído num dia anterior de operação.`})}</div>` : ""}
+      ${pcpAcougueHtml(acougueCobertura)}
       ${pcpRequisicaoHtml(resReq)}
     ` : `
       <div class="kpi-row" style="display:flex; gap:14px; margin-bottom:16px; flex-wrap:wrap;">
