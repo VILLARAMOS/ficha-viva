@@ -10142,14 +10142,87 @@ function pcpItemProducao(it, numPessoas){
   return null;
 }
 
+// ---------- Fase 3: Substituições (ad-hoc, lançada no dia, confirmado com o Marcelo em 13/10/2026) ----------
+// N pessoas de um contrato recebem outra ficha (omelete, ovos mexidos, prato fit...) no lugar da
+// proteína do cardápio naquele dia — reduz o efetivo usado SÓ pro grupo PROTEÍNA (guarnição/base/salada
+// continuam com o headcount cheio, a troca é só do prato principal) e soma a ficha substituta como
+// receita extra. Desvio proposital do padrão antigo do Excel (4 categorias fixas): aqui aponta pra
+// qualquer ficha real, porque o cadastro já tem várias variantes (6 PRATO FIT, várias FILÉ DE FRANGO).
+// Cache por DIA (não só o dia selecionado) porque a cobertura do açougue (pcpCalcularAcougueComCobertura)
+// chama a Requisição de outros dias da mesma semana internamente — se só carregasse o dia selecionado,
+// aplicaria a substituição errada nos dias cobertos.
+let pcpSubstituicoesCache = new Map(); // dia -> Map(contratoId -> [{id, fichaId, pessoas}])
+async function pcpCarregarSubstituicoes(semana, unidade){
+  pcpSubstituicoesCache = new Map();
+  let q = sb.from('pcp_substituicoes').select('*').eq('semana', semana);
+  if(unidade && unidade !== "todos") q = q.eq('unidade', unidade);
+  const { data, error } = await q;
+  if(error){ showAlert("Erro ao carregar substituições: " + error.message); return; }
+  (data || []).forEach(row => {
+    const porDia = pcpSubstituicoesCache.get(row.dia) || new Map();
+    const lista = porDia.get(row.contrato_id) || [];
+    lista.push({ id: row.id, fichaId: row.ficha_id, pessoas: Number(row.quantidade_pessoas) });
+    porDia.set(row.contrato_id, lista);
+    pcpSubstituicoesCache.set(row.dia, porDia);
+  });
+}
+function pcpListaSubstituicoes(dia, contratoId){
+  const porDia = pcpSubstituicoesCache.get(dia);
+  return porDia ? (porDia.get(contratoId) || []) : [];
+}
+function pcpPessoasSubstituidas(dia, contratoId){
+  return pcpListaSubstituicoes(dia, contratoId).reduce((s,x) => s + x.pessoas, 0);
+}
+// gramagem por pessoa da ficha substituta: rendimento_kg / rendimento_und (mesma régua de "quanto cada
+// unidade pesa" do resto do sistema). Sem rendimento_und cadastrado não dá pra converter pessoas→kg.
+function pcpGramagemSubstituicao(ficha){
+  if(!ficha || !ficha.rendimento_und || !ficha.rendimento_kg) return null;
+  return ficha.rendimento_kg / ficha.rendimento_und;
+}
+// soma as substituições do contrato no MESMO mapa `receitas` das receitas normais do cardápio — assim
+// Produção/Volume por cliente mostram a ficha substituta sem nenhum código extra de exibição.
+function pcpAplicarSubstituicoesReceitas(dia, contratoId, nomeCliente, receitas, avisos){
+  pcpListaSubstituicoes(dia, contratoId).forEach(s => {
+    const f = fichas.get(s.fichaId);
+    const gramagem = pcpGramagemSubstituicao(f);
+    if(gramagem == null){
+      avisos.push({ tipo: "warn", txt: `${nomeCliente}: substituição por "${f ? f.nome : s.fichaId}" não tem rendimento (kg/un) cadastrado — não entrou na produção.` });
+      return;
+    }
+    const kg = gramagem * s.pessoas;
+    const chave = contratoId + "|subst";
+    const R = receitas.get(s.fichaId) || { fichaId: s.fichaId, nome: f ? f.nome : s.fichaId, grupo: pcpGrupoFicha(f), total: 0, porCliente: new Map() };
+    R.total += kg;
+    const pc = R.porCliente.get(chave) || { contratoId, nome: nomeCliente, produtoId: null, qtd: 0, pessoas: 0 };
+    pc.qtd += kg; pc.pessoas += s.pessoas;
+    R.porCliente.set(chave, pc);
+    receitas.set(s.fichaId, R);
+  });
+}
+// mesma ideia, explodindo em insumo pra Requisição — substituição é sempre preparada na cozinha (nunca
+// vai pro açougue nem pras bancadas de salada/sobremesa).
+function pcpAplicarSubstituicoesInsumos(dia, contratoId, buckets){
+  pcpListaSubstituicoes(dia, contratoId).forEach(s => {
+    const f = fichas.get(s.fichaId);
+    const gramagem = pcpGramagemSubstituicao(f);
+    if(gramagem == null) return; // já avisado em pcpAplicarSubstituicoesReceitas
+    const porInsumo = insumosParaKgNecessario(s.fichaId, gramagem * s.pessoas);
+    const mapa = buckets.get("cozinha") || new Map();
+    porInsumo.forEach((kg, insumoId) => mapa.set(insumoId, (mapa.get(insumoId) || 0) + kg));
+    buckets.set("cozinha", mapa);
+  });
+}
+
 // explode um dia de cardápio (dayDoc.itens) pra um cliente/produto, acumulando em `receitas` (por ficha) e
 // `diretos` (insumo lançado direto no cardápio, sem ficha — ex. descartável) — com detalhe por cliente
-// (pra "Volume por cliente"/etiqueta de cuba). Retorna true se achou pelo menos 1 item com gramagem.
-function pcpAcumularDia(dayDoc, numPessoas, contratoId, nomeCliente, produtoId, receitas, diretos){
+// (pra "Volume por cliente"/etiqueta de cuba). `pessoasSubstituidas` reduz o efetivo só do grupo PROTEÍNA
+// (ver bloco de Substituições acima). Retorna true se achou pelo menos 1 item com gramagem.
+function pcpAcumularDia(dayDoc, numPessoas, contratoId, nomeCliente, produtoId, receitas, diretos, pessoasSubstituidas){
   if(!dayDoc) return false;
   let achouAlgo = false;
   (dayDoc.itens || []).forEach(it => {
-    const r = pcpItemProducao(it, numPessoas);
+    const pessoasEf = (pessoasSubstituidas > 0 && categoriaBase(it.categoria) === "Proteína") ? Math.max(0, numPessoas - pessoasSubstituidas) : numPessoas;
+    const r = pcpItemProducao(it, pessoasEf);
     if(!r) return;
     achouAlgo = true;
     const chave = contratoId + "|" + produtoId;
@@ -10158,7 +10231,7 @@ function pcpAcumularDia(dayDoc, numPessoas, contratoId, nomeCliente, produtoId, 
       const R = receitas.get(r.fichaId) || { fichaId: r.fichaId, nome: f ? f.nome : (it.nome || r.fichaId), grupo: pcpGrupoFicha(f), total: 0, porCliente: new Map() };
       R.total += r.qtd;
       const pc = R.porCliente.get(chave) || { contratoId, nome: nomeCliente, produtoId, qtd: 0, pessoas: 0 };
-      pc.qtd += r.qtd; pc.pessoas += numPessoas;
+      pc.qtd += r.qtd; pc.pessoas += pessoasEf;
       R.porCliente.set(chave, pc);
       receitas.set(r.fichaId, R);
     } else if(r.insumoId){
@@ -10195,7 +10268,7 @@ function pcpResolveRowProducao(almocoIdx, cat, contrato, semana, dia, quantidade
   }
   return { row, qtdEf };
 }
-function pcpProducaoUnidadeItem(almocoIdx, produtoId, contrato, contratoId, nomeCliente, semana, dia, quantidade, receitas, diretos, avisos){
+function pcpProducaoUnidadeItem(almocoIdx, produtoId, contrato, contratoId, nomeCliente, semana, dia, quantidade, receitas, diretos, avisos, pessoasSubstituidas){
   const cat = catalogoPorProduto(produtoId);
   if(!cat || !PCP_TIPOS_PRODUCAO.has(cat.tipo_custo) || !quantidade) return;
   const { row, qtdEf } = pcpResolveRowProducao(almocoIdx, cat, contrato, semana, dia, quantidade);
@@ -10203,7 +10276,7 @@ function pcpProducaoUnidadeItem(almocoIdx, produtoId, contrato, contratoId, nome
     avisos.push({ tipo: "critical", txt: `${nomeCliente}: ${fmtNum(quantidade,0)} ${cat.nome} previstos, mas o contrato não tem o cardápio desse grupo montado neste dia — nada entra na produção.` });
     return;
   }
-  const achou = pcpAcumularDia(row, qtdEf, contratoId, nomeCliente, produtoId, receitas, diretos);
+  const achou = pcpAcumularDia(row, qtdEf, contratoId, nomeCliente, produtoId, receitas, diretos, pessoasSubstituidas);
   if(!achou) avisos.push({ tipo: "warn", txt: `${nomeCliente}: o cardápio de ${cat.nome} não tem nenhum item com gramagem neste dia — nada entra na produção.` });
 }
 
@@ -10220,17 +10293,21 @@ function pcpCalcularDia(semana, dia, unidadeFiltro){
     .filter(([, ct]) => contratoVigenteNoDia(ct, semana, dia))
     .sort((a, b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)))
     .forEach(([contratoId, ct]) => {
+      const pessoasSubst = pcpPessoasSubstituidas(dia, contratoId);
+      let teveItem = false;
       itensDoContratoVenda(contratoId).forEach(ci => {
         const cat = catalogoPorProduto(ci.produto_id);
         if(!cat || !PCP_TIPOS_PRODUCAO.has(cat.tipo_custo)) return;
         const qtd = quantidadePrevista(contratoId, ci.produto_id, dia, semana);
         if(!(qtd > 0)) return;
+        teveItem = true;
         const cli = clientes.get(contratoId) || { id: contratoId, nome: ct.nome_cliente, unidade: ct.unidade, pessoas: 0, produtos: new Set() };
         cli.pessoas += qtd; cli.produtos.add(cat.nome);
         clientes.set(contratoId, cli);
         pessoasTot += qtd;
-        pcpProducaoUnidadeItem(almocoIdx, ci.produto_id, ct, contratoId, ct.nome_cliente, semana, dia, qtd, receitas, diretos, avisos);
+        pcpProducaoUnidadeItem(almocoIdx, ci.produto_id, ct, contratoId, ct.nome_cliente, semana, dia, qtd, receitas, diretos, avisos, pessoasSubst);
       });
+      if(teveItem) pcpAplicarSubstituicoesReceitas(dia, contratoId, ct.nome_cliente, receitas, avisos);
     });
 
   const lista = [...receitas.values()].sort((a, b) => pcpOrdemGrupo(a.grupo) - pcpOrdemGrupo(b.grupo) || b.total - a.total);
@@ -10244,10 +10321,11 @@ function pcpCalcularDia(semana, dia, unidadeFiltro){
 // único. Suco fica fora (preparado na unidade do cliente — confirmado 12/10/2026). Proteína em natura
 // (pcpAcougueSet) sai da bancada "cozinha" e vai pro bucket "acougue": quem prepara é o açougue, não a
 // cozinha, então essa requisição é separada da requisição de estoque normal.
-function pcpAcumularInsumosDia(dayDoc, numPessoas, acougueSet, buckets){
+function pcpAcumularInsumosDia(dayDoc, numPessoas, acougueSet, buckets, pessoasSubstituidas){
   if(!dayDoc) return;
   (dayDoc.itens || []).forEach(it => {
-    const r = pcpItemProducao(it, numPessoas);
+    const pessoasEf = (pessoasSubstituidas > 0 && categoriaBase(it.categoria) === "Proteína") ? Math.max(0, numPessoas - pessoasSubstituidas) : numPessoas;
+    const r = pcpItemProducao(it, pessoasEf);
     if(!r) return;
     let setor, porInsumo;
     if(r.fichaId){
@@ -10282,6 +10360,8 @@ function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro){
     .filter(([, ct]) => !unidadeFiltro || unidadeFiltro === "todos" || ct.unidade === unidadeFiltro)
     .filter(([, ct]) => contratoVigenteNoDia(ct, semana, dia))
     .forEach(([contratoId, ct]) => {
+      const pessoasSubst = pcpPessoasSubstituidas(dia, contratoId);
+      let teveItem = false;
       itensDoContratoVenda(contratoId).forEach(ci => {
         const cat = catalogoPorProduto(ci.produto_id);
         if(!cat || !PCP_TIPOS_PRODUCAO.has(cat.tipo_custo)) return;
@@ -10289,8 +10369,10 @@ function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro){
         if(!(qtd > 0)) return;
         const { row, qtdEf } = pcpResolveRowProducao(almocoIdx, cat, ct, semana, dia, qtd);
         if(!row) return;
-        pcpAcumularInsumosDia(row, qtdEf, acougueSet, buckets);
+        teveItem = true;
+        pcpAcumularInsumosDia(row, qtdEf, acougueSet, buckets, pessoasSubst);
       });
+      if(teveItem) pcpAplicarSubstituicoesInsumos(dia, contratoId, buckets);
     });
 
   const SETOR_LABEL = { cozinha: "Cozinha", saladas: "Saladas", sobremesas: "Sobremesas", acougue: "Açougue" };
@@ -10474,7 +10556,7 @@ async function pcpCarregarConferencia(semana, dia, unidade){
 }
 // mesma fonte de res.receitas/res.diretos que pcpVolumeHtml usa — garante que a conferência mostra
 // exatamente os mesmos itens/quantidades que a tela de Volume por cliente já valida.
-function pcpConferenciaLinhas(res){
+function pcpConferenciaLinhas(res, dia){
   if(!res.clientes.length) return [];
   return res.clientes.map(cli => {
     const itens = [];
@@ -10487,8 +10569,30 @@ function pcpConferenciaLinhas(res){
       it.expedicaoOk = salvo ? !!salvo.expedicao_ok : false;
       it.observacao = salvo ? (salvo.observacao || "") : "";
     });
-    return { cliente: cli, itens };
-  }).filter(c => c.itens.length);
+    const substituicoes = pcpListaSubstituicoes(dia, cli.id).map(s => {
+      const f = fichas.get(s.fichaId);
+      return { id: s.id, fichaNome: f ? f.nome : s.fichaId, pessoas: s.pessoas };
+    });
+    return { cliente: cli, itens, substituicoes };
+  }).filter(c => c.itens.length || c.substituicoes.length);
+}
+// fichas que fazem sentido como substituição de proteína — mesmo grupo das receitas normais de PROTEÍNA
+// mais EXTRA (onde ficam os "PRATO FIT 1..6" do cadastro real).
+function pcpFichasSubstituiveis(){
+  return [...fichas.entries()].filter(([, f]) => f.grupo === "PROTEÍNA" || f.grupo === "EXTRA")
+    .map(([id, f]) => ({ id, nome: f.nome }))
+    .sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR'));
+}
+async function pcpSalvarSubstituicao(semana, dia, unidade, contratoId, fichaId, pessoas){
+  const row = { semana, dia, unidade, contrato_id: contratoId, ficha_id: fichaId, quantidade_pessoas: pessoas, alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
+  const { error } = await sb.from('pcp_substituicoes').upsert(row, { onConflict: 'semana,dia,unidade,contrato_id,ficha_id' });
+  if(error){ showAlert("Erro ao salvar substituição: " + error.message); return false; }
+  return true;
+}
+async function pcpRemoverSubstituicao(id){
+  const { error } = await sb.from('pcp_substituicoes').delete().eq('id', id);
+  if(error){ showAlert("Erro ao remover substituição: " + error.message); return false; }
+  return true;
 }
 async function pcpSalvarConferenciaCampo(semana, dia, unidade, contratoId, chave, nomeItem, qtdPrevista, campo, valor){
   const atual = pcpConferenciaCache.get(contratoId + "|" + chave) || {};
@@ -10509,9 +10613,11 @@ async function pcpSalvarConferenciaCampo(semana, dia, unidade, contratoId, chave
 }
 function pcpConferenciaHtml(linhas){
   if(!linhas.length) return `<div class="empty-state">Nenhum cliente com produção prevista para este dia.</div>`;
-  return linhas.map(({cliente, itens}) => `<div class="panel" style="margin-bottom:14px;">
+  const fichasSubst = pcpFichasSubstituiveis();
+  const opcoesFicha = fichasSubst.map(f => `<option value="${f.id}">${escapeHtml(f.nome)}</option>`).join("");
+  return linhas.map(({cliente, itens, substituicoes}) => `<div class="panel" style="margin-bottom:14px;">
     <div class="panel-head"><h3>${escapeHtml(cliente.nome)}</h3><span class="hint">${fmtNum(cliente.pessoas,0)} pessoas</span></div>
-    <div class="panel-body"><div class="table-wrap"><table>
+    ${itens.length ? `<div class="panel-body"><div class="table-wrap"><table>
       <thead><tr><th>Item</th><th style="text-align:right;">Previsto</th><th style="text-align:right;">Enviado</th><th style="text-align:center;">Cozinha</th><th style="text-align:center;">Expedição</th><th>Observação</th></tr></thead>
       <tbody>${itens.map(it => `
         <tr data-conf-contrato="${cliente.id}" data-conf-chave="${escapeHtml(it.chave)}" data-conf-nome="${escapeHtml(it.nome)}" data-conf-prev="${it.qtdPrevista ?? ""}">
@@ -10523,7 +10629,19 @@ function pcpConferenciaHtml(linhas){
           <td><input type="text" class="conf-obs" style="width:100%;" value="${escapeHtml(it.observacao||"")}" placeholder="—"></td>
         </tr>`).join("")}
       </tbody>
-    </table></div></div>
+    </table></div></div>` : ""}
+    <div style="padding:12px 20px; border-top:1px solid var(--border);" data-subst-row="${cliente.id}">
+      <div class="footnote" style="margin-bottom:6px;"><strong>Substituições</strong></div>
+      ${substituicoes.length ? substituicoes.map(s => `<div style="display:flex; align-items:center; gap:8px; margin-bottom:4px;">
+        <span class="chip neutral">${fmtNum(s.pessoas,0)}× ${escapeHtml(s.fichaNome)}</span>
+        <button type="button" class="btn small ghost" data-subst-remover="${s.id}">Remover</button>
+      </div>`).join("") : `<div class="footnote" style="margin-bottom:6px;">Nenhuma substituição lançada.</div>`}
+      <div style="display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap;">
+        <select class="subst-ficha" style="flex:1; min-width:160px;">${opcoesFicha}</select>
+        <input type="number" class="subst-pessoas" min="1" step="1" placeholder="pessoas" style="width:90px;">
+        <button type="button" class="btn small primary" data-subst-add="${cliente.id}">Adicionar</button>
+      </div>
+    </div>
   </div>`).join("");
 }
 
@@ -10593,13 +10711,16 @@ async function renderPCP(){
     </div>`;
 
   const unidadeFiltro = pcpUnidadeSel === "todos" ? null : pcpUnidadeSel;
+  // precisa carregar a semana INTEIRA (não só o dia selecionado) porque a cobertura do açougue chama a
+  // Requisição de outros dias internamente — ver comentário em pcpSubstituicoesCache.
+  await pcpCarregarSubstituicoes(pcpSemanaSel, unidadeFiltro);
   const res = ehRequisicao ? null : pcpCalcularDia(pcpSemanaSel, pcpDiaSel, unidadeFiltro);
   const resReq = ehRequisicao ? pcpCalcularRequisicaoDia(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
   const acougueCobertura = ehRequisicao ? pcpCalcularAcougueComCobertura(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
   let confLinhas = null;
   if(ehConferencia && unidadeFiltro){
     await pcpCarregarConferencia(pcpSemanaSel, pcpDiaSel, unidadeFiltro);
-    confLinhas = pcpConferenciaLinhas(res);
+    confLinhas = pcpConferenciaLinhas(res, pcpDiaSel);
   }
   const content = document.getElementById("content");
   content.innerHTML = `
@@ -10657,6 +10778,23 @@ async function renderPCP(){
       else if(e.target.classList.contains("conf-obs")){ campo = "observacao"; valor = e.target.value || null; }
       else return;
       await pcpSalvarConferenciaCampo(pcpSemanaSel, pcpDiaSel, unidadeFiltro, contratoId, chave, nomeItem, qtdPrevista, campo, valor);
+    });
+    if(wrap) wrap.addEventListener("click", async e => {
+      const btnAdd = e.target.closest("button[data-subst-add]");
+      if(btnAdd){
+        const row = btnAdd.closest("[data-subst-row]");
+        const fichaId = row.querySelector(".subst-ficha").value;
+        const pessoas = parseFloat(row.querySelector(".subst-pessoas").value);
+        if(!fichaId || !(pessoas > 0)){ showAlert("Escolha a ficha substituta e informe quantas pessoas (maior que zero)."); return; }
+        const ok = await pcpSalvarSubstituicao(pcpSemanaSel, pcpDiaSel, unidadeFiltro, btnAdd.dataset.substAdd, fichaId, pessoas);
+        if(ok) renderPCP();
+        return;
+      }
+      const btnDel = e.target.closest("button[data-subst-remover]");
+      if(btnDel){
+        const ok = await pcpRemoverSubstituicao(btnDel.dataset.substRemover);
+        if(ok) renderPCP();
+      }
     });
   } else {
     document.getElementById("pcp-margem-salvar").addEventListener("click", async () => {
