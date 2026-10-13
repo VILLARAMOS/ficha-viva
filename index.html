@@ -11306,9 +11306,389 @@ function pcpAbrirConfigAcougue(){
   });
 }
 
+/* =========================================================================================
+   Café / Padaria terceirizado — sub-aba própria dentro de PCP.
+   Pedido a padarias externas (Santo Pão, Pão Assado — cadastradas em `fornecedores`, departamento
+   PADARIA), por cliente. Fora da produção da cozinha: não entra em receitas, kg nem CMV do cardápio.
+   Tabelas: cafe_padaria_itens (padrão por cliente x produto) e cafe_padaria_pedido_dia (confirmação
+   do dia: hóspedes previstos pra per cápita, e exceções de valor do dia).
+   ========================================================================================= */
+let cafePadariaItens = new Map();        // contrato_id -> [{id, produto, insumo_id, fornecedor_id, grupo, valor_padrao, valor_unitario, fator_per_capita, ordem, ativo}]
+let cafePadariaPedidoDiaCache = new Map(); // contrato_id -> row do dia carregado (ou ausente)
+let cafePadariaDataCarregada = null;
+async function pcpCarregarCafePadaria(ymd){
+  if(cafePadariaDataCarregada === ymd) return;
+  const [itensRes, pedidosRes] = await Promise.all([
+    sb.from('cafe_padaria_itens').select('*').eq('ativo', true).order('ordem'),
+    sb.from('cafe_padaria_pedido_dia').select('*').eq('data', ymd)
+  ]);
+  if(itensRes.error){ showAlert("Erro ao carregar café/padaria: " + itensRes.error.message); return; }
+  if(pedidosRes.error){ showAlert("Erro ao carregar pedido do dia de café/padaria: " + pedidosRes.error.message); return; }
+  const porCliente = new Map();
+  (itensRes.data || []).forEach(row => { const a = porCliente.get(row.contrato_id) || []; a.push(row); porCliente.set(row.contrato_id, a); });
+  cafePadariaItens = porCliente;
+  cafePadariaPedidoDiaCache = new Map((pedidosRes.data || []).map(r => [r.contrato_id, r]));
+  cafePadariaDataCarregada = ymd;
+}
+function pcpCafeFornecedores(){
+  return [...fornecedores.entries()].filter(([, f]) => Array.isArray(f.departamentos) && f.departamentos.includes("PADARIA") && f.ativo !== false)
+    .map(([id, f]) => ({id, nome: f.nome})).sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR'));
+}
+function pcpCafeClientesUnidade(unidadeFiltro){
+  return [...cafePadariaItens.keys()]
+    .map(id => ({id, ...(contratos.get(id) || {})}))
+    .filter(c => c.nome_cliente && (!unidadeFiltro || c.unidade === unidadeFiltro))
+    .sort((a,b) => normalizeText(a.nome_cliente).localeCompare(normalizeText(b.nome_cliente)));
+}
+function pcpCafeCandidatos(unidadeFiltro){
+  const jaTem = new Set(cafePadariaItens.keys());
+  return [...contratos.entries()]
+    .filter(([id, c]) => c.ativo !== false && !jaTem.has(id) && (!unidadeFiltro || c.unidade === unidadeFiltro))
+    .map(([id, c]) => ({id, nome: c.nome_cliente}))
+    .sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
+}
+// valor efetivo do dia pra um item: exceção lançada hoje > per cápita calculado > padrão
+function pcpCafeValorEfetivo(item, pedidoRow, hospedes){
+  if(item.grupo === "per_capita"){
+    if(hospedes === null || hospedes === undefined || hospedes === "") return {valor: null, origem: "sem_hospedes"};
+    return {valor: Math.round(hospedes * (item.fator_per_capita || 0) * 100) / 100, origem: "per_capita"};
+  }
+  const overrides = (pedidoRow && Array.isArray(pedidoRow.itens)) ? pedidoRow.itens : [];
+  const ov = overrides.find(o => o.item_id === item.id);
+  if(ov) return {valor: ov.valor, origem: "excecao"};
+  return {valor: item.valor_padrao ?? null, origem: "padrao"};
+}
+async function pcpCafeSalvarPedidoDia(contratoId, ymd, patch){
+  const atual = cafePadariaPedidoDiaCache.get(contratoId) || {};
+  const row = {
+    contrato_id: contratoId, data: ymd,
+    hospedes_previstos: patch.hospedes_previstos !== undefined ? patch.hospedes_previstos : (atual.hospedes_previstos ?? null),
+    itens: patch.itens !== undefined ? patch.itens : (atual.itens || []),
+    confirmado: patch.confirmado !== undefined ? patch.confirmado : !!atual.confirmado,
+    confirmado_em: patch.confirmado === true ? new Date().toISOString() : (patch.confirmado === false ? null : (atual.confirmado_em || null)),
+    confirmado_por: patch.confirmado === true ? (usuarioId || null) : (patch.confirmado === false ? null : (atual.confirmado_por || null)),
+    alterado_em: new Date().toISOString(), alterado_por: usuarioId || null
+  };
+  const { data, error } = await sb.from('cafe_padaria_pedido_dia').upsert(row, {onConflict: 'contrato_id,data'}).select().single();
+  if(error){ showAlert("Erro ao salvar pedido de café/padaria: " + error.message); return false; }
+  cafePadariaPedidoDiaCache.set(contratoId, data);
+  return true;
+}
+async function pcpCafeSalvarValorItem(contratoId, itemId, valorStr, ymd){
+  const item = (cafePadariaItens.get(contratoId) || []).find(i => i.id === itemId);
+  if(!item) return false;
+  const valor = valorStr === "" ? null : parseFloat(valorStr);
+  if(valor !== null && !isFinite(valor)) return false;
+  if(item.grupo === "fixo" && valor !== null && valor !== item.valor_padrao){
+    const ok = await confirmDialog(`"${item.produto}" é um item fixo (padrão ${fmtNum(item.valor_padrao,0)}). Confirma mudar para ${fmtNum(valor,0)} só hoje?`);
+    if(!ok) return false;
+  }
+  const atual = cafePadariaPedidoDiaCache.get(contratoId);
+  const semEsse = ((atual && atual.itens) || []).filter(o => o.item_id !== itemId);
+  const itens = (valor !== null && valor !== item.valor_padrao) ? [...semEsse, {item_id: itemId, valor}] : semEsse;
+  return pcpCafeSalvarPedidoDia(contratoId, ymd, {itens});
+}
+async function pcpCafeSalvarItem(payload){
+  const row = {...payload, alterado_em: new Date().toISOString(), alterado_por: usuarioId || null};
+  const { id, ...semId } = row;
+  const { data, error } = id
+    ? await sb.from('cafe_padaria_itens').update(semId).eq('id', id).select().single()
+    : await sb.from('cafe_padaria_itens').insert(semId).select().single();
+  if(error){ showAlert("Erro ao salvar produto de café/padaria: " + error.message); return null; }
+  return data;
+}
+async function pcpCafeRemoverItem(id){
+  const { error } = await sb.from('cafe_padaria_itens').update({ativo: false, alterado_em: new Date().toISOString(), alterado_por: usuarioId || null}).eq('id', id);
+  if(error){ showAlert("Erro ao remover produto: " + error.message); return false; }
+  return true;
+}
+async function pcpCafeRemoverCliente(contratoId){
+  const ok = await confirmDialog("Remover todos os produtos de café/padaria deste cliente? O histórico de pedidos já gerados não é apagado.");
+  if(!ok) return false;
+  const itens = cafePadariaItens.get(contratoId) || [];
+  for(const it of itens){ await pcpCafeRemoverItem(it.id); }
+  return true;
+}
+function pcpCafeGrupoLabel(g){ return {fixo:"Fixo", variavel:"Variável", per_capita:"Per cápita", servico:"Serviço"}[g] || g; }
+function pcpCafeHtml(unidadeFiltro, ymd, diaLabel){
+  const fornecedoresPad = pcpCafeFornecedores();
+  const insumosPadaria = [...insumos.entries()].filter(([,i]) => i.grupo_compra === "PADARIA").map(([,i]) => i.nome).sort((a,b) => a.localeCompare(b,'pt-BR'));
+  const dlProdutos = `<datalist id="cafe-produtos-dl">${insumosPadaria.map(n => `<option value="${escapeHtml(n)}">`).join("")}</datalist>`;
+  const clientes = pcpCafeClientesUnidade(unidadeFiltro);
+  const candidatos = pcpCafeCandidatos(unidadeFiltro);
+  const blocoNovo = `<div class="panel" style="margin-bottom:14px;"><div class="panel-body">
+    <div class="footnote" style="margin-bottom:8px;">Incluir cliente novo no controle de café/padaria${unidadeFiltro ? " ("+nomeUnidadeCompra(unidadeFiltro)+")" : ""}:</div>
+    ${candidatos.length ? `<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <select id="cafe-novo-cliente" style="min-width:220px;"><option value="">— escolha o cliente —</option>${candidatos.map(c => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join("")}</select>
+      <select id="cafe-novo-fornecedor">${fornecedoresPad.map(f => `<option value="${f.id}">${escapeHtml(f.nome)}</option>`).join("")}</select>
+      <button type="button" class="btn small primary" id="cafe-novo-add">+ Adicionar</button>
+    </div>` : `<div class="footnote" style="margin:0;">${fornecedoresPad.length ? "Todos os clientes ativos"+(unidadeFiltro?" desta unidade":"")+" já estão cadastrados aqui." : "Nenhuma padaria cadastrada em Fornecedores com o departamento PADARIA ainda."}</div>`}
+  </div></div>`;
+  if(!clientes.length) return dlProdutos + blocoNovo + `<div class="panel"><div class="empty-state">Nenhum cliente de café/padaria cadastrado ainda${unidadeFiltro ? " nesta unidade" : ""}.</div></div>`;
+
+  const cards = clientes.map(cli => {
+    const itens = (cafePadariaItens.get(cli.id) || []).slice().sort((a,b) => a.ordem - b.ordem);
+    const pedidoRow = cafePadariaPedidoDiaCache.get(cli.id);
+    const temPerCapita = itens.some(i => i.grupo === "per_capita");
+    const fornecedorIdPadrao = itens[0] ? itens[0].fornecedor_id : (fornecedoresPad[0] ? fornecedoresPad[0].id : "");
+    const linhas = itens.map(it => {
+      const ef = pcpCafeValorEfetivo(it, pedidoRow, pedidoRow ? pedidoRow.hospedes_previstos : null);
+      const badge = it.grupo === "servico" ? `<span class="chip neutral">Serviço</span>`
+        : it.grupo === "fixo" ? `<span class="chip neutral">Fixo</span>`
+        : it.grupo === "per_capita" ? `<span class="chip warn">Per cápita</span>`
+        : `<span class="chip ok">Variável</span>`;
+      return `<tr data-cafe-item="${it.id}" data-cafe-cliente="${cli.id}">
+        <td class="name-cell" style="font-size:12px;">${escapeHtml(it.produto)}${it.insumo_id ? "" : ` <span class="chip warn" title="Produto ainda não vinculado a um insumo cadastrado">sem insumo</span>`}</td>
+        <td class="num-cell">${it.valor_padrao != null ? fmtNum(it.valor_padrao,0) : "—"}</td>
+        <td><input type="number" min="0" step="1" class="cafe-valor" style="width:76px;" value="${ef.valor ?? ""}" placeholder="${it.grupo === "per_capita" ? "—" : "—"}" ${it.grupo === "per_capita" ? "disabled title=\"Calculado a partir dos hóspedes previstos\"" : ""}></td>
+        <td style="font-size:11px; white-space:nowrap;">${badge}${ef.origem === "excecao" ? ` <span class="chip warn">hoje</span>` : ""}</td>
+        <td><button type="button" class="btn small ghost" data-cafe-remover-item="${it.id}" title="Remover produto">×</button></td>
+      </tr>`;
+    }).join("");
+    return `<div class="panel cafe-card">
+      <div class="panel-head"><h3 style="font-size:14px;">${escapeHtml(cli.nome_cliente)}</h3>
+        <button type="button" class="btn small ghost" data-cafe-excluir-cliente="${cli.id}">Remover cliente</button></div>
+      <div class="panel-body" style="padding:10px 14px;">
+        ${temPerCapita ? `<div class="field" style="max-width:240px; margin-bottom:10px;"><label style="font-size:11px;">Hóspedes previstos (${escapeHtml(diaLabel)})</label><input type="number" min="0" step="1" class="cafe-hospedes" data-cafe-hosp="${cli.id}" value="${pedidoRow && pedidoRow.hospedes_previstos != null ? pedidoRow.hospedes_previstos : ""}" placeholder="informar à tarde"></div>` : ""}
+        <div class="table-wrap"><table style="font-size:12px;"><thead><tr><th>Produto</th><th class="num-cell">Padrão</th><th>Pedido hoje</th><th>Grupo</th><th></th></tr></thead><tbody>${linhas}</tbody></table></div>
+        <div style="display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap;">
+          <button type="button" class="btn small ghost" data-cafe-add-produto="${cli.id}" data-cafe-fornecedor-padrao="${fornecedorIdPadrao}">+ Produto</button>
+          <button type="button" class="btn small ${pedidoRow && pedidoRow.confirmado ? "" : "primary"}" data-cafe-confirmar="${cli.id}">${pedidoRow && pedidoRow.confirmado ? "✓ Confirmado — reabrir" : "Confirmar pedido do dia"}</button>
+          ${pedidoRow && pedidoRow.confirmado ? `<span class="chip ok">confirmado</span>` : `<span class="chip warn">pendente</span>`}
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+
+  const porFornecedor = fornecedoresPad.map(f => {
+    const temCliente = clientes.some(c => (cafePadariaItens.get(c.id) || []).some(i => i.fornecedor_id === f.id));
+    if(!temCliente) return "";
+    return `<button type="button" class="btn small" data-cafe-texto="${f.id}">Gerar texto — ${escapeHtml(f.nome)}</button>
+      <button type="button" class="btn small primary" data-cafe-gerar-pedido="${f.id}" title="Cria/atualiza o pedido de compra — usa só os clientes já confirmados hoje">Gerar pedido — ${escapeHtml(f.nome)}</button>`;
+  }).join(" ");
+
+  return `
+    ${dlProdutos}
+    <div class="panel" style="margin-bottom:14px;"><div class="panel-body"><div class="footnote" style="margin:0;">Pedido de <b>${escapeHtml(diaLabel)}, ${escapeHtml(fmtDataYMD(ymd))}</b>. O valor cobrado do cliente não muda aqui — só o que é pedido à padaria.</div></div></div>
+    ${blocoNovo}
+    <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:14px; margin-bottom:16px;">${cards}</div>
+    <div class="panel"><div class="panel-body">
+      <div class="footnote" style="margin-bottom:10px;">Gerar o texto pronto pra mandar no WhatsApp (todos os clientes dessa padaria, confirmados ou não) ou o pedido de compra que entra no Orçado × Comprado (só os já confirmados hoje):</div>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">${porFornecedor || `<span class="footnote">Cadastre um produto pra algum cliente pra liberar a geração de texto/pedido.</span>`}</div>
+      <div id="cafe-texto-saida" style="margin-top:12px;"></div>
+    </div></div>`;
+}
+function pcpCafeTextoPedido(fornecedorId, ymd, diaLabel){
+  const f = fornecedores.get(fornecedorId);
+  const clientes = [...contratos.entries()]
+    .filter(([id]) => (cafePadariaItens.get(id) || []).some(i => i.fornecedor_id === fornecedorId))
+    .map(([id, c]) => ({id, nome: c.nome_cliente}))
+    .sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
+  const blocos = clientes.map(cli => {
+    const itens = (cafePadariaItens.get(cli.id) || []).filter(i => i.fornecedor_id === fornecedorId);
+    const pedidoRow = cafePadariaPedidoDiaCache.get(cli.id);
+    const linhas = itens.map(it => {
+      const ef = pcpCafeValorEfetivo(it, pedidoRow, pedidoRow ? pedidoRow.hospedes_previstos : null);
+      if(ef.valor === null || ef.valor <= 0) return null;
+      return `${fmtNum(ef.valor,0)} ${it.produto}`;
+    }).filter(Boolean);
+    if(!linhas.length) return null;
+    return `📍 ${cli.nome}\n\n${linhas.join("\n")}`;
+  }).filter(Boolean);
+  return `${f ? f.nome : "Padaria"} — ${diaLabel}, ${fmtDataYMD(ymd)}\n\n${blocos.join("\n\n____________\n\n")}`;
+}
+function pcpCafeMontarPedidosDia(fornecedorId){
+  const porUnidade = new Map();
+  [...contratos.entries()].forEach(([contratoId, c]) => {
+    const itens = (cafePadariaItens.get(contratoId) || []).filter(i => i.fornecedor_id === fornecedorId);
+    if(!itens.length) return;
+    const unidade = c.unidade || "matriz";
+    if(!porUnidade.has(unidade)) porUnidade.set(unidade, {incluidos: [], fora: [], porInsumo: new Map(), servico: []});
+    const g = porUnidade.get(unidade);
+    const pedidoRow = cafePadariaPedidoDiaCache.get(contratoId);
+    if(!(pedidoRow && pedidoRow.confirmado)){ g.fora.push(c.nome_cliente); return; }
+    g.incluidos.push(c.nome_cliente);
+    itens.forEach(it => {
+      const ef = pcpCafeValorEfetivo(it, pedidoRow, pedidoRow.hospedes_previstos);
+      if(ef.valor === null || ef.valor <= 0) return;
+      if(it.grupo === "servico" || !it.insumo_id){
+        g.servico.push({nome: `${it.produto} — ${c.nome_cliente}`, quantidade: ef.valor, preco_unitario: it.valor_unitario || 0});
+      } else {
+        const cur = g.porInsumo.get(it.insumo_id) || {quantidade: 0, nome: it.produto};
+        cur.quantidade += ef.valor;
+        g.porInsumo.set(it.insumo_id, cur);
+      }
+    });
+  });
+  const saida = [];
+  for(const [unidade, g] of porUnidade.entries()){
+    if(!g.incluidos.length) continue;
+    const itens = [];
+    for(const [insumoId, v] of g.porInsumo.entries()){
+      const ins = insumos.get(insumoId);
+      const preco = ins ? (ins.custo_unitario || 0) : 0;
+      itens.push({insumo_id: insumoId, nome: ins ? ins.nome : v.nome, unidade: ins ? ins.unidade_medida : "", quantidade: v.quantidade, preco_unitario: preco, valor_total: Math.round(v.quantidade * preco * 100) / 100});
+    }
+    g.servico.forEach(s => itens.push({insumo_id: null, nome: s.nome, unidade: "UN", quantidade: s.quantidade, preco_unitario: s.preco_unitario, valor_total: Math.round(s.quantidade * s.preco_unitario * 100) / 100}));
+    const valor_total = Math.round(itens.reduce((s,it) => s + it.valor_total, 0) * 100) / 100;
+    saida.push({unidade, incluidos: g.incluidos, fora: g.fora, itens, valor_total});
+  }
+  return saida;
+}
+async function pcpCafeGerarPedido(fornecedorId, ymd, semana){
+  const grupos = pcpCafeMontarPedidosDia(fornecedorId);
+  if(!grupos.length){ showAlert("Nenhum cliente confirmado hoje para essa padaria ainda."); return null; }
+  const f = fornecedores.get(fornecedorId);
+  for(const g of grupos){
+    const { data: existentes, error: errSel } = await sb.from('pedidos').select('id')
+      .eq('origem_auto','cafe_padaria').eq('data_pedido', ymd).eq('unidade', g.unidade).eq('fornecedor_id', fornecedorId).limit(1);
+    if(errSel){ showAlert("Erro ao checar pedido existente: " + errSel.message); continue; }
+    const row = {
+      fornecedor: f ? f.nome : "", fornecedor_id: fornecedorId, data_pedido: ymd, unidade: g.unidade,
+      destino_rotulo: nomeUnidadeCompra(g.unidade), semana,
+      itens: g.itens, valor_total: g.valor_total,
+      observacoes: `Gerado automaticamente a partir da confirmação diária do café/padaria (${g.incluidos.join(", ")}).` + (g.fora.length ? ` Não incluído — ainda não confirmado: ${g.fora.join(", ")}.` : ""),
+      origem_auto: "cafe_padaria", alterado_em: new Date().toISOString(), alterado_por: usuarioId || null
+    };
+    const { error } = (existentes && existentes[0])
+      ? await sb.from('pedidos').update(row).eq('id', existentes[0].id)
+      : await sb.from('pedidos').insert(row);
+    if(error){ showAlert("Erro ao gravar pedido de " + nomeUnidadeCompra(g.unidade) + ": " + error.message); }
+  }
+  return grupos;
+}
+function pcpCafeBind(content, unidadeFiltro, ymd, diaLabel, semana){
+  content.querySelectorAll(".cafe-valor").forEach(inp => inp.addEventListener("change", async () => {
+    const tr = inp.closest("tr[data-cafe-item]");
+    const ok = await pcpCafeSalvarValorItem(tr.dataset.cafeCliente, tr.dataset.cafeItem, inp.value, ymd);
+    if(ok === false) renderPCP(); else renderPCP();
+  }));
+  content.querySelectorAll(".cafe-hospedes").forEach(inp => inp.addEventListener("change", async () => {
+    const v = inp.value === "" ? null : parseFloat(inp.value);
+    await pcpCafeSalvarPedidoDia(inp.dataset.cafeHosp, ymd, {hospedes_previstos: v});
+    renderPCP();
+  }));
+  content.querySelectorAll("[data-cafe-remover-item]").forEach(b => b.addEventListener("click", async () => {
+    const ok = await confirmDialog("Remover este produto do padrão do cliente?");
+    if(!ok) return;
+    if(await pcpCafeRemoverItem(b.dataset.cafeRemoverItem)) renderPCP();
+  }));
+  content.querySelectorAll("[data-cafe-excluir-cliente]").forEach(b => b.addEventListener("click", async () => {
+    if(await pcpCafeRemoverCliente(b.dataset.cafeExcluirCliente)) renderPCP();
+  }));
+  content.querySelectorAll("[data-cafe-confirmar]").forEach(b => b.addEventListener("click", async () => {
+    const atual = cafePadariaPedidoDiaCache.get(b.dataset.cafeConfirmar);
+    await pcpCafeSalvarPedidoDia(b.dataset.cafeConfirmar, ymd, {confirmado: !(atual && atual.confirmado)});
+    renderPCP();
+  }));
+  content.querySelectorAll("[data-cafe-add-produto]").forEach(b => b.addEventListener("click", () => pcpCafeAbrirAddProduto(b.dataset.cafeAddProduto, b.dataset.cafeFornecedorPadrao)));
+  const addCli = content.querySelector("#cafe-novo-add");
+  if(addCli) addCli.addEventListener("click", async () => {
+    const contratoId = document.getElementById("cafe-novo-cliente").value;
+    const fornecedorId = document.getElementById("cafe-novo-fornecedor").value || null;
+    if(!contratoId){ showAlert("Escolha o cliente."); return; }
+    const ok = await pcpCafeSalvarItem({contrato_id: contratoId, fornecedor_id: fornecedorId, produto: "Pão francês", grupo: "variavel", valor_padrao: null, ordem: 0});
+    if(ok){
+      const c = contratos.get(contratoId);
+      if(c && !c.cafe_terceirizado){ await sb.from('contratos').update({cafe_terceirizado: true}).eq('id', contratoId); c.cafe_terceirizado = true; }
+      renderPCP();
+    }
+  });
+  content.querySelectorAll("[data-cafe-texto]").forEach(b => b.addEventListener("click", () => {
+    const txt = pcpCafeTextoPedido(b.dataset.cafeTexto, ymd, diaLabel);
+    document.getElementById("cafe-texto-saida").innerHTML = `<div class="field"><label>Texto para WhatsApp — copie e cole</label><textarea rows="10" readonly style="font-family:inherit; font-size:12.5px;">${escapeHtml(txt)}</textarea></div>`;
+  }));
+  content.querySelectorAll("[data-cafe-gerar-pedido]").forEach(b => b.addEventListener("click", async () => {
+    const grupos = await pcpCafeGerarPedido(b.dataset.cafeGerarPedido, ymd, semana);
+    if(grupos) showAlert(`Pedido gravado em Compras → Pedidos: ${grupos.map(g => nomeUnidadeCompra(g.unidade)+" ("+fmtMoney(g.valor_total)+")").join(", ")}.`);
+  }));
+}
+function pcpCafeAbrirAddProduto(contratoId, fornecedorIdPadrao){
+  const root = document.getElementById("modal-root");
+  const fornecedoresPad = pcpCafeFornecedores();
+  root.innerHTML = `<div class="modal-overlay" id="cafe-add-ov"><div class="modal" style="max-width:460px;">
+    <div class="modal-head"><h2>Novo produto</h2><button class="close-x" id="cafe-add-close">&times;</button></div>
+    <div class="modal-body">
+      <div class="field"><label>Produto</label><input type="text" id="cafe-add-produto" list="cafe-produtos-dl" placeholder="ex.: Pão francês"></div>
+      <div class="field"><label>Padaria</label><select id="cafe-add-fornecedor">${fornecedoresPad.map(f => `<option value="${f.id}" ${f.id === fornecedorIdPadrao ? "selected" : ""}>${escapeHtml(f.nome)}</option>`).join("")}</select></div>
+      <div class="field"><label>Como o valor do dia é definido</label><select id="cafe-add-grupo">
+        <option value="variavel">Variável (padrão + exceção do dia)</option>
+        <option value="fixo">Fixo (qualquer diferença pede confirmação)</option>
+        <option value="per_capita">Per cápita (calculado pelos hóspedes previstos)</option>
+        <option value="servico">Serviço (ex. frete — não é insumo)</option>
+      </select></div>
+      <div class="field" id="cafe-add-padrao-wrap"><label>Valor padrão</label><input type="number" id="cafe-add-padrao" min="0" step="1"></div>
+      <div class="field" id="cafe-add-fator-wrap" hidden><label>Fator per cápita (unidades por hóspede)</label><input type="number" id="cafe-add-fator" min="0" step="0.01"></div>
+    </div>
+    <div class="modal-foot"><button class="btn primary" id="cafe-add-salvar">Salvar</button></div>
+  </div></div>`;
+  const close = () => { root.innerHTML = ""; };
+  document.getElementById("cafe-add-close").onclick = close;
+  document.getElementById("cafe-add-ov").addEventListener("click", e => { if(e.target.id === "cafe-add-ov") close(); });
+  const selGrupo = document.getElementById("cafe-add-grupo");
+  selGrupo.addEventListener("change", () => {
+    document.getElementById("cafe-add-fator-wrap").toggleAttribute("hidden", selGrupo.value !== "per_capita");
+    document.getElementById("cafe-add-padrao-wrap").toggleAttribute("hidden", selGrupo.value === "per_capita");
+  });
+  document.getElementById("cafe-add-salvar").onclick = async () => {
+    const produto = document.getElementById("cafe-add-produto").value.trim();
+    if(!produto){ showAlert("Informe o nome do produto."); return; }
+    const grupo = selGrupo.value;
+    const ins = [...insumos.entries()].find(([, i]) => normalizeText(i.nome) === normalizeText(produto));
+    const row = {
+      contrato_id: contratoId,
+      fornecedor_id: document.getElementById("cafe-add-fornecedor").value || null,
+      produto, insumo_id: ins ? ins[0] : null, grupo,
+      valor_padrao: grupo === "per_capita" ? null : (parseFloat(document.getElementById("cafe-add-padrao").value) || null),
+      fator_per_capita: grupo === "per_capita" ? (parseFloat(document.getElementById("cafe-add-fator").value) || null) : null,
+      ordem: (cafePadariaItens.get(contratoId) || []).length
+    };
+    if(await pcpCafeSalvarItem(row)){ close(); renderPCP(); }
+  };
+}
+
+/* ---------- Substituições (própria aba — mesmo lançamento usado pela Conferência) ---------- */
+function pcpSubstituicoesHtml(res){
+  if(!res.clientes.length) return `<div class="empty-state">Nenhum cliente com produção prevista para este dia.</div>`;
+  const fichasSubst = pcpFichasSubstituiveis();
+  const opcoesFicha = fichasSubst.map(f => `<option value="${f.id}">${escapeHtml(f.nome)}</option>`).join("");
+  const cards = res.clientes.map(cli => {
+    const substs = pcpListaSubstituicoes(res.dia, cli.id).map(s => { const f = fichas.get(s.fichaId); return {id: s.id, nome: f ? f.nome : s.fichaId, pessoas: s.pessoas}; });
+    return `<div class="panel">
+      <div class="panel-head"><h3 style="font-size:14px;">${escapeHtml(cli.nome)}</h3><span class="hint">${fmtNum(cli.pessoas,0)} pessoas</span></div>
+      <div class="panel-body" style="padding:10px 14px;">
+        ${substs.length ? substs.map(s => `<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;"><span class="chip neutral">${fmtNum(s.pessoas,0)}× ${escapeHtml(s.nome)}</span><button type="button" class="btn small ghost" data-subst-remover="${s.id}">Remover</button></div>`).join("") : `<div class="footnote" style="margin-bottom:8px;">Nenhuma substituição lançada.</div>`}
+        <div style="display:flex; gap:8px; align-items:center; margin-top:8px; flex-wrap:wrap;" data-subst-row="${cli.id}">
+          <select class="subst-ficha" style="flex:1; min-width:140px;">${opcoesFicha}</select>
+          <input type="number" class="subst-pessoas" min="1" step="1" placeholder="pessoas" style="width:90px;">
+          <button type="button" class="btn small primary" data-subst-add="${cli.id}">Adicionar</button>
+        </div>
+      </div>
+    </div>`;
+  }).join("");
+  return `<div class="panel" style="margin-bottom:14px;"><div class="panel-body"><p class="footnote" style="margin:0;">Troca "um por um" de proteína por outro item do cardápio (ex.: cliente não quer frango, recebe omelete) — desconta da produção calculada do dia. O mesmo lançamento aparece na Conferência de expedição.</p></div></div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px;">${cards}</div>`;
+}
+function pcpSubstituicoesBind(content, semana, dia, unidade){
+  content.addEventListener("click", async e => {
+    const btnAdd = e.target.closest("button[data-subst-add]");
+    if(btnAdd){
+      const row = btnAdd.closest("[data-subst-row]");
+      const fichaId = row.querySelector(".subst-ficha").value;
+      const pessoas = parseFloat(row.querySelector(".subst-pessoas").value);
+      if(!fichaId || !(pessoas > 0)){ showAlert("Escolha a ficha substituta e informe quantas pessoas (maior que zero)."); return; }
+      const ok = await pcpSalvarSubstituicao(semana, dia, unidade, btnAdd.dataset.substAdd, fichaId, pessoas);
+      if(ok) renderPCP();
+      return;
+    }
+    const btnDel = e.target.closest("button[data-subst-remover]");
+    if(btnDel){ if(await pcpRemoverSubstituicao(btnDel.dataset.substRemover)) renderPCP(); }
+  });
+}
+
 async function renderPCP(){
   document.getElementById("page-title").textContent = "PCP";
-  document.getElementById("page-desc").textContent = "Planejamento da produção do dia: cardápio × previsão de atendimento (mesmo motor da Lista de compra) = quanto produzir de cada receita, e o volume líquido por cliente pra etiqueta da cuba.";
+  document.getElementById("page-desc").textContent = "Planejamento da produção do dia: cardápio × previsão de atendimento (mesmo motor da Lista de compra) = quanto produzir de cada receita, o volume líquido por cliente pra etiqueta da cuba, café/padaria terceirizado, substituições, açougue, requisição do estoque e expedição.";
   const opcoesSemana = pcpOpcoesSemana();
   if(pcpSemanaSel === null || !opcoesSemana.includes(pcpSemanaSel)) pcpSemanaSel = opcoesSemana[opcoesSemana.length - 1];
   const margemPct = pcpMargemPct();
@@ -11316,10 +11696,14 @@ async function renderPCP(){
   const ehEstoque = pcpSubView === "estoque";
   const ehConferencia = pcpSubView === "conferencia";
   const ehRomaneio = pcpSubView === "romaneio";
+  const ehCafe = pcpSubView === "cafe";
+  const ehSubst = pcpSubView === "substituicoes";
+  const pcpDataSel = dataDoDia(pcpSemanaSel, pcpDiaSel).toISOString().slice(0,10);
+  const pcpDiaLabelSel = DIA_LABEL[pcpDiaSel];
   document.getElementById("topbar-actions").innerHTML = (ehAcougue || ehEstoque) ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-acg-config">Cortes e dias</button>
-    </div>` : ehConferencia ? "" : ehRomaneio ? `
+    </div>` : (ehConferencia || ehCafe || ehSubst) ? "" : ehRomaneio ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-rotas-gerenciar">Gerenciar rotas</button>
     </div>` : `
@@ -11346,12 +11730,15 @@ async function renderPCP(){
     await pcpCarregarConferencia(pcpSemanaSel, pcpDiaSel, unidadeFiltro);
     confLinhas = pcpConferenciaLinhas(res, pcpDiaSel);
   }
+  if(ehCafe) await pcpCarregarCafePadaria(pcpDataSel);
   const romaneioGrupos = ehRomaneio ? pcpRomaneioPorRota(res) : null;
   const content = document.getElementById("content");
   content.innerHTML = `
     <div class="seg-toggle" id="pcp-subview-tabs" style="margin-bottom:14px; width:fit-content;">
       <button type="button" data-pcpsub="producao" class="${pcpSubView==="producao"?"active":""}">Produção da cozinha</button>
       <button type="button" data-pcpsub="volume" class="${pcpSubView==="volume"?"active":""}">Volume por cliente</button>
+      <button type="button" data-pcpsub="cafe" class="${pcpSubView==="cafe"?"active":""}">Café / Padaria</button>
+      <button type="button" data-pcpsub="substituicoes" class="${pcpSubView==="substituicoes"?"active":""}">Substituições</button>
       <button type="button" data-pcpsub="acougue" class="${pcpSubView==="acougue"?"active":""}">Açougue</button>
       <button type="button" data-pcpsub="estoque" class="${pcpSubView==="estoque"?"active":""}">Requisição do estoque</button>
       <button type="button" data-pcpsub="conferencia" class="${pcpSubView==="conferencia"?"active":""}">Conferência de expedição</button>
@@ -11376,6 +11763,10 @@ async function renderPCP(){
         : `<p class="footnote" style="margin:0 0 14px;">Cozinha confirma que produziu/embalou, expedição confirma que carregou. Salva sozinho a cada campo alterado.</p><div id="pcp-conf-wrap">${pcpConferenciaHtml(confLinhas)}</div>`
     ) : ehRomaneio ? (
       `<p class="footnote" style="margin:0 0 14px;">Atribuição cliente→rota é fixa (cadastrada no contrato) — pra mudar, edite o contrato do cliente. Sem ordem de entrega dentro da rota nesta versão.</p>${pcpRomaneioHtml(romaneioGrupos)}`
+    ) : ehCafe ? (
+      pcpCafeHtml(unidadeFiltro, pcpDataSel, pcpDiaLabelSel)
+    ) : ehSubst ? (
+      pcpSubstituicoesHtml(res)
     ) : `
       <div class="kpi-row" style="display:flex; gap:14px; margin-bottom:16px; flex-wrap:wrap;">
         <div class="kpi"><div class="label">Pessoas previstas</div><div class="value">${fmtNum(res.pessoasTot,0)}</div></div>
@@ -11453,6 +11844,10 @@ async function renderPCP(){
       const grupo = romaneioGrupos.find(g => g.rotaId === btn.dataset.romaneioImprimir);
       if(grupo) pcpImprimirRomaneio(grupo, pcpSemanaSel, pcpDiaSel);
     }));
+  } else if(ehCafe){
+    pcpCafeBind(content, unidadeFiltro, pcpDataSel, pcpDiaLabelSel, pcpSemanaSel);
+  } else if(ehSubst){
+    pcpSubstituicoesBind(content, pcpSemanaSel, pcpDiaSel, unidadeFiltro);
   } else {
     document.getElementById("pcp-margem-salvar").addEventListener("click", async () => {
       const v = parseFloat(document.getElementById("pcp-margem").value);
