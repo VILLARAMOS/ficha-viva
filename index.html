@@ -5067,7 +5067,8 @@ function openFichaModal(id){
   const draft = existing ? JSON.parse(JSON.stringify(existing)) : {
     nome:"", grupo:"", rendimento_kg:0, rendimento_und:0, preco_venda:null,
     modo_preparo:null, ingredientes:[], vendavel:false, servido_por_unidade:false,
-    disponivel_como_insumo:false, volume_dia:null, gramas_pessoa:null, atendimento:null, replicada_de:null
+    disponivel_como_insumo:false, volume_dia:null, gramas_pessoa:null, atendimento:null, replicada_de:null,
+    cuba_nome:null, cuba_kg_por_un:null
   };
   renderFichaModal(id, draft);
 }
@@ -5263,6 +5264,11 @@ function renderFichaModal(id, draft){
           <div class="field"><label><input type="checkbox" id="ff-vendavel" style="width:auto; display:inline-block; margin-right:6px;" ${draft.vendavel===true?"checked":""}> Item vendável</label></div>
           <div class="field"><label><input type="checkbox" id="ff-por-unidade" style="width:auto; display:inline-block; margin-right:6px;" ${draft.servido_por_unidade===true?"checked":""}> Servido por unidade (ovo, panqueca, hambúrguer, lanche…) — mostra o "Custo / un" desta ficha</label></div>
           <div class="field"><label><input type="checkbox" id="ff-como-insumo" style="width:auto; display:inline-block; margin-right:6px;" ${draft.disponivel_como_insumo===true?"checked":""}> Disponível como insumo (esta ficha passa a aparecer na busca de ingredientes de OUTRAS fichas, como um preparo/sub-receita pronta)</label></div>
+          <div class="field-row">
+            <div class="field"><label>Cuba recomendada (nome livre, opcional)</label><input type="text" id="ff-cuba-nome" value="${escapeHtml(draft.cuba_nome||"")}" placeholder="Ex.: GN 1/2"></div>
+            <div class="field"><label>Kg dessa ficha por cuba (opcional)</label><input type="number" step="0.01" id="ff-cuba-kg" value="${draft.cuba_kg_por_un===null||draft.cuba_kg_por_un===undefined?"":draft.cuba_kg_por_un}"></div>
+          </div>
+          <div class="footnote" style="margin:-8px 0 14px;">Sem conversão automática peso→volume (densidade varia por prato) — preencha os dois campos só se quiser que a PCP sugira nº de cubas pra essa ficha.</div>
           <div class="field"><label>Modo de preparo (opcional)</label><textarea id="ff-modo" rows="5" placeholder="Passo a passo para a cozinha seguir">${escapeHtml(draft.modo_preparo||"")}</textarea></div>
           ${id && fichas.get(id) ? `<div class="footnote">${ultimaAlteracaoTxt(fichas.get(id))}</div>` : ""}
 
@@ -5461,6 +5467,8 @@ function renderFichaModal(id, draft){
       preco_venda: document.getElementById("ff-preco").value===""?null:parseFloat(document.getElementById("ff-preco").value),
       modo_preparo: document.getElementById("ff-modo").value.trim() || null,
       tipo_proteina: document.getElementById("ff-tipo-proteina").value || null,
+      cuba_nome: document.getElementById("ff-cuba-nome").value.trim() || null,
+      cuba_kg_por_un: document.getElementById("ff-cuba-kg").value===""?null:parseFloat(document.getElementById("ff-cuba-kg").value),
       ingredientes: draft.ingredientes.filter(l => l.nome),
     };
   }
@@ -5565,6 +5573,8 @@ function renderFichaModal(id, draft){
       preco_venda: document.getElementById("ff-preco").value===""?null:parseFloat(document.getElementById("ff-preco").value),
       modo_preparo: document.getElementById("ff-modo").value.trim() || null,
       tipo_proteina: document.getElementById("ff-tipo-proteina").value || null,
+      cuba_nome: document.getElementById("ff-cuba-nome").value.trim() || null,
+      cuba_kg_por_un: document.getElementById("ff-cuba-kg").value===""?null:parseFloat(document.getElementById("ff-cuba-kg").value),
       ingredientes: ingredientesFinal,
       replicada_de: draft.replicada_de || null,
     };
@@ -10433,15 +10443,15 @@ function pcpProducaoHtml(res, margemPct){
     const novoGrupo = r.grupo !== grupoAtual;
     grupoAtual = r.grupo;
     const qtdComMargem = r.total * fator;
-    return (novoGrupo ? `<tr><th colspan="4" style="background:var(--surface-alt); font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted);">${escapeHtml(r.grupo)}</th></tr>` : "") +
-      `<tr><td class="name-cell">${escapeHtml(r.nome)}</td><td class="num-cell">${pcpFmtQtd(qtdComMargem)}</td><td class="num-cell">${r.porCliente.size}</td><td class="footnote" style="margin:0;">${[...new Set([...r.porCliente.values()].map(p => p.nome))].join(", ")}</td></tr>`;
+    return (novoGrupo ? `<tr><th colspan="5" style="background:var(--surface-alt); font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted);">${escapeHtml(r.grupo)}</th></tr>` : "") +
+      `<tr><td class="name-cell">${escapeHtml(r.nome)}</td><td class="num-cell">${pcpFmtQtd(qtdComMargem)}</td><td class="num-cell">${pcpCubaTxt(r.fichaId, qtdComMargem)}</td><td class="num-cell">${r.porCliente.size}</td><td class="footnote" style="margin:0;">${[...new Set([...r.porCliente.values()].map(p => p.nome))].join(", ")}</td></tr>`;
   }).join("");
   const linhasDiretos = res.diretos.map(d => `<tr><td class="name-cell">${escapeHtml(d.nome)}</td><td class="num-cell">${fmtNum(d.total,2)} ${escapeHtml(d.unidade||"")}</td><td class="num-cell">${d.porCliente.size}</td><td class="footnote" style="margin:0;">${[...new Set([...d.porCliente.values()].map(p=>p.nome))].join(", ")}</td></tr>`).join("");
   return `
     <div class="panel">
       <div class="panel-head"><h3><i class="ico" data-lucide="chef-hat"></i>Receitas a produzir</h3><span class="hint">${margemPct ? `com margem de ${fmtNum(margemPct,1)}% incluída` : "sem margem"}</span></div>
       <div class="panel-body">
-        <div class="table-wrap"><table><thead><tr><th>Receita</th><th style="text-align:right;">Quantidade</th><th style="text-align:right;">Clientes</th><th>Atende</th></tr></thead><tbody>${linhasReceita || `<tr><td colspan="4" class="empty-state">—</td></tr>`}</tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>Receita</th><th style="text-align:right;">Quantidade</th><th style="text-align:right;">Cubas</th><th style="text-align:right;">Clientes</th><th>Atende</th></tr></thead><tbody>${linhasReceita || `<tr><td colspan="5" class="empty-state">—</td></tr>`}</tbody></table></div>
       </div>
     </div>
     ${res.diretos.length ? `<div class="panel">
@@ -10451,19 +10461,31 @@ function pcpProducaoHtml(res, margemPct){
   `;
 }
 
+// sugestão de cubas: cadastro manual por ficha (fichas.cuba_nome/cuba_kg_por_un) — sem conversão
+// automática peso→volume, porque densidade varia por prato. Ficha sem cadastro não sugere nada ("—").
+function pcpCubasRecomendadas(fichaId, kg){
+  const f = fichaId ? fichas.get(fichaId) : null;
+  if(!f || !f.cuba_kg_por_un || !kg) return null;
+  return { nome: f.cuba_nome || "cuba", qtd: Math.ceil(kg / f.cuba_kg_por_un) };
+}
+function pcpCubaTxt(fichaId, kg){
+  const c = pcpCubasRecomendadas(fichaId, kg);
+  return c ? `${c.qtd}× ${escapeHtml(c.nome)}` : "—";
+}
+
 function pcpVolumeHtml(res){
   if(!res.clientes.length) return `<div class="empty-state">Nenhum cliente com produção prevista para este dia.</div>`;
   const cards = res.clientes.map(cli => {
     const linhas = [];
-    res.receitas.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: r.nome, qtd: p.qtd}); });
+    res.receitas.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: r.nome, qtd: p.qtd, fichaId: r.fichaId}); });
     res.diretos.forEach(d => { const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: d.nome, qtd: p.qtd, unidade: d.unidade}); });
     if(!linhas.length) return "";
     return `<div class="panel" data-pcp-cliente-card="${cli.id}">
       <div class="panel-head"><h3>${escapeHtml(cli.nome)}</h3><span class="hint">${fmtNum(cli.pessoas,0)} pessoas · ${nomeUnidadeCompra(cli.unidade)}</span></div>
-      <div class="panel-body"><div class="table-wrap"><table><tbody>${linhas.map(l => `<tr><td class="name-cell">${escapeHtml(l.nome)}</td><td class="num-cell">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd)}</td></tr>`).join("")}</tbody></table></div></div>
+      <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Item</th><th style="text-align:right;">Quantidade</th><th style="text-align:right;">Cubas</th></tr></thead><tbody>${linhas.map(l => `<tr><td class="name-cell">${escapeHtml(l.nome)}</td><td class="num-cell">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd)}</td><td class="num-cell">${l.fichaId ? pcpCubaTxt(l.fichaId, l.qtd) : "—"}</td></tr>`).join("")}</tbody></table></div></div>
     </div>`;
   }).join("");
-  return `<p class="footnote" style="margin:0 0 14px;">Volume <b>líquido</b> por cliente, sem margem de produção — é o que vai pra etiqueta da cuba.</p>${cards}`;
+  return `<p class="footnote" style="margin:0 0 14px;">Volume <b>líquido</b> por cliente, sem margem de produção — é o que vai pra etiqueta da cuba. "Cubas" só aparece pras fichas com cadastro de cuba (Fichas técnicas).</p>${cards}`;
 }
 
 function pcpEtiquetaImprimir(res){
@@ -10560,7 +10582,7 @@ function pcpConferenciaLinhas(res, dia){
   if(!res.clientes.length) return [];
   return res.clientes.map(cli => {
     const itens = [];
-    res.receitas.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) itens.push({ chave: "ficha:"+r.fichaId, nome: r.nome, qtdPrevista: p.qtd, unidade: null }); });
+    res.receitas.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) itens.push({ chave: "ficha:"+r.fichaId, nome: r.nome, qtdPrevista: p.qtd, unidade: null, fichaId: r.fichaId }); });
     res.diretos.forEach(d => { const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id); if(p) itens.push({ chave: "direto:"+d.insumoId, nome: d.nome, qtdPrevista: p.qtd, unidade: d.unidade||"" }); });
     itens.forEach(it => {
       const salvo = pcpConferenciaCache.get(cli.id + "|" + it.chave);
@@ -10618,11 +10640,12 @@ function pcpConferenciaHtml(linhas){
   return linhas.map(({cliente, itens, substituicoes}) => `<div class="panel" style="margin-bottom:14px;">
     <div class="panel-head"><h3>${escapeHtml(cliente.nome)}</h3><span class="hint">${fmtNum(cliente.pessoas,0)} pessoas</span></div>
     ${itens.length ? `<div class="panel-body"><div class="table-wrap"><table>
-      <thead><tr><th>Item</th><th style="text-align:right;">Previsto</th><th style="text-align:right;">Enviado</th><th style="text-align:center;">Cozinha</th><th style="text-align:center;">Expedição</th><th>Observação</th></tr></thead>
+      <thead><tr><th>Item</th><th style="text-align:right;">Previsto</th><th style="text-align:right;">Cubas</th><th style="text-align:right;">Enviado</th><th style="text-align:center;">Cozinha</th><th style="text-align:center;">Expedição</th><th>Observação</th></tr></thead>
       <tbody>${itens.map(it => `
         <tr data-conf-contrato="${cliente.id}" data-conf-chave="${escapeHtml(it.chave)}" data-conf-nome="${escapeHtml(it.nome)}" data-conf-prev="${it.qtdPrevista ?? ""}">
           <td class="name-cell">${escapeHtml(it.nome)}</td>
           <td class="num-cell">${it.unidade ? `${fmtNum(it.qtdPrevista,2)} ${escapeHtml(it.unidade)}` : pcpFmtQtd(it.qtdPrevista)}</td>
+          <td class="num-cell">${it.fichaId ? pcpCubaTxt(it.fichaId, it.qtdPrevista) : "—"}</td>
           <td class="num-cell"><input type="number" step="0.001" class="conf-enviado" style="width:90px; text-align:right;" value="${it.qtdEnviada ?? ""}" placeholder="—"></td>
           <td style="text-align:center;"><input type="checkbox" class="conf-cozinha" ${it.cozinhaOk?"checked":""}></td>
           <td style="text-align:center;"><input type="checkbox" class="conf-expedicao" ${it.expedicaoOk?"checked":""}></td>
