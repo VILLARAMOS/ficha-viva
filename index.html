@@ -576,7 +576,7 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadFornecedores(), loadConjuntosCompra(), loadAjusteSeguranca(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas(), loadPcpConfig()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadRotas(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadFornecedores(), loadConjuntosCompra(), loadAjusteSeguranca(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas(), loadPcpConfig()]);
   goToView(currentView);
 }
 
@@ -848,6 +848,30 @@ async function loadContratoItens(){
   contratoItens = new Map();
   if (error){ showAlert('Erro ao carregar itens contratados: ' + error.message); return; }
   (data || []).forEach(row => { const { id, ...rest } = row; contratoItens.set(id, rest); });
+}
+
+/* ---- rotas de entrega (cadastro fixo — atribuição cliente→rota é contratos.rota_id) ---- */
+let rotas = new Map(); // id -> {nome, unidade, motorista_nome, veiculo, ativo}
+async function loadRotas(){
+  const { data, error } = await sb.from('rotas').select('*').order('nome');
+  rotas = new Map();
+  if (error){ showAlert('Erro ao carregar rotas: ' + error.message); return; }
+  (data || []).forEach(row => { const { id, ...rest } = row; rotas.set(id, rest); });
+}
+function rotasAtivasOrdenadas(){
+  return [...rotas.entries()].filter(([,r]) => r.ativo !== false).sort((a,b) => (a[1].nome||"").localeCompare(b[1].nome||""));
+}
+async function pcpSalvarRota(id, campos){
+  const payload = { ...campos, ...carimbo() };
+  if (id){
+    const { error } = await sb.from('rotas').update(payload).eq('id', id);
+    if (error){ showAlert('Erro ao salvar rota: ' + error.message); return null; }
+    return id;
+  } else {
+    const { data, error } = await sb.from('rotas').insert(payload).select('id').single();
+    if (error){ showAlert('Erro ao criar rota: ' + error.message); return null; }
+    return data.id;
+  }
 }
 
 /* ---- eventos de contrato (lembrete de datas de eventos/almoços especiais por cliente — sem custo/faturamento,
@@ -4107,7 +4131,7 @@ function openContratoModal(id){
   const existing = id ? contratos.get(id) : null;
   const draft = existing ? JSON.parse(JSON.stringify(existing)) : {
     nome_cliente:"", ativo:true, modelo_faturamento:"itemizado", valor_fixo_mensal:null,
-    unidade:"matriz", data_inicio:null, data_fim:null,
+    unidade:"matriz", rota_id:null, data_inicio:null, data_fim:null,
     cardapio_refeicao_num: REFEICAO_NUMS[0], cardapio_marmita_num: MARMITA_NUMS[0], marmita_especial_ativo:false, cardapio_marmita_especial_num:null,
     cardapio_cafe_num: CAFE_NUMS[0], cafe_especial_ativo:false, cardapio_cafe_especial_num:null, cafe_terceirizado:false,
     observacoes:null,
@@ -4153,6 +4177,14 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
               </select>
             </div>
             <div class="field"><label><input type="checkbox" id="kk-ativo" style="width:auto; display:inline-block; margin-right:6px;" ${draft.ativo?"checked":""}> Ativo</label></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label>Rota de entrega (romaneio PCP)</label>
+              <select id="kk-rota">
+                <option value="" ${!draft.rota_id?"selected":""}>— sem rota —</option>
+                ${rotasAtivasOrdenadas().map(([rid,r]) => `<option value="${rid}" ${draft.rota_id===rid?"selected":""}>${escapeHtml(r.nome)}${r.motorista_nome?" · "+escapeHtml(r.motorista_nome):""}</option>`).join("")}
+              </select>
+            </div>
           </div>
           <div class="field-row">
             <div class="field"><label>Modelo de faturamento</label>
@@ -4522,6 +4554,7 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
       modelo_faturamento: document.getElementById("kk-modelo").value,
       valor_fixo_mensal: document.getElementById("kk-valorfixo").value === "" ? null : parseFloat(document.getElementById("kk-valorfixo").value),
       unidade: document.getElementById("kk-unidade").value || null,
+      rota_id: document.getElementById("kk-rota").value || null,
       data_inicio: document.getElementById("kk-inicio").value || null,
       data_fim: document.getElementById("kk-fim").value || null,
       cardapio_refeicao_num: Number(document.getElementById("kk-ref-num").value),
@@ -10509,6 +10542,129 @@ function pcpEtiquetaImprimir(res){
   w.document.close(); w.focus(); w.print();
 }
 
+// Romaneio por rota: agrupa os MESMOS clientes/itens de pcpCalcularDia por contratos.rota_id (atribuição
+// fixa no cadastro do contrato, não varia por dia — confirmado com o Marcelo). v1 não ordena parada de
+// entrega dentro da rota, só agrupa cliente+itens+peso por rota, igual pcpVolumeHtml faz por cliente.
+// Sem rota_id cai no bucket "sem_rota" pra nunca desaparecer da lista.
+function pcpRomaneioPorRota(res){
+  const porRota = new Map(); // rotaId|"sem_rota" -> {rotaId, rota, clientes:[{...cli, linhas, pesoTotal}]}
+  res.clientes.forEach(cli => {
+    const linhas = [];
+    let pesoTotal = 0;
+    res.receitas.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p){ linhas.push({nome: r.nome, qtd: p.qtd, fichaId: r.fichaId}); pesoTotal += p.qtd; } });
+    res.diretos.forEach(d => { const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: d.nome, qtd: p.qtd, unidade: d.unidade}); });
+    if(!linhas.length) return;
+    const ct = contratos.get(cli.id);
+    const rotaId = ct && ct.rota_id ? ct.rota_id : null;
+    const chave = rotaId || "sem_rota";
+    const grupo = porRota.get(chave) || { rotaId, rota: rotaId ? rotas.get(rotaId) : null, clientes: [] };
+    grupo.clientes.push({ ...cli, linhas, pesoTotal });
+    porRota.set(chave, grupo);
+  });
+  const lista = [...porRota.values()];
+  lista.sort((a,b) => {
+    if(!a.rotaId && b.rotaId) return 1;
+    if(a.rotaId && !b.rotaId) return -1;
+    return (a.rota?.nome || "").localeCompare(b.rota?.nome || "", 'pt-BR');
+  });
+  lista.forEach(g => g.clientes.sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome))));
+  return lista;
+}
+
+function pcpRomaneioHtml(grupos){
+  if(!grupos.length) return `<div class="empty-state">Nenhum cliente com produção prevista para este dia.</div>`;
+  return grupos.map(g => {
+    const totPessoas = g.clientes.reduce((s,c) => s + c.pessoas, 0);
+    const semRota = !g.rotaId;
+    return `<div class="panel" style="margin-bottom:14px; ${semRota ? "border-color:var(--warn);" : ""}">
+      <div class="panel-head">
+        <h3>${semRota ? "Sem rota cadastrada" : escapeHtml(g.rota?.nome || "Rota")}</h3>
+        <span class="hint">${g.rota?.motorista_nome ? escapeHtml(g.rota.motorista_nome)+(g.rota.veiculo?" · "+escapeHtml(g.rota.veiculo):"")+" · " : ""}${g.clientes.length} cliente${g.clientes.length===1?"":"s"} · ${fmtNum(totPessoas,0)} pessoas</span>
+        ${!semRota ? `<button class="btn small ghost" data-romaneio-imprimir="${g.rotaId}" style="margin-left:auto;">Imprimir romaneio</button>` : ""}
+      </div>
+      <div class="panel-body">
+        ${semRota ? `<p class="footnote" style="margin:0 0 10px;">Esses clientes não têm rota de entrega cadastrada — edite o contrato pra atribuir uma.</p>` : ""}
+        ${g.clientes.map(cli => `<div style="margin-bottom:10px; padding-bottom:10px; border-bottom:1px solid var(--border);">
+          <div style="display:flex; justify-content:space-between; font-weight:600; margin-bottom:4px;"><span>${escapeHtml(cli.nome)}</span><span class="hint">${fmtNum(cli.pessoas,0)} pessoas</span></div>
+          <table style="width:100%; font-size:13px;"><tbody>${cli.linhas.map(l => `<tr><td class="name-cell">${escapeHtml(l.nome)}</td><td class="num-cell">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd)}</td></tr>`).join("")}</tbody></table>
+        </div>`).join("")}
+      </div>
+    </div>`;
+  }).join("");
+}
+
+function pcpImprimirRomaneio(grupo, semana, dia){
+  const partes = grupo.clientes.map(cli => `<div style="break-inside:avoid; page-break-inside:avoid; border:1px solid #333; border-radius:6px; padding:12px 14px; margin-bottom:12px;">
+      <div style="font-weight:700; font-size:14px; margin-bottom:2px;">${escapeHtml(cli.nome)}</div>
+      <div style="font-size:11px; color:#666; margin-bottom:8px;">${fmtNum(cli.pessoas,0)} pessoas</div>
+      <table style="width:100%; border-collapse:collapse; font-size:12px;">${cli.linhas.map(l => `<tr><td style="padding:3px 0; border-top:1px solid #ddd;">${escapeHtml(l.nome)}</td><td style="padding:3px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd)}</td></tr>`).join("")}</table>
+    </div>`).join("");
+  const w = window.open("", "_blank");
+  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
+  const titulo = `Romaneio — ${escapeHtml(grupo.rota?.nome || "Rota")} — ${escapeHtml(DIA_LABEL[dia])} ${escapeHtml(rotuloSemana(semana))}`;
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${titulo}</title>
+    <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()}</style></head><body>
+    ${printHeadHtml()}<h1>${titulo}</h1>
+    <p style="font-size:12px; color:#666; margin:0 0 14px;">${grupo.rota?.motorista_nome ? "Motorista: "+escapeHtml(grupo.rota.motorista_nome) : ""}${grupo.rota?.veiculo ? " · Veículo: "+escapeHtml(grupo.rota.veiculo) : ""}</p>
+    ${partes || "<p>Nada a entregar nesta rota.</p>"}</body></html>`);
+  w.document.close(); w.focus(); w.print();
+}
+
+function pcpAbrirGerenciarRotas(){
+  const root = document.getElementById("modal-root");
+  const lista = [...rotas.entries()].sort((a,b) => (a[1].nome||"").localeCompare(b[1].nome||"",'pt-BR'));
+  root.innerHTML = `
+    <div class="modal-overlay" id="rot-ov">
+      <div class="modal" style="max-width:620px;">
+        <div class="modal-head"><h2>Rotas de entrega</h2><button class="close-x" id="rot-close">&times;</button></div>
+        <div class="modal-body">
+          <p class="footnote">Cadastro fixo das rotas de motorista — a atribuição de cada cliente a uma rota é feita no cadastro do contrato.</p>
+          <div id="rot-lista" style="display:flex; flex-direction:column; gap:8px; margin:10px 0;">
+            ${lista.map(([id,r]) => `<div class="field-row" data-rota-row="${id}" style="align-items:flex-end;">
+              <div class="field" style="flex:2;"><label>Nome</label><input type="text" class="rot-nome" value="${escapeHtml(r.nome||"")}"></div>
+              <div class="field"><label>Motorista</label><input type="text" class="rot-motorista" value="${escapeHtml(r.motorista_nome||"")}"></div>
+              <div class="field"><label>Veículo</label><input type="text" class="rot-veiculo" value="${escapeHtml(r.veiculo||"")}"></div>
+              <div class="field" style="flex:0;"><label><input type="checkbox" class="rot-ativo" style="width:auto; display:inline-block; margin-right:4px;" ${r.ativo!==false?"checked":""}> Ativa</label></div>
+              <button class="btn small ghost" data-rota-salvar="${id}">Salvar</button>
+            </div>`).join("") || "<p class='footnote'>Nenhuma rota cadastrada ainda.</p>"}
+          </div>
+          <div class="field-row" style="align-items:flex-end; border-top:1px solid var(--border); padding-top:10px;">
+            <div class="field" style="flex:2;"><label>Nova rota — nome</label><input type="text" id="rot-novo-nome" placeholder="Ex.: Rota 1"></div>
+            <div class="field"><label>Motorista</label><input type="text" id="rot-novo-motorista"></div>
+            <div class="field"><label>Veículo</label><input type="text" id="rot-novo-veiculo"></div>
+            <button class="btn small primary" id="rot-novo-criar">Adicionar</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  const close = () => { root.innerHTML = ""; };
+  document.getElementById("rot-close").addEventListener("click", close);
+  document.getElementById("rot-ov").addEventListener("click", e => { if(e.target.id==="rot-ov") close(); });
+  root.querySelectorAll("[data-rota-salvar]").forEach(btn => btn.addEventListener("click", async () => {
+    const row = root.querySelector(`[data-rota-row="${btn.dataset.rotaSalvar}"]`);
+    await pcpSalvarRota(btn.dataset.rotaSalvar, {
+      nome: row.querySelector(".rot-nome").value.trim(),
+      motorista_nome: row.querySelector(".rot-motorista").value.trim() || null,
+      veiculo: row.querySelector(".rot-veiculo").value.trim() || null,
+      ativo: row.querySelector(".rot-ativo").checked
+    });
+    await loadRotas();
+    pcpAbrirGerenciarRotas();
+  }));
+  document.getElementById("rot-novo-criar").addEventListener("click", async () => {
+    const nome = document.getElementById("rot-novo-nome").value.trim();
+    if(!nome){ showAlert("Informe o nome da rota."); return; }
+    await pcpSalvarRota(null, {
+      nome,
+      motorista_nome: document.getElementById("rot-novo-motorista").value.trim() || null,
+      veiculo: document.getElementById("rot-novo-veiculo").value.trim() || null,
+      ativo: true
+    });
+    await loadRotas();
+    pcpAbrirGerenciarRotas();
+  });
+}
+
 // setor "acougue" é renderizado à parte (pcpAcougueHtml), já com a cobertura de múltiplos dias — aqui só
 // entram as bancadas do dia a dia (cozinha/saladas/sobremesas).
 function pcpRequisicaoHtml(res){
@@ -10721,10 +10877,14 @@ async function renderPCP(){
   const margemPct = pcpMargemPct();
   const ehRequisicao = pcpSubView === "requisicao";
   const ehConferencia = pcpSubView === "conferencia";
+  const ehRomaneio = pcpSubView === "romaneio";
   document.getElementById("topbar-actions").innerHTML = ehRequisicao ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-acg-config">Cortes e dias</button>
-    </div>` : ehConferencia ? "" : `
+    </div>` : ehConferencia ? "" : ehRomaneio ? `
+    <div style="display:flex; align-items:center; gap:8px;">
+      <button class="btn small ghost" id="pcp-rotas-gerenciar">Gerenciar rotas</button>
+    </div>` : `
     <div style="display:flex; align-items:center; gap:8px;">
       <label style="margin:0; font-size:12px; color:var(--text-muted);">Margem de produção</label>
       <input type="number" id="pcp-margem" step="0.1" min="0" value="${margemPct || ""}" placeholder="0" style="width:70px;">
@@ -10745,6 +10905,7 @@ async function renderPCP(){
     await pcpCarregarConferencia(pcpSemanaSel, pcpDiaSel, unidadeFiltro);
     confLinhas = pcpConferenciaLinhas(res, pcpDiaSel);
   }
+  const romaneioGrupos = ehRomaneio ? pcpRomaneioPorRota(res) : null;
   const content = document.getElementById("content");
   content.innerHTML = `
     <div class="seg-toggle" id="pcp-subview-tabs" style="margin-bottom:14px; width:fit-content;">
@@ -10752,6 +10913,7 @@ async function renderPCP(){
       <button type="button" data-pcpsub="volume" class="${pcpSubView==="volume"?"active":""}">Volume por cliente</button>
       <button type="button" data-pcpsub="requisicao" class="${pcpSubView==="requisicao"?"active":""}">Açougue / Requisição do estoque</button>
       <button type="button" data-pcpsub="conferencia" class="${pcpSubView==="conferencia"?"active":""}">Conferência de expedição</button>
+      <button type="button" data-pcpsub="romaneio" class="${pcpSubView==="romaneio"?"active":""}">Romaneio por rota</button>
     </div>
     <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:16px;">
       <div class="seg-toggle" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" data-pcpuni="${u.id}" class="${pcpUnidadeSel===u.id?"active":""}">${u.nome}</button>`).join("")}</div>
@@ -10765,6 +10927,8 @@ async function renderPCP(){
       !unidadeFiltro
         ? `<div class="empty-state">Selecione Matriz ou Filial acima — a conferência é por unidade real (é o que sai na doca de verdade), "Ambas" não se aplica aqui.</div>`
         : `<p class="footnote" style="margin:0 0 14px;">Cozinha confirma que produziu/embalou, expedição confirma que carregou. Salva sozinho a cada campo alterado.</p><div id="pcp-conf-wrap">${pcpConferenciaHtml(confLinhas)}</div>`
+    ) : ehRomaneio ? (
+      `<p class="footnote" style="margin:0 0 14px;">Atribuição cliente→rota é fixa (cadastrada no contrato) — pra mudar, edite o contrato do cliente. Sem ordem de entrega dentro da rota nesta versão.</p>${pcpRomaneioHtml(romaneioGrupos)}`
     ) : `
       <div class="kpi-row" style="display:flex; gap:14px; margin-bottom:16px; flex-wrap:wrap;">
         <div class="kpi"><div class="label">Pessoas previstas</div><div class="value">${fmtNum(res.pessoasTot,0)}</div></div>
@@ -10819,6 +10983,12 @@ async function renderPCP(){
         if(ok) renderPCP();
       }
     });
+  } else if(ehRomaneio){
+    document.getElementById("pcp-rotas-gerenciar").addEventListener("click", pcpAbrirGerenciarRotas);
+    content.querySelectorAll("[data-romaneio-imprimir]").forEach(btn => btn.addEventListener("click", () => {
+      const grupo = romaneioGrupos.find(g => g.rotaId === btn.dataset.romaneioImprimir);
+      if(grupo) pcpImprimirRomaneio(grupo, pcpSemanaSel, pcpDiaSel);
+    }));
   } else {
     document.getElementById("pcp-margem-salvar").addEventListener("click", async () => {
       const v = parseFloat(document.getElementById("pcp-margem").value);
