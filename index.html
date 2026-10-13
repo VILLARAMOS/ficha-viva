@@ -10454,6 +10454,79 @@ function pcpImprimirCortesDia(cobertura, semana, diaSel, unidadeLabel){
   w.document.close(); w.focus(); w.print();
 }
 
+// ---------- Fase 3: Conferência de expedição ----------
+// Checklist operacional por cliente/item: cozinha confirma que produziu/embalou, expedição confirma que
+// carregou, com a quantidade realmente enviada e observação quando diverge do previsto. Usa os MESMOS
+// clientes/itens que Volume por cliente (Fase 1) já calcula — não recalcula nada, só registra o estado
+// do dia por cima. Diferente de Produção/Requisição, aqui precisa ser uma unidade real (matriz ou
+// filial): é o que sai na doca de verdade, "Ambas" não faz sentido num checklist físico.
+// Fora de escopo nesta leva (confirmado com o Marcelo em 13/10/2026): substituições em UN, cuba
+// recomendada, romaneio por rota — a aba EXPEDIÇÃO do Excel tem essas 3 peças a mais, mas nenhuma delas
+// existe hoje no banco (nem conceito de rota/motorista, nem de substituição, nem de modelo de cuba).
+let pcpConferenciaCache = new Map(); // "contratoId|chaveItem" -> row do banco
+async function pcpCarregarConferencia(semana, dia, unidade){
+  pcpConferenciaCache = new Map();
+  if(!unidade || unidade === "todos") return;
+  const { data, error } = await sb.from('pcp_expedicao_conferencia').select('*')
+    .eq('semana', semana).eq('dia', dia).eq('unidade', unidade);
+  if(error){ showAlert("Erro ao carregar conferência de expedição: " + error.message); return; }
+  (data || []).forEach(row => pcpConferenciaCache.set(row.contrato_id + "|" + row.chave_item, row));
+}
+// mesma fonte de res.receitas/res.diretos que pcpVolumeHtml usa — garante que a conferência mostra
+// exatamente os mesmos itens/quantidades que a tela de Volume por cliente já valida.
+function pcpConferenciaLinhas(res){
+  if(!res.clientes.length) return [];
+  return res.clientes.map(cli => {
+    const itens = [];
+    res.receitas.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) itens.push({ chave: "ficha:"+r.fichaId, nome: r.nome, qtdPrevista: p.qtd, unidade: null }); });
+    res.diretos.forEach(d => { const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id); if(p) itens.push({ chave: "direto:"+d.insumoId, nome: d.nome, qtdPrevista: p.qtd, unidade: d.unidade||"" }); });
+    itens.forEach(it => {
+      const salvo = pcpConferenciaCache.get(cli.id + "|" + it.chave);
+      it.qtdEnviada = salvo ? salvo.qtd_enviada : null;
+      it.cozinhaOk = salvo ? !!salvo.cozinha_ok : false;
+      it.expedicaoOk = salvo ? !!salvo.expedicao_ok : false;
+      it.observacao = salvo ? (salvo.observacao || "") : "";
+    });
+    return { cliente: cli, itens };
+  }).filter(c => c.itens.length);
+}
+async function pcpSalvarConferenciaCampo(semana, dia, unidade, contratoId, chave, nomeItem, qtdPrevista, campo, valor){
+  const atual = pcpConferenciaCache.get(contratoId + "|" + chave) || {};
+  const row = {
+    semana, dia, unidade, contrato_id: contratoId, chave_item: chave, nome_item: nomeItem,
+    qtd_prevista: qtdPrevista,
+    qtd_enviada: campo === "qtd_enviada" ? valor : (atual.qtd_enviada ?? null),
+    cozinha_ok: campo === "cozinha_ok" ? valor : !!atual.cozinha_ok,
+    expedicao_ok: campo === "expedicao_ok" ? valor : !!atual.expedicao_ok,
+    observacao: campo === "observacao" ? valor : (atual.observacao || null),
+    alterado_em: new Date().toISOString(), alterado_por: usuarioId || null
+  };
+  const { data, error } = await sb.from('pcp_expedicao_conferencia')
+    .upsert(row, { onConflict: 'semana,dia,unidade,contrato_id,chave_item' })
+    .select().single();
+  if(error){ showAlert("Erro ao salvar conferência: " + error.message); return; }
+  pcpConferenciaCache.set(contratoId + "|" + chave, data);
+}
+function pcpConferenciaHtml(linhas){
+  if(!linhas.length) return `<div class="empty-state">Nenhum cliente com produção prevista para este dia.</div>`;
+  return linhas.map(({cliente, itens}) => `<div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head"><h3>${escapeHtml(cliente.nome)}</h3><span class="hint">${fmtNum(cliente.pessoas,0)} pessoas</span></div>
+    <div class="panel-body"><div class="table-wrap"><table>
+      <thead><tr><th>Item</th><th style="text-align:right;">Previsto</th><th style="text-align:right;">Enviado</th><th style="text-align:center;">Cozinha</th><th style="text-align:center;">Expedição</th><th>Observação</th></tr></thead>
+      <tbody>${itens.map(it => `
+        <tr data-conf-contrato="${cliente.id}" data-conf-chave="${escapeHtml(it.chave)}" data-conf-nome="${escapeHtml(it.nome)}" data-conf-prev="${it.qtdPrevista ?? ""}">
+          <td class="name-cell">${escapeHtml(it.nome)}</td>
+          <td class="num-cell">${it.unidade ? `${fmtNum(it.qtdPrevista,2)} ${escapeHtml(it.unidade)}` : pcpFmtQtd(it.qtdPrevista)}</td>
+          <td class="num-cell"><input type="number" step="0.001" class="conf-enviado" style="width:90px; text-align:right;" value="${it.qtdEnviada ?? ""}" placeholder="—"></td>
+          <td style="text-align:center;"><input type="checkbox" class="conf-cozinha" ${it.cozinhaOk?"checked":""}></td>
+          <td style="text-align:center;"><input type="checkbox" class="conf-expedicao" ${it.expedicaoOk?"checked":""}></td>
+          <td><input type="text" class="conf-obs" style="width:100%;" value="${escapeHtml(it.observacao||"")}" placeholder="—"></td>
+        </tr>`).join("")}
+      </tbody>
+    </table></div></div>
+  </div>`).join("");
+}
+
 function pcpAbrirConfigAcougue(){
   const root = document.getElementById("modal-root");
   const custom = pcpAcougueCustom();
@@ -10499,17 +10572,18 @@ function pcpAbrirConfigAcougue(){
   });
 }
 
-function renderPCP(){
+async function renderPCP(){
   document.getElementById("page-title").textContent = "PCP";
   document.getElementById("page-desc").textContent = "Planejamento da produção do dia: cardápio × previsão de atendimento (mesmo motor da Lista de compra) = quanto produzir de cada receita, e o volume líquido por cliente pra etiqueta da cuba.";
   const opcoesSemana = pcpOpcoesSemana();
   if(pcpSemanaSel === null || !opcoesSemana.includes(pcpSemanaSel)) pcpSemanaSel = opcoesSemana[opcoesSemana.length - 1];
   const margemPct = pcpMargemPct();
   const ehRequisicao = pcpSubView === "requisicao";
+  const ehConferencia = pcpSubView === "conferencia";
   document.getElementById("topbar-actions").innerHTML = ehRequisicao ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-acg-config">Cortes e dias</button>
-    </div>` : `
+    </div>` : ehConferencia ? "" : `
     <div style="display:flex; align-items:center; gap:8px;">
       <label style="margin:0; font-size:12px; color:var(--text-muted);">Margem de produção</label>
       <input type="number" id="pcp-margem" step="0.1" min="0" value="${margemPct || ""}" placeholder="0" style="width:70px;">
@@ -10522,12 +10596,18 @@ function renderPCP(){
   const res = ehRequisicao ? null : pcpCalcularDia(pcpSemanaSel, pcpDiaSel, unidadeFiltro);
   const resReq = ehRequisicao ? pcpCalcularRequisicaoDia(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
   const acougueCobertura = ehRequisicao ? pcpCalcularAcougueComCobertura(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
+  let confLinhas = null;
+  if(ehConferencia && unidadeFiltro){
+    await pcpCarregarConferencia(pcpSemanaSel, pcpDiaSel, unidadeFiltro);
+    confLinhas = pcpConferenciaLinhas(res);
+  }
   const content = document.getElementById("content");
   content.innerHTML = `
     <div class="seg-toggle" id="pcp-subview-tabs" style="margin-bottom:14px; width:fit-content;">
       <button type="button" data-pcpsub="producao" class="${pcpSubView==="producao"?"active":""}">Produção da cozinha</button>
       <button type="button" data-pcpsub="volume" class="${pcpSubView==="volume"?"active":""}">Volume por cliente</button>
       <button type="button" data-pcpsub="requisicao" class="${pcpSubView==="requisicao"?"active":""}">Açougue / Requisição do estoque</button>
+      <button type="button" data-pcpsub="conferencia" class="${pcpSubView==="conferencia"?"active":""}">Conferência de expedição</button>
     </div>
     <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:16px;">
       <div class="seg-toggle" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" data-pcpuni="${u.id}" class="${pcpUnidadeSel===u.id?"active":""}">${u.nome}</button>`).join("")}</div>
@@ -10537,7 +10617,11 @@ function renderPCP(){
     ${ehRequisicao ? `
       ${pcpAcougueHtml(acougueCobertura)}
       ${pcpRequisicaoHtml(resReq)}
-    ` : `
+    ` : ehConferencia ? (
+      !unidadeFiltro
+        ? `<div class="empty-state">Selecione Matriz ou Filial acima — a conferência é por unidade real (é o que sai na doca de verdade), "Ambas" não se aplica aqui.</div>`
+        : `<p class="footnote" style="margin:0 0 14px;">Cozinha confirma que produziu/embalou, expedição confirma que carregou. Salva sozinho a cada campo alterado.</p><div id="pcp-conf-wrap">${pcpConferenciaHtml(confLinhas)}</div>`
+    ) : `
       <div class="kpi-row" style="display:flex; gap:14px; margin-bottom:16px; flex-wrap:wrap;">
         <div class="kpi"><div class="label">Pessoas previstas</div><div class="value">${fmtNum(res.pessoasTot,0)}</div></div>
         <div class="kpi"><div class="label">Kg a produzir</div><div class="value">${fmtNum(res.kgTotal,1)}</div></div>
@@ -10557,6 +10641,23 @@ function renderPCP(){
     document.getElementById("pcp-acg-config").addEventListener("click", pcpAbrirConfigAcougue);
     const btnImprimirCortes = document.getElementById("pcp-acg-imprimir");
     if(btnImprimirCortes) btnImprimirCortes.addEventListener("click", () => pcpImprimirCortesDia(acougueCobertura, pcpSemanaSel, pcpDiaSel, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial"));
+  } else if(ehConferencia){
+    const wrap = document.getElementById("pcp-conf-wrap");
+    if(wrap) wrap.addEventListener("change", async e => {
+      const tr = e.target.closest("tr[data-conf-chave]");
+      if(!tr) return;
+      const contratoId = tr.dataset.confContrato;
+      const chave = tr.dataset.confChave;
+      const nomeItem = tr.dataset.confNome;
+      const qtdPrevista = tr.dataset.confPrev === "" ? null : parseFloat(tr.dataset.confPrev);
+      let campo, valor;
+      if(e.target.classList.contains("conf-enviado")){ campo = "qtd_enviada"; valor = e.target.value === "" ? null : parseFloat(e.target.value); }
+      else if(e.target.classList.contains("conf-cozinha")){ campo = "cozinha_ok"; valor = e.target.checked; }
+      else if(e.target.classList.contains("conf-expedicao")){ campo = "expedicao_ok"; valor = e.target.checked; }
+      else if(e.target.classList.contains("conf-obs")){ campo = "observacao"; valor = e.target.value || null; }
+      else return;
+      await pcpSalvarConferenciaCampo(pcpSemanaSel, pcpDiaSel, unidadeFiltro, contratoId, chave, nomeItem, qtdPrevista, campo, valor);
+    });
   } else {
     document.getElementById("pcp-margem-salvar").addEventListener("click", async () => {
       const v = parseFloat(document.getElementById("pcp-margem").value);
