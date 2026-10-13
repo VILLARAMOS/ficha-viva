@@ -7068,12 +7068,16 @@ function criarColetorReceitas(){
     get(insumoId){ return porInsumo.get(insumoId) || new Map(); }
   };
 }
-function insumosItemCardapioCompra(it, numPessoas){
+// `ct` (opcional) é o contrato do cliente — quando informado, aplica o peso de expedição dele (ver
+// gramagemKgEfetiva) em vez da gramagem pura do cardápio. Decisão de 27/09 (v91): a compra segue o peso
+// de expedição, porque é o que de fato sai da cozinha; o custo/preço do cardápio não mudam.
+function insumosItemCardapioCompra(it, numPessoas, ct){
   const m = new Map();
   if(!it || !numPessoas) return m;
   if(it.ficha_id){
-    if(it.gramagem_kg === null || it.gramagem_kg === undefined) return m;
-    return insumosParaKgNecessario(it.ficha_id, it.gramagem_kg * numPessoas);
+    const gramagem = gramagemKgEfetiva(it, ct);
+    if(gramagem === null || gramagem === undefined) return m;
+    return insumosParaKgNecessario(it.ficha_id, gramagem * numPessoas);
   }
   if(it.insumo_id){
     if(it.gramagem_kg === null || it.gramagem_kg === undefined) return m;
@@ -7095,11 +7099,13 @@ function insumosEmbalagemDiaCompra(dayDoc, numPessoas){
   ids.forEach(id => { if(id) m.set(id, (m.get(id)||0) + numPessoas); });
   return m;
 }
-function insumosDoDiaRefeicaoCompra(dayDoc, numPessoas, dia, coletor){
+// `ct` (opcional) só é passado pelo caso "cardapio_refeicao" de insumosUnidadeItemCompra — marmita e
+// café (que também chamam esta função/insumosItemCardapioCompra) continuam seguindo só o cardápio.
+function insumosDoDiaRefeicaoCompra(dayDoc, numPessoas, dia, coletor, ct){
   const total = new Map();
   if(!dayDoc) return total;
   (dayDoc.itens||[]).forEach(it => {
-    const porItem = insumosItemCardapioCompra(it, numPessoas);
+    const porItem = insumosItemCardapioCompra(it, numPessoas, ct);
     mergeInsumosInto(total, porItem);
     if(coletor){
       const nome = nomeReceitaDoItemCardapio(it);
@@ -7134,7 +7140,7 @@ function insumosUnidadeItemCompra(almocoIdx, cafeIdx, produtoId, contrato, seman
   switch(cat.tipo_custo){
     case "cardapio_refeicao": {
       const row = contrato.cardapio_refeicao_num!=null ? almocoIdx.get(`${contrato.cardapio_refeicao_num}|${semana}|${dia}`) : null;
-      return row ? insumosDoDiaRefeicaoCompra(row, quantidade, dia, coletor) : total;
+      return row ? insumosDoDiaRefeicaoCompra(row, quantidade, dia, coletor, contrato) : total;
     }
     case "cardapio_marmita": {
       const row = contrato.cardapio_marmita_num!=null ? almocoIdx.get(`${contrato.cardapio_marmita_num}|${semana}|${dia}`) : null;
@@ -10176,10 +10182,55 @@ function pcpFmtQtd(q){
 // igual à Lista de compra) e "fixo"/"zero"/"insumo"/"ficha"/"percentual_venda" não são refeição do dia.
 const PCP_TIPOS_PRODUCAO = new Set(["cardapio_refeicao", "cardapio_marmita", "cardapio_marmita_especial"]);
 
-// um item do cardápio (ficha OU insumo direto) × nº de pessoas → {fichaId|insumoId, qtd}, sem explodir em insumo
-function pcpItemProducao(it, numPessoas){
+// ---------- Peso de expedição por cliente × item (v91, 27/09/2026 — portado do artifact antigo, confirmado
+// de novo com o Marcelo em 13/10/2026) ----------
+// Pedido original: "a expedição precisa de uma tabela de peso separada, não a do cardápio que é base de
+// compra e orçamento; inicialmente tem a mesma gramagem, mas no dia a dia ela pode sofrer ajuste, e isso
+// não deve afetar o peso dos cardápios." Decisões (27/09, confirmadas de novo em 13/10): granularidade por
+// ITEM (ficha técnica), um peso por cliente que vale pra todos os dias/turnos, e a COMPRA/ORÇAMENTO e a
+// PRODUÇÃO seguem o peso de expedição — é o que de fato sai da cozinha. O CUSTO e o PREÇO do cardápio
+// NUNCA mudam (continuam no per capita padrão do cardápio). Só pra refeição transportada (cardapio_refeicao)
+// — marmita e café ficam fora, igual ao artifact. Nenhuma tabela nova no banco: guardado em
+// contratos.peso_expedicao (jsonb) = {fichaId: {modo:"delta"|"fixo", g, motivo, alterado_em, alterado_por}}.
+// Sem linha pro fichaId = segue o cardápio.
+function pesoExpDoItem(ct, fichaId){
+  const m = ct && ct.peso_expedicao; const pe = m && fichaId ? m[fichaId] : null;
+  if(!pe) return null;
+  const g = Number(pe.g);
+  if(!isFinite(g)) return null;
+  return (pe.modo === "fixo" ? g > 0 : g !== 0) ? pe : null;
+}
+function temPesoExpedicao(ct){ return !!(ct && ct.peso_expedicao && Object.keys(ct.peso_expedicao).some(k => pesoExpDoItem(ct, k))); }
+// gramagem_kg (kg/pessoa) efetiva de um item de cardápio pro cliente `ct`: aplica o peso de expedição
+// quando existir pra essa ficha. ± soma/tira gramas do cardápio do dia (acompanha se o cardápio mudar a
+// gramagem); = fixa o peso por pessoa em qualquer cardápio. Sem `ct`, sem ficha (insumo direto) ou sem
+// override gravado, devolve a gramagem do cardápio sem alteração nenhuma.
+function gramagemKgEfetiva(it, ct){
+  const base = it && it.gramagem_kg;
+  if(base === null || base === undefined || !it.ficha_id || !ct) return base;
+  const pe = pesoExpDoItem(ct, it.ficha_id);
+  if(!pe) return base;
+  return pe.modo === "fixo" ? Number(pe.g) / 1000 : Math.max(0, base + Number(pe.g) / 1000);
+}
+async function pcpSalvarPesoExpedicao(contratoId, mudancas){
+  const ct = contratos.get(contratoId);
+  if(!ct) return false;
+  const pe = {...(ct.peso_expedicao || {})};
+  Object.entries(mudancas).forEach(([fid, val]) => { if(val === null) delete pe[fid]; else pe[fid] = val; });
+  const { error } = await sb.from('contratos').update({ peso_expedicao: pe }).eq('id', contratoId);
+  if(error){ showAlert("Erro ao salvar peso de expedição: " + error.message); return false; }
+  ct.peso_expedicao = pe; // mantém o cache local (contratos) sincronizado sem precisar recarregar
+  return true;
+}
+
+// um item do cardápio (ficha OU insumo direto) × nº de pessoas → {fichaId|insumoId, qtd}, sem explodir em insumo.
+// `ct` (opcional) é o contrato do cliente — quando informado e o item tem ficha, aplica o peso de
+// expedição do cliente em vez da gramagem pura do cardápio (ver bloco acima).
+function pcpItemProducao(it, numPessoas, ct){
   if(!it || !numPessoas || it.gramagem_kg === null || it.gramagem_kg === undefined) return null;
-  const qtd = it.gramagem_kg * numPessoas;
+  const gramagem = gramagemKgEfetiva(it, ct);
+  if(gramagem === null || gramagem === undefined) return null;
+  const qtd = gramagem * numPessoas;
   if(!qtd) return null;
   if(it.ficha_id) return { fichaId: it.ficha_id, qtd };
   if(it.insumo_id) return { insumoId: it.insumo_id, qtd };
@@ -10260,13 +10311,15 @@ function pcpAplicarSubstituicoesInsumos(dia, contratoId, buckets){
 // explode um dia de cardápio (dayDoc.itens) pra um cliente/produto, acumulando em `receitas` (por ficha) e
 // `diretos` (insumo lançado direto no cardápio, sem ficha — ex. descartável) — com detalhe por cliente
 // (pra "Volume por cliente"/etiqueta de cuba). `pessoasSubstituidas` reduz o efetivo só do grupo PROTEÍNA
-// (ver bloco de Substituições acima). Retorna true se achou pelo menos 1 item com gramagem.
-function pcpAcumularDia(dayDoc, numPessoas, contratoId, nomeCliente, produtoId, receitas, diretos, pessoasSubstituidas){
+// (ver bloco de Substituições acima). `ct` (opcional, só pra refeição transportada — ver pcpProducaoUnidadeItem)
+// aplica o peso de expedição do cliente em vez da gramagem pura do cardápio. Retorna true se achou pelo
+// menos 1 item com gramagem.
+function pcpAcumularDia(dayDoc, numPessoas, contratoId, nomeCliente, produtoId, receitas, diretos, pessoasSubstituidas, ct){
   if(!dayDoc) return false;
   let achouAlgo = false;
   (dayDoc.itens || []).forEach(it => {
     const pessoasEf = (pessoasSubstituidas > 0 && categoriaBase(it.categoria) === "Proteína") ? Math.max(0, numPessoas - pessoasSubstituidas) : numPessoas;
-    const r = pcpItemProducao(it, pessoasEf);
+    const r = pcpItemProducao(it, pessoasEf, ct);
     if(!r) return;
     achouAlgo = true;
     const chave = contratoId + "|" + produtoId;
@@ -10320,7 +10373,9 @@ function pcpProducaoUnidadeItem(almocoIdx, produtoId, contrato, contratoId, nome
     avisos.push({ tipo: "critical", txt: `${nomeCliente}: ${fmtNum(quantidade,0)} ${cat.nome} previstos, mas o contrato não tem o cardápio desse grupo montado neste dia — nada entra na produção.` });
     return;
   }
-  const achou = pcpAcumularDia(row, qtdEf, contratoId, nomeCliente, produtoId, receitas, diretos, pessoasSubstituidas);
+  // peso de expedição só pra refeição transportada (cardapio_refeicao) — marmita e café seguem só o cardápio.
+  const ctParaPeso = cat.tipo_custo === "cardapio_refeicao" ? contrato : null;
+  const achou = pcpAcumularDia(row, qtdEf, contratoId, nomeCliente, produtoId, receitas, diretos, pessoasSubstituidas, ctParaPeso);
   if(!achou) avisos.push({ tipo: "warn", txt: `${nomeCliente}: o cardápio de ${cat.nome} não tem nenhum item com gramagem neste dia — nada entra na produção.` });
 }
 
@@ -10370,11 +10425,13 @@ function pcpCalcularDia(semana, dia, unidadeFiltro){
 // vira o Mapa de carnes do açougue (pcpCalcularAcougueComCobertura) e o Mapa de insumos do estoque
 // (pcpCalcularRequisicaoComMapa). Cada insumoId só aparece num destino (acougue OU o setor base dele), então
 // um coletor único não mistura números entre bancadas mesmo quando reaproveitado nas duas telas.
-function pcpAcumularInsumosDia(dayDoc, numPessoas, acougueSet, buckets, pessoasSubstituidas, coletor, dia){
+// `ct` (opcional, só pra refeição transportada) aplica o peso de expedição do cliente — é o que de fato
+// sai da cozinha, então a requisição precisa ver o mesmo peso ajustado que a Produção vê.
+function pcpAcumularInsumosDia(dayDoc, numPessoas, acougueSet, buckets, pessoasSubstituidas, coletor, dia, ct){
   if(!dayDoc) return;
   (dayDoc.itens || []).forEach(it => {
     const pessoasEf = (pessoasSubstituidas > 0 && categoriaBase(it.categoria) === "Proteína") ? Math.max(0, numPessoas - pessoasSubstituidas) : numPessoas;
-    const r = pcpItemProducao(it, pessoasEf);
+    const r = pcpItemProducao(it, pessoasEf, ct);
     if(!r) return;
     let setor, porInsumo, nomeReceita = null;
     if(r.fichaId){
@@ -10422,7 +10479,8 @@ function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor){
         const { row, qtdEf } = pcpResolveRowProducao(almocoIdx, cat, ct, semana, dia, qtd);
         if(!row) return;
         teveItem = true;
-        pcpAcumularInsumosDia(row, qtdEf, acougueSet, buckets, pessoasSubst, coletor, dia);
+        const ctParaPeso = cat.tipo_custo === "cardapio_refeicao" ? ct : null;
+        pcpAcumularInsumosDia(row, qtdEf, acougueSet, buckets, pessoasSubst, coletor, dia, ctParaPeso);
       });
       if(teveItem) pcpAplicarSubstituicoesInsumos(dia, contratoId, buckets);
     });
@@ -11686,9 +11744,166 @@ function pcpSubstituicoesBind(content, semana, dia, unidade){
   });
 }
 
+/* ---------- Pesos por cliente (própria aba — peso de expedição, v91 portado do artifact) ---------- */
+const peCss = v => (typeof CSS !== "undefined" && CSS.escape) ? CSS.escape(v) : String(v).replace(/["\\]/g, "\\$&");
+const PESO_EXP_MOTIVOS = ["Consumo real do cliente", "Pedido do cliente", "Sobra recorrente", "Falta recorrente", "Correção de gramagem", "Outro"];
+// clientes ativos, da unidade filtrada, que têm refeição transportada contratada (cardapio_refeicao) —
+// só esses entram no peso de expedição (v91).
+function pesoExpClientes(unidadeFiltro){
+  return [...contratos.entries()]
+    .filter(([, ct]) => ct.ativo !== false)
+    .filter(([, ct]) => !unidadeFiltro || unidadeFiltro === "todos" || ct.unidade === unidadeFiltro)
+    .filter(([id]) => itensDoContratoVenda(id).some(ci => (catalogoPorProduto(ci.produto_id)||{}).tipo_custo === "cardapio_refeicao"))
+    .sort((a, b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)));
+}
+// itens (ficha) de refeição transportada que o cliente recebe na semana, com a gramagem base do cardápio
+// e a gramagem com o peso de expedição aplicado — mesma varredura semana×dia que pcpCalcularDia usa pro
+// dia único, só que aqui soma a semana inteira (pra mostrar "quanto pesa por semana", igual ao artifact).
+function pesoExpSemanaCliente(contratoId, ct, semana){
+  const almocoIdx = new Map();
+  cardapiosAlmoco.forEach(row => almocoIdx.set(`${row.cardapio_num}|${row.semana}|${row.dia}`, row));
+  const itens = new Map(); // fichaId -> {fichaId, nome, categoria, bases:Set, dias:[], pessoas, kgBase, kgExp, custoKg}
+  const itensVenda = itensDoContratoVenda(contratoId).filter(ci => (catalogoPorProduto(ci.produto_id)||{}).tipo_custo === "cardapio_refeicao");
+  DIAS_ORDEM.forEach(dia => {
+    itensVenda.forEach(ci => {
+      const cat = catalogoPorProduto(ci.produto_id);
+      const qtd = quantidadePrevista(contratoId, ci.produto_id, dia, semana);
+      if(!(qtd > 0)) return;
+      const { row } = pcpResolveRowProducao(almocoIdx, cat, ct, semana, dia, qtd);
+      if(!row) return;
+      (row.itens || []).forEach(it => {
+        if(!it.ficha_id || it.gramagem_kg === null || it.gramagem_kg === undefined) return;
+        const f = fichas.get(it.ficha_id);
+        if(!f) return;
+        const ef = gramagemKgEfetiva(it, ct);
+        const x = itens.get(it.ficha_id) || { fichaId: it.ficha_id, nome: f.nome, categoria: it.categoria, grupo: pcpGrupoFicha(f), bases: new Set(), dias: [], pessoas: 0, kgBase: 0, kgExp: 0, custoKg: null };
+        x.bases.add(Math.round(it.gramagem_kg * 1000));
+        if(!x.dias.includes(dia)) x.dias.push(dia);
+        x.pessoas += qtd; x.kgBase += it.gramagem_kg * qtd; x.kgExp += (ef || 0) * qtd;
+        if(x.custoKg === null){ const c = computeFicha(f, it.ficha_id); x.custoKg = c.custoKg; }
+        itens.set(it.ficha_id, x);
+      });
+    });
+  });
+  return [...itens.values()].sort((a, b) => pcpOrdemGrupo(a.grupo) - pcpOrdemGrupo(b.grupo) || a.nome.localeCompare(b.nome,'pt-BR'));
+}
+function pesoExpResumo(itens){
+  let kgBase = 0, kgExp = 0, rs = 0, semCusto = 0;
+  itens.forEach(x => { kgBase += x.kgBase; kgExp += x.kgExp; const d = x.kgExp - x.kgBase; if(Math.abs(d) > 1e-9){ if(x.custoKg !== null && x.custoKg !== undefined) rs += d * x.custoKg; else semCusto++; } });
+  return { kgBase, kgExp, dif: kgExp - kgBase, rs, semCusto };
+}
+const pesoExpFaixa = set => { const v = [...set].sort((a, b) => a - b); return v.length ? (v[0] === v[v.length - 1] ? `${v[0]} g` : `${v[0]}–${v[v.length - 1]} g`) : "—"; };
+const pesoExpSinal = n => (n > 0 ? "+" : n < 0 ? "−" : "") + fmtNum(Math.abs(n), Math.abs(n) < 10 ? 2 : 1);
+function pesoExpValor(ct, fichaId){
+  const pe = pesoExpDoItem(ct, fichaId);
+  return pe ? { modo: pe.modo === "fixo" ? "fixo" : "delta", g: String(pe.g), motivo: pe.motivo || "" } : { modo: "delta", g: "", motivo: "" };
+}
+function pesoExpFica(bases, v){
+  const g = parseFloat(String(v.g).replace(",", "."));
+  if(!isFinite(g) || (v.modo === "delta" && g === 0)) return { txt: pesoExpFaixa(bases), proprio: false, alerta: false };
+  if(v.modo === "fixo"){ const b = [...bases]; return { txt: `${fmtNum(g, 0)} g`, proprio: true, alerta: b.some(x => g > x * 1.5 || g < x * 0.6) }; }
+  const s = new Set([...bases].map(b => Math.max(0, b + g)));
+  return { txt: pesoExpFaixa(s), proprio: true, alerta: [...bases].some(b => (b + g) > b * 1.5 || (b + g) < b * 0.6) };
+}
+let pcpPesoCli = "";
+function pcpPesosHtml(unidadeFiltro, semana){
+  const cts = pesoExpClientes(unidadeFiltro);
+  if(!cts.length) return `<div class="panel"><div class="empty-state">Nenhum cliente com refeição transportada nesta unidade.</div></div>`;
+  const dados = cts.map(([id, ct]) => { const itens = pesoExpSemanaCliente(id, ct, semana); return { id, ct, itens, res: pesoExpResumo(itens) }; });
+  if(pcpPesoCli && !dados.some(d => d.id === pcpPesoCli)) pcpPesoCli = "";
+  const sel = `<select id="pe-cli"><option value="">Todos os clientes (${dados.length})</option>${dados.map(d => `<option value="${escapeHtml(d.id)}" ${d.id === pcpPesoCli ? "selected" : ""}>${escapeHtml(d.ct.nome_cliente)}${temPesoExpedicao(d.ct) ? " ⚖" : ""}</option>`).join("")}</select>`;
+  const mostra = pcpPesoCli ? dados.filter(d => d.id === pcpPesoCli) : dados;
+  const cards = mostra.map(d => {
+    const naSemana = new Set(d.itens.map(x => x.fichaId));
+    // itens com peso próprio gravado que não aparecem no cardápio desta semana continuam listados (pra ver e remover)
+    const fora = Object.keys(d.ct.peso_expedicao || {}).filter(fid => pesoExpDoItem(d.ct, fid) && !naSemana.has(fid))
+      .map(fid => { const f = fichas.get(fid); return { fichaId: fid, nome: f ? f.nome : "(ficha excluída)", fora: true, bases: new Set(), kgBase: 0, kgExp: 0, dias: [] }; });
+    const linha = x => {
+      const v = pesoExpValor(d.ct, x.fichaId);
+      const fica = pesoExpFica(x.bases, v);
+      const pe = pesoExpDoItem(d.ct, x.fichaId);
+      const dif = x.kgExp - x.kgBase;
+      const k = escapeHtml(x.fichaId), c = escapeHtml(d.id);
+      return `<tr class="${fica.alerta ? "pe-alerta" : ""}" data-pe-linha="${k}" data-bases="${[...x.bases].join(",")}" style="${fica.alerta ? "background:var(--warn-soft);" : ""}">
+        <td class="name-cell">${escapeHtml(x.nome)}<div class="footnote" style="margin:0;">${x.fora ? "fora do cardápio desta semana" : `${escapeHtml(x.categoria || "")} · ${x.dias.map(dd => DIA_LABEL[dd].slice(0,3)).join(", ")}`}</div></td>
+        <td class="num-cell">${x.fora ? "—" : pesoExpFaixa(x.bases)}</td>
+        <td><div style="display:flex; gap:4px;"><select class="pe-modo" data-cli="${c}" data-fid="${k}" title="± = diferença sobre o cardápio do dia · = = valor fixo por pessoa" style="width:48px;"><option value="delta" ${v.modo !== "fixo" ? "selected" : ""}>±</option><option value="fixo" ${v.modo === "fixo" ? "selected" : ""}>=</option></select><input type="number" step="5" class="pe-g" data-cli="${c}" data-fid="${k}" value="${escapeHtml(v.g)}" placeholder="${v.modo === "fixo" ? "g" : "0"}" style="width:70px;"></div></td>
+        <td class="num-cell pe-fica" data-fid="${k}">${x.fora ? (fica.proprio ? fica.txt : "—") : fica.txt}</td>
+        <td><select class="pe-mot" data-cli="${c}" data-fid="${k}" style="width:100%;"><option value="">${pe ? "—" : "motivo…"}</option>${PESO_EXP_MOTIVOS.map(m => `<option ${v.motivo === m ? "selected" : ""}>${escapeHtml(m)}</option>`).join("")}</select>${pe && pe.alterado_em ? `<div class="footnote" style="margin:2px 0 0;">${ultimaAlteracaoTxt(pe)}</div>` : ""}</td>
+        <td class="num-cell">${x.fora || Math.abs(dif) < 1e-9 ? "—" : pesoExpSinal(dif)}</td>
+      </tr>`;
+    };
+    return `<div class="panel" data-pe-card="${escapeHtml(d.id)}">
+      <div class="panel-head"><h3 style="font-size:14px;">${escapeHtml(d.ct.nome_cliente)}</h3><span class="footnote" style="margin:0;">${Math.abs(d.res.dif) > 1e-6 ? `semana: ${pesoExpSinal(d.res.dif)} kg${d.res.rs ? ` · ${d.res.rs < 0 ? "−" : "+"}${fmtMoney(Math.abs(d.res.rs))} vs. cardápio` : ""}` : "igual ao cardápio"}</span></div>
+      <div class="panel-body" style="padding:10px 14px;">
+        ${d.itens.length || fora.length ? `<div class="table-wrap"><table style="font-size:12px;"><thead><tr><th>Item</th><th class="num-cell">Cardápio g/p</th><th>Expedição</th><th class="num-cell">Fica g/p</th><th>Motivo</th><th class="num-cell">Dif. semana kg</th></tr></thead>
+          <tbody>${d.itens.map(linha).join("")}${fora.length ? `<tr><th colspan="6" style="font-size:11px; text-align:left; padding-top:10px;">Outros itens com peso próprio</th></tr>${fora.map(linha).join("")}` : ""}</tbody></table></div>` :
+          `<p class="footnote" style="margin:0;">Sem itens em refeição transportada no cardápio desta semana (confira previsão e cardápio do contrato).</p>`}
+        <div style="display:flex; justify-content:flex-end; margin-top:10px;"><span class="footnote" data-pe-msg="${escapeHtml(d.id)}" style="margin:0 10px 0 0;"></span><button type="button" class="btn small primary" data-pe-salvar="${escapeHtml(d.id)}">Salvar pesos</button></div>
+      </div>
+    </div>`;
+  }).join("");
+  return `<div class="panel" style="margin-bottom:14px;"><div class="panel-body"><p class="footnote" style="margin:0;">Peso por pessoa que a <b>expedição</b> manda pra cada cliente, item a item (igual ao Volume por cliente/etiquetas e à Lista de compra). Em branco = segue o cardápio. <b>±</b> soma ou tira gramas do cardápio do dia (ex.: +20 no arroz); <b>=</b> fixa o peso por pessoa em qualquer cardápio (ex.: = 180). Vale pra todos os dias/turnos do cliente. <b>O cardápio e o custo/preço dele não mudam.</b> Só refeição transportada.</p></div></div>
+    <div style="display:flex; align-items:center; gap:10px; margin-bottom:14px;">${sel}</div>
+    ${cards}`;
+}
+async function salvarPesosCliente(contratoId, content){
+  const ct = contratos.get(contratoId);
+  const card = content.querySelector(`[data-pe-card="${peCss(contratoId)}"]`);
+  const msg = content.querySelector(`[data-pe-msg="${peCss(contratoId)}"]`);
+  if(!ct || !card) return;
+  const mud = {}; let erro = "", avisoAlto = [];
+  card.querySelectorAll(".pe-g").forEach(inp => {
+    if(erro) return;
+    const fid = inp.dataset.fid;
+    const modo = card.querySelector(`.pe-modo[data-fid="${peCss(fid)}"]`).value;
+    const motivo = card.querySelector(`.pe-mot[data-fid="${peCss(fid)}"]`).value;
+    const raw = String(inp.value).trim().replace(",", ".");
+    const v = raw === "" ? null : parseFloat(raw);
+    const atual = pesoExpDoItem(ct, fid);
+    const nome = (fichas.get(fid) || {}).nome || fid;
+    if(v === null || (modo === "delta" && v === 0)){ if(atual) mud[fid] = null; return; }
+    if(!isFinite(v)){ erro = `${nome}: valor inválido.`; return; }
+    if(modo === "fixo" && (v <= 0 || v >= 1000)){ erro = `${nome}: peso fixo deve ficar entre 1 e 999 g por pessoa.`; return; }
+    if(modo === "delta" && Math.abs(v) > 200){ erro = `${nome}: diferença acima de 200 g por pessoa — confira.`; return; }
+    if(atual && (atual.modo === "fixo" ? "fixo" : "delta") === modo && Number(atual.g) === v && (atual.motivo || "") === (motivo || atual.motivo || "")) return;
+    if(!motivo){ erro = `${nome}: escolha o motivo.`; return; }
+    if(card.querySelector(`tr.pe-alerta[data-pe-linha="${peCss(fid)}"]`)) avisoAlto.push(nome);
+    mud[fid] = { modo, g: v, motivo, alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
+  });
+  if(erro){ msg.innerHTML = `<span style="color:var(--critical)">${escapeHtml(erro)}</span>`; return; }
+  if(!Object.keys(mud).length){ msg.textContent = "Nada mudou."; return; }
+  if(avisoAlto.length && !(await confirmDialog(`${avisoAlto.join(", ")}: o peso fica mais de 50% acima ou 40% abaixo do cardápio. Confirmar?`))) return;
+  msg.textContent = "Salvando…";
+  const ok = await pcpSalvarPesoExpedicao(contratoId, mud);
+  if(ok) renderPCP();
+}
+function pcpPesosBind(content){
+  const sel = content.querySelector("#pe-cli");
+  if(sel) sel.addEventListener("change", () => { pcpPesoCli = sel.value; renderPCP(); });
+  content.querySelectorAll("[data-pe-salvar]").forEach(b => b.addEventListener("click", () => salvarPesosCliente(b.dataset.peSalvar, content)));
+  // "fica" ao vivo conforme digita, antes de salvar
+  content.querySelectorAll(".pe-g, .pe-modo").forEach(el => {
+    const atualizar = () => {
+      const fid = el.dataset.fid, card = el.closest("[data-pe-card]");
+      if(!card) return;
+      const val = { modo: card.querySelector(`.pe-modo[data-fid="${peCss(fid)}"]`).value, g: card.querySelector(`.pe-g[data-fid="${peCss(fid)}"]`).value };
+      const tr = card.querySelector(`tr[data-pe-linha="${peCss(fid)}"]`), cel = card.querySelector(`.pe-fica[data-fid="${peCss(fid)}"]`);
+      if(!tr || !cel) return;
+      const bases = new Set((tr.dataset.bases || "").split(",").filter(Boolean).map(Number));
+      const f = pesoExpFica(bases, val);
+      cel.textContent = bases.size || f.proprio ? f.txt : "—";
+      tr.classList.toggle("pe-alerta", f.alerta);
+      tr.style.background = f.alerta ? "var(--warn-soft)" : "";
+    };
+    el.addEventListener("input", atualizar);
+    el.addEventListener("change", atualizar);
+  });
+}
+
 async function renderPCP(){
   document.getElementById("page-title").textContent = "PCP";
-  document.getElementById("page-desc").textContent = "Planejamento da produção do dia: cardápio × previsão de atendimento (mesmo motor da Lista de compra) = quanto produzir de cada receita, o volume líquido por cliente pra etiqueta da cuba, café/padaria terceirizado, substituições, açougue, requisição do estoque e expedição.";
+  document.getElementById("page-desc").textContent = "Planejamento da produção do dia: cardápio × previsão de atendimento (mesmo motor da Lista de compra) = quanto produzir de cada receita, o volume líquido por cliente pra etiqueta da cuba, café/padaria terceirizado, substituições, pesos de expedição, açougue, requisição do estoque e expedição.";
   const opcoesSemana = pcpOpcoesSemana();
   if(pcpSemanaSel === null || !opcoesSemana.includes(pcpSemanaSel)) pcpSemanaSel = opcoesSemana[opcoesSemana.length - 1];
   const margemPct = pcpMargemPct();
@@ -11698,12 +11913,13 @@ async function renderPCP(){
   const ehRomaneio = pcpSubView === "romaneio";
   const ehCafe = pcpSubView === "cafe";
   const ehSubst = pcpSubView === "substituicoes";
+  const ehPesos = pcpSubView === "pesos";
   const pcpDataSel = dataDoDia(pcpSemanaSel, pcpDiaSel).toISOString().slice(0,10);
   const pcpDiaLabelSel = DIA_LABEL[pcpDiaSel];
   document.getElementById("topbar-actions").innerHTML = (ehAcougue || ehEstoque) ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-acg-config">Cortes e dias</button>
-    </div>` : (ehConferencia || ehCafe || ehSubst) ? "" : ehRomaneio ? `
+    </div>` : (ehConferencia || ehCafe || ehSubst || ehPesos) ? "" : ehRomaneio ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-rotas-gerenciar">Gerenciar rotas</button>
     </div>` : `
@@ -11739,6 +11955,7 @@ async function renderPCP(){
       <button type="button" data-pcpsub="volume" class="${pcpSubView==="volume"?"active":""}">Volume por cliente</button>
       <button type="button" data-pcpsub="cafe" class="${pcpSubView==="cafe"?"active":""}">Café / Padaria</button>
       <button type="button" data-pcpsub="substituicoes" class="${pcpSubView==="substituicoes"?"active":""}">Substituições</button>
+      <button type="button" data-pcpsub="pesos" class="${pcpSubView==="pesos"?"active":""}">Pesos por cliente</button>
       <button type="button" data-pcpsub="acougue" class="${pcpSubView==="acougue"?"active":""}">Açougue</button>
       <button type="button" data-pcpsub="estoque" class="${pcpSubView==="estoque"?"active":""}">Requisição do estoque</button>
       <button type="button" data-pcpsub="conferencia" class="${pcpSubView==="conferencia"?"active":""}">Conferência de expedição</button>
@@ -11767,6 +11984,8 @@ async function renderPCP(){
       pcpCafeHtml(unidadeFiltro, pcpDataSel, pcpDiaLabelSel)
     ) : ehSubst ? (
       pcpSubstituicoesHtml(res)
+    ) : ehPesos ? (
+      pcpPesosHtml(unidadeFiltro, pcpSemanaSel)
     ) : `
       <div class="kpi-row" style="display:flex; gap:14px; margin-bottom:16px; flex-wrap:wrap;">
         <div class="kpi"><div class="label">Pessoas previstas</div><div class="value">${fmtNum(res.pessoasTot,0)}</div></div>
@@ -11848,6 +12067,8 @@ async function renderPCP(){
     pcpCafeBind(content, unidadeFiltro, pcpDataSel, pcpDiaLabelSel, pcpSemanaSel);
   } else if(ehSubst){
     pcpSubstituicoesBind(content, pcpSemanaSel, pcpDiaSel, unidadeFiltro);
+  } else if(ehPesos){
+    pcpPesosBind(content);
   } else {
     document.getElementById("pcp-margem-salvar").addEventListener("click", async () => {
       const v = parseFloat(document.getElementById("pcp-margem").value);
