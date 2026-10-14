@@ -10707,6 +10707,10 @@ let pcpDiaSel = "SEGUNDA";
 let pcpTurnoSel = "todos"; // "todos" | "almoco" | "jantar" | "ceia" — ver PCP_TURNOS
 let pcpConferirRevisados = new Set(); // chaves marcadas como "já vi/corrigido" na tela de Conferir — só da sessão, não grava no banco
 const PCP_UNIDADES = [{id:"matriz", nome:"Matriz"}, {id:"filial", nome:"Filial"}, {id:"todos", nome:"Ambas"}];
+// só pra mostrar "N clientes" embaixo da aba de unidade (igual ao protótipo de referência) — não muda o cálculo.
+function pcpContagemUnidade(unidade){
+  return [...contratos.values()].filter(ct => ct.ativo !== false && ct.unidade === unidade).length;
+}
 
 function pcpOpcoesSemana(){
   const s = [...new Set([...cardapiosAlmoco.values()].map(r => r.semana))].sort((a,b) => a-b);
@@ -12175,7 +12179,7 @@ async function renderPCP(){
       <button type="button" data-pcpsub="romaneio" class="${pcpSubView==="romaneio"?"active":""}">Romaneio por rota</button>
     </div>
     <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:16px;">
-      <div class="seg-toggle" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" data-pcpuni="${u.id}" class="${pcpUnidadeSel===u.id?"active":""}">${u.nome}</button>`).join("")}</div>
+      <div class="seg-toggle" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" data-pcpuni="${u.id}" class="${pcpUnidadeSel===u.id?"active":""}">${u.nome}${u.id !== "todos" ? ` <span style="opacity:.65; font-size:10.5px;">${pcpContagemUnidade(u.id)} clientes</span>` : ""}</button>`).join("")}</div>
       <select id="pcp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===pcpSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))}</option>`).join("")}</select>
       <div class="seg-toggle" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" data-pcpdia="${d}" class="${pcpDiaSel===d?"active":""}">${DIA_LABEL[d].slice(0,3)}</button>`).join("")}</div>
       ${turnoAplicavel ? `<div class="seg-toggle" id="pcp-turno-tabs">${PCP_TURNOS.map(t => `<button type="button" data-pcpturno="${t.id}" class="${pcpTurnoSel===t.id?"active":""}">${t.nome}</button>`).join("")}</div>` : ""}
@@ -12203,19 +12207,22 @@ async function renderPCP(){
     ) : ehRevisar ? (
       pcpConferirHtml(res)
     ) : `
-      <div class="kpi-row" style="display:flex; gap:14px; margin-bottom:16px; flex-wrap:wrap;">
-        <div class="kpi"><div class="label">Pessoas previstas</div><div class="value">${fmtNum(res.pessoasTot,0)}</div></div>
-        <div class="kpi"><div class="label">Kg a produzir (sem margem)</div><div class="value">${fmtNum(res.kgTotal,1)}</div></div>
-        <div class="kpi"><div class="label">Kg com margem (${fmtNum(margemPct||0,1)}%)</div><div class="value">${fmtNum(res.kgTotal*(1+(margemPct||0)/100),1)}</div></div>
-        <div class="kpi"><div class="label">Receitas</div><div class="value">${res.receitas.length}</div></div>
-        <div class="kpi"><div class="label">Clientes</div><div class="value">${res.clientes.length}</div></div>
+      <div class="es-kpis" style="margin-bottom:16px;">
+        <div class="vn-card"><div class="vn-label">Pessoas previstas</div><div class="vn-value">${fmtNum(res.pessoasTot,0)}</div></div>
+        <div class="vn-card"><div class="vn-label">Kg a produzir (sem margem)</div><div class="vn-value">${fmtNum(res.kgTotal,1)}</div></div>
+        <div class="vn-card${margemPct ? " ok" : ""}"><div class="vn-label">Kg com margem (${fmtNum(margemPct||0,1)}%)</div><div class="vn-value">${fmtNum(res.kgTotal*(1+(margemPct||0)/100),1)}</div></div>
+        <div class="vn-card"><div class="vn-label">Receitas</div><div class="vn-value">${res.receitas.length}</div></div>
+        <div class="vn-card"><div class="vn-label">Clientes</div><div class="vn-value">${res.clientes.length}</div></div>
       </div>
-      ${res.turno === "todos" ? `<div class="kpi-row" style="display:flex; gap:14px; margin-bottom:16px; flex-wrap:wrap;">
-        <div class="kpi"><div class="label">Almoço</div><div class="value">${fmtNum(res.receitas.reduce((s,r)=>s+(r.porTurno.almoco||0),0),1)} kg</div></div>
-        <div class="kpi"><div class="label">Jantar</div><div class="value">${fmtNum(res.receitas.reduce((s,r)=>s+(r.porTurno.jantar||0),0),1)} kg</div></div>
-        <div class="kpi"><div class="label">Ceia</div><div class="value">${fmtNum(res.receitas.reduce((s,r)=>s+(r.porTurno.ceia||0),0),1)} kg</div></div>
+      ${res.turno === "todos" ? `<div class="es-kpis inner" style="margin-bottom:16px;">
+        <div class="vn-card"><div class="vn-label">Almoço</div><div class="vn-value">${fmtNum(res.receitas.reduce((s,r)=>s+(r.porTurno.almoco||0),0),1)} kg</div></div>
+        <div class="vn-card"><div class="vn-label">Jantar</div><div class="vn-value">${fmtNum(res.receitas.reduce((s,r)=>s+(r.porTurno.jantar||0),0),1)} kg</div></div>
+        <div class="vn-card"><div class="vn-label">Ceia</div><div class="vn-value">${fmtNum(res.receitas.reduce((s,r)=>s+(r.porTurno.ceia||0),0),1)} kg</div></div>
       </div>` : ""}
-      ${res.avisos.length ? `<div style="margin-bottom:14px;">${res.avisos.map(pcpAvisoChip).join("")}</div>` : ""}
+      ${res.avisos.length ? `<details class="painel-notas" style="margin-bottom:14px;" ${res.avisos.some(a=>a.tipo==="critical") ? "open" : ""}>
+        <summary>${res.avisos.length} aviso${res.avisos.length>1?"s":""} antes de produzir${res.avisos.some(a=>a.tipo==="critical") ? " — tem crítico" : ""}</summary>
+        <div class="insight-list" style="margin-top:8px;">${res.avisos.map(a => `<div class="insight-item ${a.tipo==="critical"?"critical":"warn"}"><span class="dot"></span><span>${escapeHtml(a.txt)}</span></div>`).join("")}</div>
+      </details>` : ""}
       ${ehProducao ? `<div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px;">
         <span class="footnote" style="margin:0;">Imprimir ordem de produção:</span>
         <button class="btn small ghost" data-pcp-ordem="todos">Todos os setores</button>
