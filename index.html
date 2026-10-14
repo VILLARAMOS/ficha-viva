@@ -10411,12 +10411,14 @@ function pcpProducaoUnidadeItem(almocoIdx, produtoId, contrato, contratoId, nome
   if(!achou) avisos.push({ tipo: "warn", txt: `${nomeCliente}: o cardápio de ${cat.nome} não tem nenhum item com gramagem neste dia — nada entra na produção.` });
 }
 
-// ---------- motor principal: um dia (semana+dia), opcionalmente filtrado por unidade e por turno ----------
-// turnoFiltro: "todos" (padrão, soma almoço+jantar+ceia — era o único modo que existia até 14/10/2026) |
-// "almoco" | "jantar" | "ceia" — restringe quais produtos do contrato entram na explosão (ver pcpTurnoDoProduto).
-// Mesmo com turnoFiltro ativo, cada receita ainda carrega R.porTurno com os 3 turnos — serve pra tabela
-// mostrar a coluna de detalhamento mesmo filtrando, e pra "Todos" mostrar os 3 lado a lado sem recalcular 3x.
-function pcpCalcularDia(semana, dia, unidadeFiltro, turnoFiltro){
+// ---------- motor principal: um dia (semana+dia), opcionalmente filtrado por unidade e por serviços ----------
+// servicosFiltro: null/undefined (padrão, soma almoço+jantar+ceia) | um Set com qualquer combinação de
+// "almoco"/"jantar"/"ceia" (multi-seleção — pedido do Marcelo em 14/10/2026, substitui o toggle de turno
+// único que só durou algumas horas) — restringe quais produtos do contrato entram na explosão (ver
+// pcpTurnoDoProduto). Um Set com os 3 equivale a null (sem filtro) — nunca passe um Set vazio.
+// Mesmo filtrando, cada receita ainda carrega R.porTurno com os 3 turnos — serve pra tabela mostrar a
+// coluna de detalhamento, e pra "Todos selecionados" mostrar os 3 lado a lado sem recalcular 3x.
+function pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro){
   const almocoIdx = new Map();
   cardapiosAlmoco.forEach(row => almocoIdx.set(`${row.cardapio_num}|${row.semana}|${row.dia}`, row));
   const receitas = new Map(), diretos = new Map(), avisos = [], clientes = new Map(), semProducao = [];
@@ -10433,7 +10435,7 @@ function pcpCalcularDia(semana, dia, unidadeFiltro, turnoFiltro){
       itensDoContratoVenda(contratoId).forEach(ci => {
         const cat = catalogoPorProduto(ci.produto_id);
         if(!cat || !PCP_TIPOS_PRODUCAO.has(cat.tipo_custo)) return;
-        if(turnoFiltro && turnoFiltro !== "todos" && pcpTurnoDoProduto(ci.produto_id) !== turnoFiltro) return;
+        if(servicosFiltro && !servicosFiltro.has(pcpTurnoDoProduto(ci.produto_id))) return;
         teveItemConfigurado = true;
         const qtd = quantidadePrevista(contratoId, ci.produto_id, dia, semana);
         if(!(qtd > 0)) return;
@@ -10444,10 +10446,10 @@ function pcpCalcularDia(semana, dia, unidadeFiltro, turnoFiltro){
         pessoasTot += qtd;
         pcpProducaoUnidadeItem(almocoIdx, ci.produto_id, ct, contratoId, ct.nome_cliente, semana, dia, qtd, receitas, diretos, avisos, pessoasSubst);
       });
-      // substituição (troca de proteína) é um swap de almoço — não repete a mesma ficha substituta de novo
-      // em toda visão filtrada por jantar/ceia (antes aparecia igual nas 3, inflando a soma das 3 abas em
-      // relação ao total de "Todos"). Achado testando turno a turno (14/10/2026).
-      if(teveItem && (!turnoFiltro || turnoFiltro === "todos" || turnoFiltro === "almoco")) pcpAplicarSubstituicoesReceitas(dia, contratoId, ct.nome_cliente, receitas, avisos);
+      // substituição (troca de proteína) é um swap de almoço — só entra quando o almoço está entre os
+      // serviços selecionados (sem isso, duplicava a mesma ficha substituta em toda combinação que incluía
+      // jantar/ceia). Achado testando turno a turno (14/10/2026).
+      if(teveItem && (!servicosFiltro || servicosFiltro.has("almoco"))) pcpAplicarSubstituicoesReceitas(dia, contratoId, ct.nome_cliente, receitas, avisos);
       // cliente tem produto de refeição cadastrado pro turno filtrado, mas nenhuma quantidade prevista caiu
       // (nem lançado, nem média, nem ciclo, nem quantidade fixa do contrato) — hoje esse cliente simplesmente
       // some do painel sem nenhum sinal; entra na lista de conferência em vez de sumir calado.
@@ -10456,7 +10458,9 @@ function pcpCalcularDia(semana, dia, unidadeFiltro, turnoFiltro){
 
   const lista = [...receitas.values()].sort((a, b) => pcpOrdemGrupo(a.grupo) - pcpOrdemGrupo(b.grupo) || b.total - a.total);
   const kgTotal = lista.reduce((s, r) => s + r.total, 0);
-  return { semana, dia, unidade: unidadeFiltro || "todos", turno: turnoFiltro || "todos", receitas: lista, diretos: [...diretos.values()].sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR')), clientes: [...clientes.values()].sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome))), semProducao: semProducao.sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome))), avisos, pessoasTot, kgTotal };
+  // "servicos": sempre na ordem almoço/jantar/ceia, independente da ordem em que o Set foi montado.
+  const servicos = PCP_TURNOS.filter(t => t.id !== "todos" && (!servicosFiltro || servicosFiltro.has(t.id))).map(t => t.id);
+  return { semana, dia, unidade: unidadeFiltro || "todos", servicos, receitas: lista, diretos: [...diretos.values()].sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR')), clientes: [...clientes.values()].sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome))), semProducao: semProducao.sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome))), avisos, pessoasTot, kgTotal };
 }
 
 // ---------- Fase 2: Requisição do estoque por setor ----------
@@ -10704,7 +10708,9 @@ let pcpSubView = "producao"; // "producao" | "volume"
 let pcpUnidadeSel = "matriz"; // "matriz" | "filial" | "todos"
 let pcpSemanaSel = null;
 let pcpDiaSel = "SEGUNDA";
-let pcpTurnoSel = "todos"; // "todos" | "almoco" | "jantar" | "ceia" — ver PCP_TURNOS
+// multi-seleção de serviços (Almoço/Jantar/Ceia) — substitui o toggle de turno único (14/10/2026). Nunca
+// fica vazio: ao desmarcar o último, pcp-serv-tabs recoloca o marcado de volta (ver evento abaixo).
+let pcpServicosSel = new Set(["almoco", "jantar", "ceia"]);
 let pcpConferirRevisados = new Set(); // chaves marcadas como "já vi/corrigido" na tela de Conferir — só da sessão, não grava no banco
 const PCP_UNIDADES = [{id:"matriz", nome:"Matriz"}, {id:"filial", nome:"Filial"}, {id:"todos", nome:"Ambas"}];
 // só pra mostrar "N clientes" embaixo da aba de unidade (igual ao protótipo de referência) — não muda o cálculo.
@@ -10718,29 +10724,31 @@ function pcpOpcoesSemana(){
 }
 function pcpAvisoChip(a){ return `<div class="chip ${a.tipo === "critical" ? "critical" : "warn"}" style="display:flex; width:fit-content; margin-bottom:6px; white-space:normal; text-align:left; height:auto; padding:6px 10px;">${escapeHtml(a.txt)}</div>`; }
 
-// ehTodos: quando turno=="todos" a tabela ganha 3 colunas extras (Almoço/Jantar/Ceia) além do Total —
-// pedido do Marcelo pra enxergar de onde vem o kg, em vez de só um número somado (ver nota de 14/10/2026
-// em pcpCalcularDia). Com um turno específico selecionado, fica só "Quantidade" (mais limpo pra imprimir
-// e levar pra cozinha num turno só).
+// mostrarBreakdown: com mais de 1 serviço selecionado (Almoço/Jantar/Ceia — ver pcpServicosSel), a tabela
+// ganha 1 coluna por serviço selecionado além do Total — pedido do Marcelo pra enxergar de onde vem o kg,
+// em vez de só um número somado. Com um serviço só selecionado, fica uma única "Quantidade" (mais limpo
+// pra imprimir e levar pra cozinha num serviço só). Substitui o antigo toggle de turno único (14/10/2026).
 function pcpProducaoHtml(res, margemPct){
   const fator = 1 + (margemPct || 0) / 100;
-  const ehTodos = res.turno === "todos";
-  const nCols = ehTodos ? 10 : 7; // precisa bater exatamente com o número de <th> em theadReceita (ver abaixo)
+  const servAtivos = PCP_TURNOS.filter(t => res.servicos.includes(t.id));
+  const mostrarBreakdown = servAtivos.length > 1;
+  const nCols = 7 + (mostrarBreakdown ? servAtivos.length : 0); // precisa bater com o número de <th> em theadReceita (ver abaixo)
   if(!res.receitas.length && !res.diretos.length){
-    return `<div class="empty-state">Nenhuma produção prevista para este ${res.turno !== "todos" ? `turno (${PCP_TURNOS.find(t=>t.id===res.turno)?.nome.toLowerCase()})` : "dia"} — confira se algum contrato está vigente e com cardápio montado.</div>`;
+    const rotuloServ = res.servicos.length < 3 ? `${res.servicos.length > 1 ? "os serviços" : "o serviço"} selecionado${res.servicos.length > 1 ? "s" : ""} (${servAtivos.map(t=>t.nome).join(", ")})` : "o dia";
+    return `<div class="empty-state">Nenhuma produção prevista para ${rotuloServ} — confira se algum contrato está vigente e com cardápio montado.</div>`;
   }
   let grupoAtual = null;
   const linhasReceita = res.receitas.map(r => {
     const novoGrupo = r.grupo !== grupoAtual;
     grupoAtual = r.grupo;
     const qtdComMargem = r.total * fator;
-    const colsTurno = ehTodos ? `<td class="num-cell">${pcpFmtQtd((r.porTurno.almoco||0) * fator)}</td><td class="num-cell">${pcpFmtQtd((r.porTurno.jantar||0) * fator)}</td><td class="num-cell">${pcpFmtQtd((r.porTurno.ceia||0) * fator)}</td>` : "";
+    const colsTurno = mostrarBreakdown ? servAtivos.map(t => `<td class="num-cell">${pcpFmtQtd((r.porTurno[t.id]||0) * fator)}</td>`).join("") : "";
     return (novoGrupo ? `<tr><th colspan="${nCols}" style="background:var(--surface-alt); font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted);">${escapeHtml(r.grupo)}</th></tr>` : "") +
       `<tr><td class="name-cell">${escapeHtml(r.nome)}</td><td>${escapeHtml(r.grupo)}</td>${colsTurno}<td class="num-cell">${pcpFmtQtd(qtdComMargem)}</td><td class="num-cell">${pcpCubaTxt(r.fichaId, qtdComMargem)}</td><td class="num-cell">${r.porCliente.size}</td><td class="footnote" style="margin:0;">${[...new Set([...r.porCliente.values()].map(p => p.nome))].join(", ")}</td><td class="num-cell">${r.fichaId ? `<button class="btn small ghost" data-pcp-imprimir-receita="${r.fichaId}" title="Imprimir esta receita">${iconeImprimir()}</button>` : "—"}</td></tr>`;
   }).join("");
   const linhasDiretos = res.diretos.map(d => `<tr><td class="name-cell">${escapeHtml(d.nome)}</td><td class="num-cell">${fmtNum(d.total,2)} ${escapeHtml(d.unidade||"")}</td><td class="num-cell">${d.porCliente.size}</td><td class="footnote" style="margin:0;">${[...new Set([...d.porCliente.values()].map(p=>p.nome))].join(", ")}</td></tr>`).join("");
-  const theadReceita = ehTodos
-    ? `<tr><th>Receita</th><th>Grupo</th><th style="text-align:right;">Almoço</th><th style="text-align:right;">Jantar</th><th style="text-align:right;">Ceia</th><th style="text-align:right;">Total</th><th style="text-align:right;">Cubas</th><th style="text-align:right;">Clientes</th><th>Atende</th><th></th></tr>`
+  const theadReceita = mostrarBreakdown
+    ? `<tr><th>Receita</th><th>Grupo</th>${servAtivos.map(t => `<th style="text-align:right;">${t.nome}</th>`).join("")}<th style="text-align:right;">Total</th><th style="text-align:right;">Cubas</th><th style="text-align:right;">Clientes</th><th>Atende</th><th></th></tr>`
     : `<tr><th>Receita</th><th>Grupo</th><th style="text-align:right;">Quantidade</th><th style="text-align:right;">Cubas</th><th style="text-align:right;">Clientes</th><th>Atende</th><th></th></tr>`;
   return `
     <div class="panel">
@@ -10820,8 +10828,8 @@ function pcpAbrirImpressaoReceitas(titulo, contextoTxt, corpoHtml){
   setTimeout(() => { try{ w.print(); }catch(e){} }, 300);
 }
 function pcpContextoImpressao(res, margemPct){
-  const turnoNome = PCP_TURNOS.find(t => t.id === res.turno)?.nome || "Todos";
-  return `${DIA_LABEL[res.dia]} · ${rotuloSemana(res.semana)} · Atendimento: ${turnoNome} · Unidade: ${res.unidade === "todos" ? "Matriz + Filial" : nomeUnidadeCompra(res.unidade)}${margemPct ? ` · margem de produção de ${fmtNum(margemPct,1)}% incluída` : ""}`;
+  const servNome = res.servicos.length === 3 ? "Todos" : res.servicos.map(id => PCP_TURNOS.find(t => t.id === id)?.nome).join(" + ");
+  return `${DIA_LABEL[res.dia]} · ${rotuloSemana(res.semana)} · Atendimento: ${servNome} · Unidade: ${res.unidade === "todos" ? "Matriz + Filial" : nomeUnidadeCompra(res.unidade)}${margemPct ? ` · margem de produção de ${fmtNum(margemPct,1)}% incluída` : ""}`;
 }
 // botão por linha da tabela: imprime só aquela receita.
 function pcpImprimirReceitaUnica(res, margemPct, fichaId){
@@ -12142,16 +12150,16 @@ async function renderPCP(){
     </div>`;
 
   const unidadeFiltro = pcpUnidadeSel === "todos" ? null : pcpUnidadeSel;
-  // turno (almoço/jantar/ceia/todos) só se aplica nas 3 telas que leem "quanto produzir" direto (Produção,
-  // Volume por cliente, Conferir antes de imprimir) — Substituições/Pesos/Romaneio/Açougue/Requisição
-  // continuam como sempre foram (turno "todos"), pra não mudar o significado de telas que o Marcelo não
-  // pediu pra mexer.
-  const turnoAplicavel = ehProducao || pcpSubView === "volume" || ehRevisar;
-  const turnoFiltro = turnoAplicavel ? pcpTurnoSel : "todos";
+  // serviços (Almoço/Jantar/Ceia, multi-seleção) só se aplica nas 3 telas que leem "quanto produzir" direto
+  // (Produção, Volume por cliente, Conferir antes de imprimir) — Substituições/Pesos/Romaneio/Açougue/
+  // Requisição continuam como sempre foram (todos os 3 serviços), pra não mudar o significado de telas
+  // que o Marcelo não pediu pra mexer.
+  const servicosAplicavel = ehProducao || pcpSubView === "volume" || ehRevisar;
+  const servicosFiltro = servicosAplicavel ? pcpServicosSel : null;
   // precisa carregar a semana INTEIRA (não só o dia selecionado) porque a cobertura do açougue chama a
   // Requisição de outros dias internamente — ver comentário em pcpSubstituicoesCache.
   await pcpCarregarSubstituicoes(pcpSemanaSel, unidadeFiltro);
-  const res = (ehAcougue || ehEstoque) ? null : pcpCalcularDia(pcpSemanaSel, pcpDiaSel, unidadeFiltro, turnoFiltro);
+  const res = (ehAcougue || ehEstoque) ? null : pcpCalcularDia(pcpSemanaSel, pcpDiaSel, unidadeFiltro, servicosFiltro);
   const reqMapa = ehEstoque ? pcpCalcularRequisicaoComMapa(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
   const reqFichas = ehEstoque ? reqMapa.setores.map(s => ({ setor: s, fichas: pcpFichasEstoqueAgrupadas(s.mapa) })) : null;
   const acougueCobertura = ehAcougue ? pcpCalcularAcougueComCobertura(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
@@ -12182,7 +12190,7 @@ async function renderPCP(){
       <div class="seg-toggle" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" data-pcpuni="${u.id}" class="${pcpUnidadeSel===u.id?"active":""}">${u.nome}${u.id !== "todos" ? ` <span style="opacity:.65; font-size:10.5px;">${pcpContagemUnidade(u.id)} clientes</span>` : ""}</button>`).join("")}</div>
       <select id="pcp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===pcpSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))}</option>`).join("")}</select>
       <div class="seg-toggle" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" data-pcpdia="${d}" class="${pcpDiaSel===d?"active":""}">${DIA_LABEL[d].slice(0,3)}</button>`).join("")}</div>
-      ${turnoAplicavel ? `<div class="seg-toggle" id="pcp-turno-tabs">${PCP_TURNOS.map(t => `<button type="button" data-pcpturno="${t.id}" class="${pcpTurnoSel===t.id?"active":""}">${t.nome}</button>`).join("")}</div>` : ""}
+      ${servicosAplicavel ? `<div id="pcp-serv-tabs" style="display:flex; gap:12px; align-items:center;">${PCP_TURNOS.filter(t=>t.id!=="todos").map(t => `<label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted); white-space:nowrap;"><input type="checkbox" data-pcp-serv="${t.id}" ${pcpServicosSel.has(t.id)?"checked":""}> ${t.nome}</label>`).join("")}</div>` : ""}
     </div>
     ${ehAcougue ? `
       ${pcpMapaCarnesHtml(acougueCobertura)}
@@ -12214,10 +12222,8 @@ async function renderPCP(){
         <div class="vn-card"><div class="vn-label">Receitas</div><div class="vn-value">${res.receitas.length}</div></div>
         <div class="vn-card"><div class="vn-label">Clientes</div><div class="vn-value">${res.clientes.length}</div></div>
       </div>
-      ${res.turno === "todos" ? `<div class="es-kpis inner" style="margin-bottom:16px;">
-        <div class="vn-card"><div class="vn-label">Almoço</div><div class="vn-value">${fmtNum(res.receitas.reduce((s,r)=>s+(r.porTurno.almoco||0),0),1)} kg</div></div>
-        <div class="vn-card"><div class="vn-label">Jantar</div><div class="vn-value">${fmtNum(res.receitas.reduce((s,r)=>s+(r.porTurno.jantar||0),0),1)} kg</div></div>
-        <div class="vn-card"><div class="vn-label">Ceia</div><div class="vn-value">${fmtNum(res.receitas.reduce((s,r)=>s+(r.porTurno.ceia||0),0),1)} kg</div></div>
+      ${res.servicos.length > 1 ? `<div class="es-kpis inner" style="margin-bottom:16px;">
+        ${res.servicos.map(id => `<div class="vn-card"><div class="vn-label">${PCP_TURNOS.find(t=>t.id===id).nome}</div><div class="vn-value">${fmtNum(res.receitas.reduce((s,r)=>s+(r.porTurno[id]||0),0),1)} kg</div></div>`).join("")}
       </div>` : ""}
       ${res.avisos.length ? `<details class="painel-notas" style="margin-bottom:14px;" ${res.avisos.some(a=>a.tipo==="critical") ? "open" : ""}>
         <summary>${res.avisos.length} aviso${res.avisos.length>1?"s":""} antes de produzir${res.avisos.some(a=>a.tipo==="critical") ? " — tem crítico" : ""}</summary>
@@ -12238,8 +12244,14 @@ async function renderPCP(){
   content.querySelector("#pcp-uni-tabs").addEventListener("click", e => { const b = e.target.closest("button[data-pcpuni]"); if(!b) return; pcpUnidadeSel = b.dataset.pcpuni; renderPCP(); });
   content.querySelector("#pcp-dia-tabs").addEventListener("click", e => { const b = e.target.closest("button[data-pcpdia]"); if(!b) return; pcpDiaSel = b.dataset.pcpdia; renderPCP(); });
   content.querySelector("#pcp-semana").addEventListener("change", e => { pcpSemanaSel = parseInt(e.target.value,10); renderPCP(); });
-  const turnoTabs = content.querySelector("#pcp-turno-tabs");
-  if(turnoTabs) turnoTabs.addEventListener("click", e => { const b = e.target.closest("button[data-pcpturno]"); if(!b) return; pcpTurnoSel = b.dataset.pcpturno; renderPCP(); });
+  const servTabs = content.querySelector("#pcp-serv-tabs");
+  if(servTabs) servTabs.addEventListener("change", e => {
+    const chk = e.target.closest("input[data-pcp-serv]");
+    if(!chk) return;
+    if(chk.checked) pcpServicosSel.add(chk.dataset.pcpServ); else pcpServicosSel.delete(chk.dataset.pcpServ);
+    if(!pcpServicosSel.size){ pcpServicosSel.add(chk.dataset.pcpServ); chk.checked = true; } // nunca fica vazio
+    renderPCP();
+  });
   if(ehProducao){
     const btnReceitas = document.getElementById("pcp-imprimir-receitas-producao");
     if(btnReceitas) btnReceitas.addEventListener("click", () => pcpImprimirReceitasProducao(res, margemPct));
