@@ -10460,7 +10460,40 @@ function pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro){
   const kgTotal = lista.reduce((s, r) => s + r.total, 0);
   // "servicos": sempre na ordem almoço/jantar/ceia, independente da ordem em que o Set foi montado.
   const servicos = PCP_TURNOS.filter(t => t.id !== "todos" && (!servicosFiltro || servicosFiltro.has(t.id))).map(t => t.id);
-  return { semana, dia, unidade: unidadeFiltro || "todos", servicos, receitas: lista, diretos: [...diretos.values()].sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR')), clientes: [...clientes.values()].sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome))), semProducao: semProducao.sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome))), avisos, pessoasTot, kgTotal };
+  return { semana, dia, unidade: unidadeFiltro || "todos", servicos, receitas: lista, diretos: [...diretos.values()].sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR')), subs: pcpSubReceitasDoDia(lista), clientes: [...clientes.values()].sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome))), semProducao: semProducao.sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome))), avisos, pessoasTot, kgTotal };
+}
+
+// ---------- Fase 4: Sub-receitas (14/10/2026) ----------
+// Fichas Técnicas já suporta uma linha de ingrediente apontar pra OUTRA ficha (ficha_id) em vez de um
+// insumo — "sub-receita" (confirmado contra o banco real: 6 fichas PRATO FIT + GALINHADA IND. usam
+// BRÓCOLIS COM CENOURA AO VAPOR, OMELETE DE FORNO etc. como ingrediente) — o motor de custo
+// (computeFicha) e o de insumo (insumosPorKgFicha) já recursam nisso certinho, com proteção contra
+// ciclo. O que faltava era a PRODUÇÃO avisar "prepare essa sub-receita antes" — pedido do Marcelo,
+// modelo do protótipo de referência (res.subs). Só 1 nível (a sub-receita direta da receita do
+// cardápio do dia) — se uma sub-receita tiver OUTRA sub-receita dentro, essa 2ª camada não aparece
+// separada aqui (seria preciso recursar feito insumosPorKgFicha) — ponto cego registrado; não é o caso
+// de nenhuma ficha real hoje (confirmado via banco em 14/10/2026).
+function pcpSubReceitasDoDia(receitasTopo){
+  const topoIds = new Set(receitasTopo.map(r => r.fichaId).filter(Boolean));
+  const subs = new Map(); // fichaId da sub-receita -> {fichaId, nome, total, usadaEm: Map(nomeReceitaPai -> kg)}
+  receitasTopo.forEach(R => {
+    if(!R.fichaId) return;
+    const fPai = fichas.get(R.fichaId);
+    if(!fPai || !(fPai.rendimento_kg > 0)) return;
+    const batchesPai = R.total / fPai.rendimento_kg; // quantas "receitas-base" da ficha pai estão sendo feitas
+    (fPai.ingredientes || []).forEach(l => {
+      if(!l.ficha_id || topoIds.has(l.ficha_id)) return; // já aparece na tabela principal — não duplica aqui
+      const subFicha = fichas.get(l.ficha_id);
+      if(!subFicha) return;
+      const kg = batchesPai * (l.peso_bruto || 0);
+      if(!(kg > 0)) return;
+      const S = subs.get(l.ficha_id) || { fichaId: l.ficha_id, nome: subFicha.nome, total: 0, usadaEm: new Map() };
+      S.total += kg;
+      S.usadaEm.set(R.nome, (S.usadaEm.get(R.nome) || 0) + kg);
+      subs.set(l.ficha_id, S);
+    });
+  });
+  return [...subs.values()].sort((a,b) => a.nome.localeCompare(b.nome, 'pt-BR'));
 }
 
 // ---------- Fase 2: Requisição do estoque por setor ----------
@@ -10762,6 +10795,7 @@ function pcpProducaoHtml(res, margemPct){
         <div class="table-wrap"><table><thead>${theadReceita}</thead><tbody>${linhasReceita || `<tr><td colspan="${nCols}" class="empty-state">—</td></tr>`}</tbody></table></div>
       </div>
     </div>
+    ${pcpSubsPanelHtml(res.subs, margemPct)}
     ${pcpDiretosPanelHtml(res.diretos)}
   `;
 }
@@ -10771,6 +10805,24 @@ function pcpDiretosPanelHtml(diretos){
   return `<div class="panel">
       <div class="panel-head"><h3><i class="ico" data-lucide="package"></i>Itens prontos (sem ficha técnica)</h3><span class="hint">lançados direto no cardápio — não passam pela cozinha, ex. kit talher, marmita avulsa</span></div>
       <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Item</th><th style="text-align:right;">Quantidade</th><th style="text-align:right;">Clientes</th><th>Atende</th></tr></thead><tbody>${linhas}</tbody></table></div></div>
+    </div>`;
+}
+// Fase 4: painel "Sub-receitas (preparar antes)" — fichas usadas como ingrediente de outra receita do
+// cardápio do dia (ver pcpSubReceitasDoDia). `unidade`, quando informado, é só pra apontar o botão de
+// impressão pra data-pcp-imprimir-receita-uni (usado em "Ambas" lado a lado); sem ele, usa
+// data-pcp-imprimir-receita (telas de cozinha única) — os dois já têm wiring pronto em renderPCP.
+function pcpSubsPanelHtml(subs, margemPct, unidade){
+  if(!subs || !subs.length) return "";
+  const fator = 1 + (margemPct || 0) / 100;
+  const linhas = subs.map(S => {
+    const kg = S.total * fator;
+    const usadaEmTxt = [...S.usadaEm.entries()].map(([nome, kgUso]) => `${escapeHtml(nome)} (${pcpFmtQtd(kgUso * fator)})`).join(", ");
+    const attrBtn = unidade ? `data-pcp-imprimir-receita-uni="${S.fichaId}|${unidade}"` : `data-pcp-imprimir-receita="${S.fichaId}"`;
+    return `<tr><td class="name-cell">${escapeHtml(S.nome)}</td><td class="num-cell">${pcpFmtQtd(kg)}</td><td class="footnote" style="margin:0;">${usadaEmTxt}</td><td class="num-cell"><button class="btn small ghost" ${attrBtn} title="Imprimir esta sub-receita">${iconeImprimir()}</button></td></tr>`;
+  }).join("");
+  return `<div class="panel">
+      <div class="panel-head"><h3><i class="ico" data-lucide="layers"></i>Sub-receitas (preparar antes)</h3><span class="hint">fichas usadas como ingrediente de outra receita do dia — preparar antes de montar o prato final</span></div>
+      <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Sub-receita</th><th style="text-align:right;">Produzir</th><th>Usada em</th><th></th></tr></thead><tbody>${linhas}</tbody></table></div></div>
     </div>`;
 }
 // ---------- "Ambas" lado a lado (Fase 3, 14/10/2026) ----------
@@ -10820,6 +10872,7 @@ function pcpProducaoAmbasHtml(listaRes, margemPct){
         <p class="footnote" style="margin:14px 0 0;">Cada cozinha produz só pros seus próprios clientes — os números nunca somam entre Matriz e Filial. Pra imprimir a ordem de produção ou as receitas do dia, escolha uma cozinha só (Matriz ou Filial) acima.</p>
       </div>
     </div>
+    ${listaRes.map(res => pcpSubsPanelHtml(res.subs, margemPct, res.unidade)).join("")}
     ${listaRes.map(res => pcpDiretosPanelHtml(res.diretos)).join("")}
   `;
 }
@@ -10886,20 +10939,34 @@ function pcpContextoImpressao(res, margemPct){
   return `${DIA_LABEL[res.dia]} · ${rotuloSemana(res.semana)} · Atendimento: ${servNome} · Unidade: ${res.unidade === "todos" ? "Matriz + Filial" : nomeUnidadeCompra(res.unidade)}${margemPct ? ` · margem de produção de ${fmtNum(margemPct,1)}% incluída` : ""}`;
 }
 // botão por linha da tabela: imprime só aquela receita.
+// olha primeiro na tabela principal (res.receitas); se não achar, olha nas sub-receitas (res.subs — Fase
+// 4) — é de lá que vêm os botões de impressão do painel "Sub-receitas (preparar antes)".
 function pcpImprimirReceitaUnica(res, margemPct, fichaId){
   const fator = 1 + (margemPct || 0) / 100;
   const r = res.receitas.find(x => x.fichaId === fichaId);
-  if(!r){ showAlert("Receita não encontrada na produção deste dia/turno."); return; }
-  const kg = r.total * fator;
-  pcpAbrirImpressaoReceitas(`Ficha de produção — ${r.nome}`, pcpContextoImpressao(res, margemPct), pcpReceitaBlocoHtml(r.fichaId, r.nome, kg));
+  if(r){
+    const kg = r.total * fator;
+    pcpAbrirImpressaoReceitas(`Ficha de produção — ${r.nome}`, pcpContextoImpressao(res, margemPct), pcpReceitaBlocoHtml(r.fichaId, r.nome, kg));
+    return;
+  }
+  const s = (res.subs || []).find(x => x.fichaId === fichaId);
+  if(s){
+    const kg = s.total * fator;
+    pcpAbrirImpressaoReceitas(`Ficha de produção — ${s.nome} (sub-receita)`, pcpContextoImpressao(res, margemPct), pcpReceitaBlocoHtml(s.fichaId, s.nome, kg));
+    return;
+  }
+  showAlert("Receita não encontrada na produção deste dia/turno.");
 }
 // "Imprimir receitas desta produção" — TODAS as fichas que entram na tabela atual (já filtrada por
-// turno/unidade/dia), uma por página, pra entregar pronto pra cozinha.
+// turno/unidade/dia), uma por página, pra entregar pronto pra cozinha — incluindo as sub-receitas
+// (Fase 4), que entram ANTES das receitas principais (pra cozinha preparar a base primeiro).
 function pcpImprimirReceitasProducao(res, margemPct){
   const fator = 1 + (margemPct || 0) / 100;
   const comFicha = res.receitas.filter(r => r.fichaId);
-  if(!comFicha.length){ showAlert("Nenhuma receita com ficha técnica nesta produção."); return; }
-  const corpo = comFicha.map(r => pcpReceitaBlocoHtml(r.fichaId, r.nome, r.total * fator)).join("");
+  const subs = res.subs || [];
+  if(!comFicha.length && !subs.length){ showAlert("Nenhuma receita com ficha técnica nesta produção."); return; }
+  const corpoSubs = subs.map(s => pcpReceitaBlocoHtml(s.fichaId, s.nome + " (sub-receita)", s.total * fator)).join("");
+  const corpo = corpoSubs + comFicha.map(r => pcpReceitaBlocoHtml(r.fichaId, r.nome, r.total * fator)).join("");
   pcpAbrirImpressaoReceitas("Receitas da produção", pcpContextoImpressao(res, margemPct), corpo);
 }
 // "Imprimir ordem de produção" — não é a ficha técnica (ingrediente a ingrediente), é a lista enxuta
