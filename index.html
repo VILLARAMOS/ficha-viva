@@ -10344,7 +10344,11 @@ function pcpAcumularDia(dayDoc, numPessoas, contratoId, nomeCliente, produtoId, 
   if(!dayDoc) return false;
   let achouAlgo = false;
   (dayDoc.itens || []).forEach(it => {
-    const pessoasEf = (pessoasSubstituidas > 0 && categoriaBase(it.categoria) === "Proteína") ? Math.max(0, numPessoas - pessoasSubstituidas) : numPessoas;
+    // substituição é só no almoço (ver pcpAplicarSubstituicoesReceitas) — então só reduz o efetivo da
+    // proteína quando turno==="almoco"; sem esse filtro, jantar e ceia do MESMO contrato (que reusam o
+    // mesmo pessoasSubstituidas, calculado 1x por contrato/dia em pcpCalcularDia) perdiam pessoas de
+    // proteína que nunca foram trocadas naquele turno. Achado testando turno a turno (14/10/2026).
+    const pessoasEf = (pessoasSubstituidas > 0 && turno === "almoco" && categoriaBase(it.categoria) === "Proteína") ? Math.max(0, numPessoas - pessoasSubstituidas) : numPessoas;
     const r = pcpItemProducao(it, pessoasEf, ct);
     if(!r) return;
     achouAlgo = true;
@@ -10440,7 +10444,10 @@ function pcpCalcularDia(semana, dia, unidadeFiltro, turnoFiltro){
         pessoasTot += qtd;
         pcpProducaoUnidadeItem(almocoIdx, ci.produto_id, ct, contratoId, ct.nome_cliente, semana, dia, qtd, receitas, diretos, avisos, pessoasSubst);
       });
-      if(teveItem) pcpAplicarSubstituicoesReceitas(dia, contratoId, ct.nome_cliente, receitas, avisos);
+      // substituição (troca de proteína) é um swap de almoço — não repete a mesma ficha substituta de novo
+      // em toda visão filtrada por jantar/ceia (antes aparecia igual nas 3, inflando a soma das 3 abas em
+      // relação ao total de "Todos"). Achado testando turno a turno (14/10/2026).
+      if(teveItem && (!turnoFiltro || turnoFiltro === "todos" || turnoFiltro === "almoco")) pcpAplicarSubstituicoesReceitas(dia, contratoId, ct.nome_cliente, receitas, avisos);
       // cliente tem produto de refeição cadastrado pro turno filtrado, mas nenhuma quantidade prevista caiu
       // (nem lançado, nem média, nem ciclo, nem quantidade fixa do contrato) — hoje esse cliente simplesmente
       // some do painel sem nenhum sinal; entra na lista de conferência em vez de sumir calado.
