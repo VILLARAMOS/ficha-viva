@@ -10331,6 +10331,45 @@ function pcpAplicarSubstituicoesInsumos(dia, contratoId, buckets){
   });
 }
 
+// ---------- Fase 5: Ajustes do dia (14/10/2026) ----------
+// Override manual do valor efetivo de UMA receita pra UM cliente, num serviço específico (almoço/
+// jantar/ceia), com motivo + observação, gravado em pcp_ajustes (tabela já existia no banco, sem
+// nenhuma linha e sem nenhuma referência no código até agora — schema confirmado contra o Postgres
+// antes de escrever isso: semana/dia/unidade/contrato_id/ficha_id/servico/valor_efetivo/motivo/
+// observacao/alterado_em/alterado_por, UNIQUE(semana,dia,unidade,contrato_id,ficha_id,servico), CHECK
+// servico in (almoco,jantar,ceia), CHECK valor_efetivo>=0). Modelo do protótipo de referência que o
+// Marcelo pediu pra trazer (Fase 5 do roadmap).
+// Cache por DIA (mesmo motivo do pcpSubstituicoesCache — cobertura do açougue lê outros dias da semana).
+let pcpAjustesCache = new Map(); // dia -> Map("contratoId|fichaId|servico" -> row do banco
+async function pcpCarregarAjustes(semana, unidade){
+  pcpAjustesCache = new Map();
+  let q = sb.from('pcp_ajustes').select('*').eq('semana', semana);
+  if(unidade && unidade !== "todos") q = q.eq('unidade', unidade);
+  const { data, error } = await q;
+  if(error){ showAlert("Erro ao carregar ajustes do dia: " + error.message); return; }
+  (data || []).forEach(row => {
+    const porDia = pcpAjustesCache.get(row.dia) || new Map();
+    porDia.set(row.contrato_id + "|" + row.ficha_id + "|" + row.servico, row);
+    pcpAjustesCache.set(row.dia, porDia);
+  });
+}
+function pcpBuscarAjuste(dia, contratoId, fichaId, servico){
+  const porDia = pcpAjustesCache.get(dia);
+  return porDia ? (porDia.get(contratoId + "|" + fichaId + "|" + servico) || null) : null;
+}
+const PCP_AJUSTE_MOTIVOS = ["Cliente pediu mais", "Cliente pediu menos", "Sobra da véspera", "Falta recorrente", "Evento especial", "Correção de gramagem", "Outro"];
+async function pcpSalvarAjuste(semana, dia, unidade, contratoId, fichaId, servico, valorEfetivo, motivo, observacao){
+  const row = { semana, dia, unidade, contrato_id: contratoId, ficha_id: fichaId, servico, valor_efetivo: valorEfetivo, motivo: motivo || "", observacao: observacao || "", alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
+  const { error } = await sb.from('pcp_ajustes').upsert(row, { onConflict: 'semana,dia,unidade,contrato_id,ficha_id,servico' });
+  if(error){ showAlert("Erro ao salvar ajuste: " + error.message); return false; }
+  return true;
+}
+async function pcpRemoverAjuste(id){
+  const { error } = await sb.from('pcp_ajustes').delete().eq('id', id);
+  if(error){ showAlert("Erro ao remover ajuste: " + error.message); return false; }
+  return true;
+}
+
 // explode um dia de cardápio (dayDoc.itens) pra um cliente/produto, acumulando em `receitas` (por ficha) e
 // `diretos` (insumo lançado direto no cardápio, sem ficha — ex. descartável) — com detalhe por cliente
 // (pra "Volume por cliente"/etiqueta de cuba). `pessoasSubstituidas` reduz o efetivo só do grupo PROTEÍNA
@@ -10340,7 +10379,9 @@ function pcpAplicarSubstituicoesInsumos(dia, contratoId, buckets){
 // `turno` ("almoco"|"jantar"|"ceia", de pcpTurnoDoProduto(produtoId)) só serve pra alimentar o detalhamento
 // R.porTurno/D.porTurno (colunas Almoço/Jantar/Ceia da tabela de Produção) — o total e o porCliente continuam
 // somando os 3 turnos normalmente, filtro de turno é feito antes, em pcpCalcularDia.
-function pcpAcumularDia(dayDoc, numPessoas, contratoId, nomeCliente, produtoId, receitas, diretos, pessoasSubstituidas, ct, turno){
+// `dia` só serve pra consultar pcpAjustesCache (Fase 5 — Ajustes do dia): o ajuste é sempre por
+// contrato×ficha×serviço NAQUELE dia, nunca a semana inteira.
+function pcpAcumularDia(dayDoc, numPessoas, contratoId, nomeCliente, produtoId, receitas, diretos, pessoasSubstituidas, ct, turno, dia){
   if(!dayDoc) return false;
   let achouAlgo = false;
   (dayDoc.itens || []).forEach(it => {
@@ -10355,11 +10396,19 @@ function pcpAcumularDia(dayDoc, numPessoas, contratoId, nomeCliente, produtoId, 
     const chave = contratoId + "|" + produtoId;
     if(r.fichaId){
       const f = fichas.get(r.fichaId);
+      // Fase 5 — Ajustes do dia: se tem ajuste salvo pra este contrato×ficha×serviço, o valor efetivo
+      // digitado SUBSTITUI o calculado (não soma) — é o "valor efetivo" pra essa produção deste dia.
+      // Não se aplica a receita injetada por substituição de proteína (pc.produtoId null nesse caso) —
+      // ponto cego registrado, não é pedido do Marcelo até agora.
+      const ajuste = pcpBuscarAjuste(dia, contratoId, r.fichaId, turno);
+      const qtdOriginal = r.qtd;
+      const qtdEf = ajuste ? Number(ajuste.valor_efetivo) : qtdOriginal;
       const R = receitas.get(r.fichaId) || { fichaId: r.fichaId, nome: f ? f.nome : (it.nome || r.fichaId), grupo: pcpGrupoFicha(f), total: 0, porTurno: {almoco:0, jantar:0, ceia:0}, porCliente: new Map() };
-      R.total += r.qtd;
-      R.porTurno[turno] = (R.porTurno[turno] || 0) + r.qtd;
-      const pc = R.porCliente.get(chave) || { contratoId, nome: nomeCliente, produtoId, qtd: 0, pessoas: 0 };
-      pc.qtd += r.qtd; pc.pessoas += pessoasEf;
+      R.total += qtdEf;
+      R.porTurno[turno] = (R.porTurno[turno] || 0) + qtdEf;
+      const pc = R.porCliente.get(chave) || { contratoId, nome: nomeCliente, produtoId, qtd: 0, qtdOriginal: 0, pessoas: 0, ajuste: null };
+      pc.qtd += qtdEf; pc.qtdOriginal += qtdOriginal; pc.pessoas += pessoasEf;
+      if(ajuste) pc.ajuste = ajuste;
       R.porCliente.set(chave, pc);
       receitas.set(r.fichaId, R);
     } else if(r.insumoId){
@@ -10407,7 +10456,7 @@ function pcpProducaoUnidadeItem(almocoIdx, produtoId, contrato, contratoId, nome
   }
   // peso de expedição só pra refeição transportada (cardapio_refeicao) — marmita e café seguem só o cardápio.
   const ctParaPeso = cat.tipo_custo === "cardapio_refeicao" ? contrato : null;
-  const achou = pcpAcumularDia(row, qtdEf, contratoId, nomeCliente, produtoId, receitas, diretos, pessoasSubstituidas, ctParaPeso, pcpTurnoDoProduto(produtoId));
+  const achou = pcpAcumularDia(row, qtdEf, contratoId, nomeCliente, produtoId, receitas, diretos, pessoasSubstituidas, ctParaPeso, pcpTurnoDoProduto(produtoId), dia);
   if(!achou) avisos.push({ tipo: "warn", txt: `${nomeCliente}: o cardápio de ${cat.nome} não tem nenhum item com gramagem neste dia — nada entra na produção.` });
 }
 
@@ -12081,6 +12130,71 @@ function pcpSubstituicoesBind(content, semana, dia, unidade){
   });
 }
 
+/* ---------- Fase 5: Ajustes do dia (própria aba) ---------- */
+// Lista, por cliente, cada receita×serviço que entra na produção do dia — cada `pc` (porCliente) já
+// corresponde a 1 único serviço, porque produtoId determina o serviço 1:1 (pcpTurnoDoProduto), então não
+// precisa de nenhuma quebra adicional por turno aqui. `pc.produtoId == null` é a chave injetada por
+// substituição de proteína (ver pcpAplicarSubstituicoesReceitas) — essa não é ajustável nesta tela.
+function pcpAjustesLinhas(res){
+  const porCliente = new Map();
+  res.receitas.forEach(r => {
+    r.porCliente.forEach(pc => {
+      if(!pc.produtoId) return;
+      const servico = pcpTurnoDoProduto(pc.produtoId);
+      const grupo = porCliente.get(pc.contratoId) || { id: pc.contratoId, nome: pc.nome, linhas: [] };
+      grupo.linhas.push({ fichaId: r.fichaId, nomeReceita: r.nome, servico, qtdCalculada: pc.qtdOriginal, ajuste: pc.ajuste || null });
+      porCliente.set(pc.contratoId, grupo);
+    });
+  });
+  return [...porCliente.values()].sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
+}
+function pcpAjustesHtml(res){
+  const grupos = pcpAjustesLinhas(res);
+  if(!grupos.length) return `<div class="empty-state">Nenhum cliente com produção prevista para este dia.</div>`;
+  const opcoesMotivo = atual => `<option value="">—</option>` + PCP_AJUSTE_MOTIVOS.map(m => `<option value="${escapeHtml(m)}" ${atual===m?"selected":""}>${escapeHtml(m)}</option>`).join("");
+  const cards = grupos.map(g => `<div class="panel" style="margin-bottom:14px;">
+      <div class="panel-head"><h3 style="font-size:14px;">${escapeHtml(g.nome)}</h3></div>
+      <div class="panel-body"><div class="table-wrap"><table>
+        <thead><tr><th>Receita</th><th>Serviço</th><th style="text-align:right;">Calculado</th><th style="text-align:right;">Valor efetivo</th><th>Motivo</th><th>Observação</th><th></th></tr></thead>
+        <tbody>${g.linhas.map(l => `<tr data-ajuste-contrato="${g.id}" data-ajuste-ficha="${l.fichaId}" data-ajuste-servico="${l.servico}" ${l.ajuste ? `data-ajuste-id="${l.ajuste.id}"` : ""}>
+          <td class="name-cell">${escapeHtml(l.nomeReceita)}</td>
+          <td>${PCP_TURNOS.find(t=>t.id===l.servico).nome}</td>
+          <td class="num-cell">${pcpFmtQtd(l.qtdCalculada)}</td>
+          <td><input type="number" step="0.01" min="0" class="ajuste-valor" value="${l.ajuste ? Number(l.ajuste.valor_efetivo) : ""}" placeholder="${pcpFmtQtd(l.qtdCalculada)}" style="width:90px;"></td>
+          <td><select class="ajuste-motivo" style="width:150px;">${opcoesMotivo(l.ajuste ? l.ajuste.motivo : "")}</select></td>
+          <td><input type="text" class="ajuste-obs" value="${l.ajuste ? escapeHtml(l.ajuste.observacao||"") : ""}" maxlength="200" style="width:160px;" placeholder="observação"></td>
+          <td style="white-space:nowrap;"><button type="button" class="btn small primary ajuste-salvar">Salvar</button>${l.ajuste ? `<button type="button" class="btn small ghost ajuste-remover">Remover</button>` : ""}</td>
+        </tr>`).join("")}</tbody>
+      </table></div></div>
+    </div>`).join("");
+  return `<div class="panel" style="margin-bottom:14px;"><div class="panel-body"><p class="footnote" style="margin:0;">Ajuste manual do valor efetivo de uma receita pra um cliente, num serviço específico — ex.: cliente pediu mais, sobra da véspera. O valor digitado SUBSTITUI o calculado só nesta produção deste dia (não muda custo nem compra) e some se você remover o ajuste. Motivo é obrigatório, observação é livre — os dois ficam guardados pra consulta depois.</p></div></div>
+    ${cards}`;
+}
+function pcpAjustesBind(content, semana, dia){
+  content.addEventListener("click", async e => {
+    const btnSalvar = e.target.closest("button.ajuste-salvar");
+    if(btnSalvar){
+      const tr = btnSalvar.closest("tr[data-ajuste-contrato]");
+      const valor = parseFloat(tr.querySelector(".ajuste-valor").value);
+      const motivo = tr.querySelector(".ajuste-motivo").value;
+      const observacao = tr.querySelector(".ajuste-obs").value;
+      if(!(valor >= 0)){ showAlert("Informe o valor efetivo (maior ou igual a zero)."); return; }
+      if(!motivo){ showAlert("Escolha um motivo para o ajuste."); return; }
+      const contratoId = tr.dataset.ajusteContrato;
+      const ct = contratos.get(contratoId);
+      if(!ct || !ct.unidade){ showAlert("Não achei a unidade deste contrato — não salvei o ajuste."); return; }
+      const ok = await pcpSalvarAjuste(semana, dia, ct.unidade, contratoId, tr.dataset.ajusteFicha, tr.dataset.ajusteServico, valor, motivo, observacao);
+      if(ok) renderPCP();
+      return;
+    }
+    const btnRemover = e.target.closest("button.ajuste-remover");
+    if(btnRemover){
+      const tr = btnRemover.closest("tr[data-ajuste-id]");
+      if(tr && tr.dataset.ajusteId && await pcpRemoverAjuste(tr.dataset.ajusteId)) renderPCP();
+    }
+  });
+}
+
 /* ---------- Pesos por cliente (própria aba — peso de expedição, v91 portado do artifact) ---------- */
 const peCss = v => (typeof CSS !== "undefined" && CSS.escape) ? CSS.escape(v) : String(v).replace(/["\\]/g, "\\$&");
 const PESO_EXP_MOTIVOS = ["Consumo real do cliente", "Pedido do cliente", "Sobra recorrente", "Falta recorrente", "Correção de gramagem", "Outro"];
@@ -12252,13 +12366,14 @@ async function renderPCP(){
   const ehSubst = pcpSubView === "substituicoes";
   const ehPesos = pcpSubView === "pesos";
   const ehRevisar = pcpSubView === "revisar";
+  const ehAjustes = pcpSubView === "ajustes";
   const ehProducao = pcpSubView === "producao";
   const pcpDataSel = dataDoDia(pcpSemanaSel, pcpDiaSel).toISOString().slice(0,10);
   const pcpDiaLabelSel = DIA_LABEL[pcpDiaSel];
   document.getElementById("topbar-actions").innerHTML = (ehAcougue || ehEstoque) ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-acg-config">Cortes e dias</button>
-    </div>` : (ehConferencia || ehCafe || ehSubst || ehPesos || ehRevisar) ? "" : ehRomaneio ? `
+    </div>` : (ehConferencia || ehCafe || ehSubst || ehPesos || ehRevisar || ehAjustes) ? "" : ehRomaneio ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-rotas-gerenciar">Gerenciar rotas</button>
     </div>` : `
@@ -12280,6 +12395,8 @@ async function renderPCP(){
   // precisa carregar a semana INTEIRA (não só o dia selecionado) porque a cobertura do açougue chama a
   // Requisição de outros dias internamente — ver comentário em pcpSubstituicoesCache.
   await pcpCarregarSubstituicoes(pcpSemanaSel, unidadeFiltro);
+  // precisa estar carregado ANTES de pcpCalcularDia (pcpAcumularDia lê pcpAjustesCache de forma síncrona).
+  await pcpCarregarAjustes(pcpSemanaSel, unidadeFiltro);
   const res = (ehAcougue || ehEstoque) ? null : pcpCalcularDia(pcpSemanaSel, pcpDiaSel, unidadeFiltro, servicosFiltro);
   // "Ambas" na tela de Produção mostra Matriz e Filial LADO A LADO (nunca somadas) — ver pcpProducaoAmbasHtml.
   // Diferente do "Ambas" das outras sub-abas (que continua somando as duas, unidadeFiltro=null em `res`).
@@ -12302,6 +12419,7 @@ async function renderPCP(){
     <div class="seg-toggle" id="pcp-subview-tabs" style="margin-bottom:14px; width:fit-content;">
       <button type="button" data-pcpsub="producao" class="${pcpSubView==="producao"?"active":""}">Produção da cozinha</button>
       <button type="button" data-pcpsub="revisar" class="${pcpSubView==="revisar"?"active":""}">Conferir antes de imprimir</button>
+      <button type="button" data-pcpsub="ajustes" class="${pcpSubView==="ajustes"?"active":""}">Ajustes do dia</button>
       <button type="button" data-pcpsub="volume" class="${pcpSubView==="volume"?"active":""}">Volume por cliente</button>
       <button type="button" data-pcpsub="cafe" class="${pcpSubView==="cafe"?"active":""}">Café / Padaria</button>
       <button type="button" data-pcpsub="substituicoes" class="${pcpSubView==="substituicoes"?"active":""}">Substituições</button>
@@ -12339,6 +12457,8 @@ async function renderPCP(){
       pcpPesosHtml(unidadeFiltro, pcpSemanaSel)
     ) : ehRevisar ? (
       pcpConferirHtml(res)
+    ) : ehAjustes ? (
+      pcpAjustesHtml(res)
     ) : `
       <div class="es-kpis" style="margin-bottom:16px;">
         <div class="vn-card"><div class="vn-label">Pessoas previstas</div><div class="vn-value">${fmtNum(res.pessoasTot,0)}</div>${ehProducaoAmbas ? `<div class="vn-sub">Matriz ${fmtNum(listaRes[0].pessoasTot,0)} · Filial ${fmtNum(listaRes[1].pessoasTot,0)}</div>` : ""}</div>
@@ -12466,6 +12586,8 @@ async function renderPCP(){
     pcpCafeBind(content, unidadeFiltro, pcpDataSel, pcpDiaLabelSel, pcpSemanaSel);
   } else if(ehSubst){
     pcpSubstituicoesBind(content, pcpSemanaSel, pcpDiaSel, unidadeFiltro);
+  } else if(ehAjustes){
+    pcpAjustesBind(content, pcpSemanaSel, pcpDiaSel);
   } else if(ehPesos){
     pcpPesosBind(content);
   } else {
