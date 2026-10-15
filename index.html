@@ -11046,14 +11046,17 @@ function pcpImprimirOrdemProducao(res, margemPct, setorFiltro){
   pcpAbrirImpressaoReceitas(`Ordem de produção — ${nomesSetor[setorFiltro]}`, pcpContextoImpressao(res, margemPct), corpo);
 }
 
-// ---------- "Conferir antes de imprimir" (14/10/2026) ----------
-// Pedido do Marcelo: não bloquear a impressão, só abrir uma tela com os problemas pra ele revisar/marcar
-// antes de mandar pra cozinha. Junta 3 fontes: avisos críticos (cardápio não montado), avisos de aviso
-// (receita sem gramagem) — os dois já existiam soltos como chips no topo da Produção — e uma 3ª fonte NOVA
-// (res.semProducao, de pcpCalcularDia): cliente com produto de refeição cadastrado no contrato mas nenhuma
-// quantidade caiu pro dia/turno (nem lançado, nem média, nem contrato) — antes isso só sumia calado do
-// painel, sem nenhum sinal. "Revisado" é só visual/sessão (pcpConferirRevisados), não grava no banco — não
-// bloqueia nada, é checklist de leitura mesmo.
+// ---------- "Conferir antes de imprimir" (14/10/2026; embutido direto na Produção em 15/10/2026) ----------
+// Pedido original do Marcelo: não bloquear a impressão, só juntar os problemas pra ele revisar/marcar antes
+// de mandar pra cozinha. Junta 3 fontes: avisos críticos (cardápio não montado), avisos de aviso (receita
+// sem gramagem) — os dois já existiam soltos como chips no topo da Produção — e uma 3ª fonte (res.semProducao,
+// de pcpCalcularDia): cliente com produto de refeição cadastrado no contrato mas nenhuma quantidade caiu pro
+// dia/turno (nem lançado, nem média, nem contrato) — antes isso só sumia calado do painel, sem nenhum sinal.
+// "Revisado" é só visual/sessão (pcpConferirRevisados), não grava no banco — não bloqueia nada, é checklist
+// de leitura mesmo. Mudança de 15/10/2026: Marcelo achou a sub-aba separada desnecessária ("é mais um
+// alerta mesmo, não precisa de botão") — deixou de ser sub-aba própria (removida de PCP_SUBVIEW/tabs) e
+// pcpConferirHtml(res) passou a ser chamado direto dentro do bloco de preâmbulo de Produção/Volume por
+// cliente (mesmo `res`, sem recálculo). Continua sem bloquear impressão.
 function pcpConferirChave(tipo, idx){ return `${tipo}|${idx}`; }
 function pcpConferirLinhaHtml(tipo, idx, txt, nivel){
   const chave = pcpConferirChave(tipo, idx);
@@ -11084,7 +11087,6 @@ function pcpConferirHtml(res){
         ${semProd.map((c,i) => pcpConferirLinhaHtml("semprod", i, `${c.nome} (${nomeUnidadeCompra(c.unidade)}) — confira se é esperado (ex. não atende neste dia) ou se faltou lançar/configurar quantidade.`, "warn")).join("")}
       </div>
     </div>
-    <p class="footnote" style="margin:0 0 14px;">Quando terminar de revisar, volte pra "Produção da cozinha" pra imprimir — os botões de impressão estão lá.</p>
   `;
 }
 
@@ -12372,7 +12374,6 @@ async function renderPCP(){
   const ehCafe = pcpSubView === "cafe";
   const ehSubst = pcpSubView === "substituicoes";
   const ehPesos = pcpSubView === "pesos";
-  const ehRevisar = pcpSubView === "revisar";
   const ehAjustes = pcpSubView === "ajustes";
   const ehProducao = pcpSubView === "producao";
   const pcpDataSel = dataDoDia(pcpSemanaSel, pcpDiaSel).toISOString().slice(0,10);
@@ -12380,7 +12381,7 @@ async function renderPCP(){
   document.getElementById("topbar-actions").innerHTML = (ehAcougue || ehEstoque) ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-acg-config">Cortes e dias</button>
-    </div>` : (ehConferencia || ehCafe || ehSubst || ehPesos || ehRevisar || ehAjustes) ? "" : ehRomaneio ? `
+    </div>` : (ehConferencia || ehCafe || ehSubst || ehPesos || ehAjustes) ? "" : ehRomaneio ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-rotas-gerenciar">Gerenciar rotas</button>
     </div>` : `
@@ -12393,11 +12394,11 @@ async function renderPCP(){
     </div>`;
 
   const unidadeFiltro = pcpUnidadeSel === "todos" ? null : pcpUnidadeSel;
-  // serviços (Almoço/Jantar/Ceia, multi-seleção) só se aplica nas 3 telas que leem "quanto produzir" direto
-  // (Produção, Volume por cliente, Conferir antes de imprimir) — Substituições/Pesos/Romaneio/Açougue/
-  // Requisição continuam como sempre foram (todos os 3 serviços), pra não mudar o significado de telas
-  // que o Marcelo não pediu pra mexer.
-  const servicosAplicavel = ehProducao || pcpSubView === "volume" || ehRevisar;
+  // serviços (Almoço/Jantar/Ceia, multi-seleção) só se aplica nas 2 telas que leem "quanto produzir" direto
+  // (Produção, Volume por cliente — "Conferir antes de imprimir" não é mais tela própria, ver bloco
+  // pcpConferirHtml acima) — Substituições/Pesos/Romaneio/Açougue/Requisição continuam como sempre foram
+  // (todos os 3 serviços), pra não mudar o significado de telas que o Marcelo não pediu pra mexer.
+  const servicosAplicavel = ehProducao || pcpSubView === "volume";
   const servicosFiltro = servicosAplicavel ? pcpServicosSel : null;
   // precisa carregar a semana INTEIRA (não só o dia selecionado) porque a cobertura do açougue chama a
   // Requisição de outros dias internamente — ver comentário em pcpSubstituicoesCache.
@@ -12425,7 +12426,6 @@ async function renderPCP(){
   content.innerHTML = `
     <div class="seg-toggle" id="pcp-subview-tabs" style="margin-bottom:14px; width:fit-content;">
       <button type="button" data-pcpsub="producao" class="${pcpSubView==="producao"?"active":""}">Produção da cozinha</button>
-      <button type="button" data-pcpsub="revisar" class="${pcpSubView==="revisar"?"active":""}">Conferir antes de imprimir</button>
       <button type="button" data-pcpsub="ajustes" class="${pcpSubView==="ajustes"?"active":""}">Ajustes do dia</button>
       <button type="button" data-pcpsub="volume" class="${pcpSubView==="volume"?"active":""}">Volume por cliente</button>
       <button type="button" data-pcpsub="cafe" class="${pcpSubView==="cafe"?"active":""}">Café / Padaria</button>
@@ -12462,8 +12462,6 @@ async function renderPCP(){
       pcpSubstituicoesHtml(res)
     ) : ehPesos ? (
       pcpPesosHtml(unidadeFiltro, pcpSemanaSel)
-    ) : ehRevisar ? (
-      pcpConferirHtml(res)
     ) : ehAjustes ? (
       pcpAjustesHtml(res)
     ) : `
@@ -12477,10 +12475,7 @@ async function renderPCP(){
       ${res.servicos.length > 1 ? `<div class="es-kpis inner" style="margin-bottom:16px;">
         ${res.servicos.map(id => `<div class="vn-card"><div class="vn-label">${PCP_TURNOS.find(t=>t.id===id).nome}</div><div class="vn-value">${fmtNum(res.receitas.reduce((s,r)=>s+(r.porTurno[id]||0),0),1)} kg</div></div>`).join("")}
       </div>` : ""}
-      ${res.avisos.length ? `<details class="painel-notas" style="margin-bottom:14px;" ${res.avisos.some(a=>a.tipo==="critical") ? "open" : ""}>
-        <summary>${res.avisos.length} aviso${res.avisos.length>1?"s":""} antes de produzir${res.avisos.some(a=>a.tipo==="critical") ? " — tem crítico" : ""}</summary>
-        <div class="insight-list" style="margin-top:8px;">${res.avisos.map(a => `<div class="insight-item ${a.tipo==="critical"?"critical":"warn"}"><span class="dot"></span><span>${escapeHtml(a.txt)}</span></div>`).join("")}</div>
-      </details>` : ""}
+      ${pcpConferirHtml(res)}
       ${ehProducao && !ehProducaoAmbas ? `<div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px;">
         <span class="footnote" style="margin:0;">Imprimir ordem de produção:</span>
         <button class="btn small ghost" data-pcp-ordem="todos">Todos os setores</button>
@@ -12519,15 +12514,16 @@ async function renderPCP(){
     content.querySelectorAll("button[data-pcp-ordem]").forEach(btn => {
       btn.addEventListener("click", () => pcpImprimirOrdemProducao(res, margemPct, btn.dataset.pcpOrdem));
     });
-  } else if(ehRevisar){
-    content.querySelectorAll("input[data-pcp-conf-check]").forEach(chk => {
-      chk.addEventListener("change", () => {
-        const chave = chk.dataset.pcpConfCheck;
-        if(chk.checked) pcpConferirRevisados.add(chave); else pcpConferirRevisados.delete(chave);
-        renderPCP();
-      });
-    });
   }
+  // pcpConferirHtml fica embutido no preâmbulo de Produção E de Volume por cliente (15/10/2026) — wiring
+  // genérico, fora do if/else acima, pra pegar os checkboxes nas duas telas.
+  content.querySelectorAll("input[data-pcp-conf-check]").forEach(chk => {
+    chk.addEventListener("change", () => {
+      const chave = chk.dataset.pcpConfCheck;
+      if(chk.checked) pcpConferirRevisados.add(chave); else pcpConferirRevisados.delete(chave);
+      renderPCP();
+    });
+  });
   if(ehAcougue){
     document.getElementById("pcp-acg-config").addEventListener("click", pcpAbrirConfigAcougue);
     const btnMapa = document.getElementById("pcp-mapa-imprimir");
