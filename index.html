@@ -11135,24 +11135,83 @@ function pcpVolumeHtml(res){
   return `<p class="footnote" style="margin:0 0 14px;">Volume <b>líquido</b> por cliente, sem margem de produção — é o que vai pra etiqueta da cuba. "Cubas" só aparece pras fichas com cadastro de cuba (Fichas técnicas).</p>${cards}`;
 }
 
-function pcpEtiquetaImprimir(res){
-  const partes = [];
-  res.clientes.forEach(cli => {
+// ---------- Impressão "Volume por cliente" × "Etiquetas" (15/10/2026) ----------
+// Achado do Marcelo: o botão "Imprimir etiquetas" nunca imprimiu etiqueta nenhuma — imprimia esse mesmo
+// cartão por cliente (1 bloco por cliente, com todos os itens dele numa tabelinha), só com o nome errado.
+// Virou 2 funções separadas:
+// - pcpImprimirVolumePorCliente: o documento A4 de verdade — é o guia da cozinha pra encher cuba por
+//   cliente (volume LÍQUIDO, sem margem — é o que sai de fato pro cliente, igual a tela "Volume por
+//   cliente" já deixava claro) + uma 2ª seção com o volume TOTAL do dia por item (COM margem de produção,
+//   mesma lógica da Ordem de produção) — é o guia de quanto produzir de cada item, pedido do Marcelo
+//   pra vir junto no mesmo papel.
+// - pcpEtiquetasProdutoImprimir: etiqueta de verdade, 1 por cliente×produto (cliente, produto, peso, data).
+//   Formato físico (tamanho de etiqueta, folha adesiva/impressora térmica) não foi confirmado com o
+//   Marcelo — saiu num grid 2 colunas, A4, cortável; avisar e perguntar o modelo real de etiqueta/
+//   impressora que ele usa pra ajustar a medida.
+function pcpImprimirVolumePorCliente(res, margemPct){
+  const fator = 1 + (margemPct || 0) / 100;
+  const blocosClientes = res.clientes.map(cli => {
     const linhas = [];
-    res.receitas.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: r.nome, qtd: p.qtd}); });
-    if(!linhas.length) return;
-    partes.push(`<div style="break-inside:avoid; page-break-inside:avoid; border:1px solid #333; border-radius:6px; padding:12px 14px; margin-bottom:12px;">
-      <div style="font-weight:700; font-size:14px; margin-bottom:2px;">${escapeHtml(cli.nome)}</div>
-      <div style="font-size:11px; color:#666; margin-bottom:8px;">${escapeHtml(DIA_LABEL[res.dia])} · ${escapeHtml(rotuloSemana(res.semana))} · ${fmtNum(cli.pessoas,0)} pessoas</div>
-      <table style="width:100%; border-collapse:collapse; font-size:12px;">${linhas.map(l => `<tr><td style="padding:3px 0; border-top:1px solid #ddd;">${escapeHtml(l.nome)}</td><td style="padding:3px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${pcpFmtQtd(l.qtd)}</td></tr>`).join("")}</table>
-    </div>`);
+    res.receitas.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: r.nome, qtd: p.qtd, fichaId: r.fichaId}); });
+    res.diretos.forEach(d => { const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: d.nome, qtd: p.qtd, unidade: d.unidade}); });
+    if(!linhas.length) return "";
+    return `<div style="break-inside:avoid; page-break-inside:avoid; margin-bottom:14px;">
+      <h2 style="margin-bottom:6px;">${escapeHtml(cli.nome)} <span style="font-weight:400; text-transform:none; letter-spacing:0; color:#777;">— ${fmtNum(cli.pessoas,0)} pessoas · ${escapeHtml(nomeUnidadeCompra(cli.unidade))}</span></h2>
+      <table><thead><tr><th>Item</th><th style="width:120px; text-align:right;">Peso</th><th style="width:120px; text-align:right;">Cubas</th></tr></thead><tbody>
+        ${linhas.map(l => `<tr><td>${escapeHtml(l.nome)}</td><td class="peso">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd)}</td><td class="peso">${l.fichaId ? pcpCubaTxt(l.fichaId, l.qtd) : "—"}</td></tr>`).join("")}
+      </tbody></table>
+    </div>`;
+  }).join("");
+  let grupoAtual = null;
+  const linhasTotais = res.receitas.map(r => {
+    const novo = r.grupo !== grupoAtual; grupoAtual = r.grupo;
+    const kg = r.total * fator;
+    return (novo ? `<tr><th colspan="3" style="background:#f0f0f0;">${escapeHtml(r.grupo)}</th></tr>` : "") +
+      `<tr><td>${escapeHtml(r.nome)}</td><td class="peso destaque">${pcpFmtQtd(kg)}</td><td class="peso">${pcpCubaTxt(r.fichaId, kg)}</td></tr>`;
+  }).join("");
+  const linhasDiretos = res.diretos.map(d => `<tr><td>${escapeHtml(d.nome)}</td><td class="peso destaque">${fmtNum(d.total*fator,2)} ${escapeHtml(d.unidade||"")}</td><td class="peso">—</td></tr>`).join("");
+  const corpo = `
+    <h2>Volume por cliente (líquido, sem margem — pra encher a cuba)</h2>
+    ${blocosClientes || "<p>Nada a produzir neste dia.</p>"}
+    <h2>Volume total do dia (${margemPct ? `com margem de ${fmtNum(margemPct,1)}%` : "sem margem"} — quanto produzir)</h2>
+    <table><thead><tr><th>Item</th><th style="width:120px; text-align:right;">Quantidade</th><th style="width:120px; text-align:right;">Cubas</th></tr></thead><tbody>${linhasTotais}${linhasDiretos}</tbody></table>
+  `;
+  pcpAbrirImpressaoReceitas(`Volume por cliente — ${DIA_LABEL[res.dia]}, ${rotuloSemana(res.semana)}`, pcpContextoImpressao(res, margemPct), corpo);
+}
+function pcpEtiquetasProdutoImprimir(res){
+  const dataTxt = fmtDataCompleta(dataDoDia(res.semana, res.dia));
+  const etiquetas = [];
+  res.clientes.forEach(cli => {
+    res.receitas.forEach(r => {
+      const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id);
+      if(p) etiquetas.push({ cliente: cli.nome, produto: r.nome, pesoTxt: pcpFmtQtd(p.qtd) });
+    });
+    res.diretos.forEach(d => {
+      const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id);
+      if(p) etiquetas.push({ cliente: cli.nome, produto: d.nome, pesoTxt: `${fmtNum(p.qtd,2)} ${d.unidade||""}` });
+    });
   });
+  if(!etiquetas.length){ showAlert("Nada a produzir neste dia — nenhuma etiqueta a gerar."); return; }
+  const cards = etiquetas.map(e => `
+    <div class="etq">
+      <div class="etq-cliente">${escapeHtml(e.cliente)}</div>
+      <div class="etq-produto">${escapeHtml(e.produto)}</div>
+      <div class="etq-rodape"><span>${escapeHtml(e.pesoTxt)}</span><span>${escapeHtml(dataTxt)}</span></div>
+    </div>`).join("");
   const w = window.open("", "_blank");
   if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
-  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Volume por cliente — ${escapeHtml(DIA_LABEL[res.dia])} ${escapeHtml(rotuloSemana(res.semana))}</title>
-    <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 14px;} ${printHeadStyle()}</style></head><body>
-    ${printHeadHtml()}<h1>Volume por cliente — ${escapeHtml(res.unidade === "todos" ? "Matriz + Filial" : nomeUnidadeCompra(res.unidade))} · ${escapeHtml(DIA_LABEL[res.dia])}, ${escapeHtml(rotuloSemana(res.semana))}</h1>
-    ${partes.join("") || "<p>Nada a produzir neste dia.</p>"}</body></html>`);
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas — ${escapeHtml(DIA_LABEL[res.dia])}, ${escapeHtml(rotuloSemana(res.semana))}</title>
+    <style>
+      @page{ margin:10mm; }
+      body{ font-family:Arial,Helvetica,sans-serif; color:#111; margin:0; padding:10mm; }
+      .etq-grid{ display:grid; grid-template-columns:repeat(2, 1fr); gap:6mm; }
+      .etq{ border:1px solid #333; border-radius:4px; padding:8px 10px; break-inside:avoid; page-break-inside:avoid; }
+      .etq-cliente{ font-size:11px; text-transform:uppercase; letter-spacing:.03em; color:#555; }
+      .etq-produto{ font-size:15px; font-weight:700; margin:3px 0 8px; }
+      .etq-rodape{ display:flex; justify-content:space-between; font-size:12px; font-weight:600; border-top:1px solid #ccc; padding-top:6px; }
+    </style></head><body>
+    <div class="etq-grid">${cards}</div>
+  </body></html>`);
   w.document.close(); w.focus(); w.print();
 }
 
@@ -12408,7 +12467,8 @@ async function renderPCP(){
       <input type="number" id="pcp-margem" step="0.1" min="0" value="${margemPct || ""}" placeholder="0" style="width:70px;">
       <span style="font-size:12px; color:var(--text-muted);">%</span>
       <button class="btn small ghost" id="pcp-margem-salvar">Salvar</button>
-      <button class="btn small primary" id="pcp-imprimir" style="margin-left:6px;">Imprimir etiquetas</button>
+      <button class="btn small ghost" id="pcp-imprimir-volume" style="margin-left:6px;">Imprimir volume por cliente</button>
+      <button class="btn small primary" id="pcp-imprimir-etiquetas">Imprimir etiquetas</button>
     </div>`;
 
   const unidadeFiltro = pcpUnidadeSel === "todos" ? null : pcpUnidadeSel;
@@ -12617,7 +12677,8 @@ async function renderPCP(){
       await pcpSalvarMargem(isFinite(v) ? v : null);
       renderPCP();
     });
-    document.getElementById("pcp-imprimir").addEventListener("click", () => pcpEtiquetaImprimir(res));
+    document.getElementById("pcp-imprimir-volume").addEventListener("click", () => pcpImprimirVolumePorCliente(res, margemPct));
+    document.getElementById("pcp-imprimir-etiquetas").addEventListener("click", () => pcpEtiquetasProdutoImprimir(res));
   }
   if(window.lucide) lucide.createIcons();
 }
