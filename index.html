@@ -10147,6 +10147,22 @@ function pcpOrdemGrupo(grupo){
   const i = GRUPOS_FICHA_BASE.indexOf(grupo);
   return i === -1 ? GRUPOS_FICHA_BASE.length : i;
 }
+// ---------- "Kg a produzir" só conta composição principal (15/10/2026) ----------
+// Pedido do Marcelo: tirar Salada/Sobremesa/Suco da CONTA de peso — motivo real é que a gramagem_kg
+// cadastrada nesses 3 grupos está claramente errada (0,25-0,5kg de salada, 1kg de sobremesa, 1kg de suco
+// por pessoa — confirmado direto no banco, 15/10/2026), inflando o "kg a produzir" pra 3-4x o peso real da
+// composição principal (que fica certa, ~0,7-0,9kg). Em vez de a conta mostrar um número que mistura peso
+// confiável (Proteína/Base/Guarnição) com peso suspeito, essas 3 linhas CONTINUAM aparecendo na tabela de
+// Receitas a produzir/Volume por cliente (cozinha ainda precisa saber quanto preparar, cuba ainda precisa
+// da etiqueta) — só saem do "Kg a produzir (sem margem)"/"com margem" e do detalhamento por turno.
+// Ponto em aberto, não resolvido aqui: a Requisição do estoque/mapa de insumos (Fase 2) usa a MESMA
+// gramagem_kg através de pcpItemProducao pra calcular quanto puxar de alface/sobremesa/suco do estoque —
+// esse filtro foi colocado só em pcpCalcularDia (Produção/Volume), de propósito, pra não zerar também a
+// Requisição; então a Requisição continua puxando a quantidade errada até a gramagem ser corrigida na
+// origem (cardápio). Avisar o Marcelo disso na resposta.
+function pcpGrupoForaDoPeso(grupo){
+  return /^(SALADA|SOBREMESA|SUCO)/.test(grupo || "");
+}
 // mesma ideia do CATEGORIA_GRUPO_PREFIXO usado em Fichas técnicas (linha ~4796), pra classificar um item
 // de cardápio SEM ficha (insumo direto — ex.: "Pão", "Margarina") no mesmo grupo (PROTEÍNA/BASE/...) que
 // as receitas já usam. Precisa pra Fase 2 (Requisição do estoque) rotear esses itens por setor também.
@@ -10506,7 +10522,9 @@ function pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro){
     });
 
   const lista = [...receitas.values()].sort((a, b) => pcpOrdemGrupo(a.grupo) - pcpOrdemGrupo(b.grupo) || b.total - a.total);
-  const kgTotal = lista.reduce((s, r) => s + r.total, 0);
+  // só composição principal (ver pcpGrupoForaDoPeso) — Salada/Sobremesa/Suco continuam em `lista`
+  // (linhas da tabela), só saem desta soma.
+  const kgTotal = lista.reduce((s, r) => pcpGrupoForaDoPeso(r.grupo) ? s : s + r.total, 0);
   // "servicos": sempre na ordem almoço/jantar/ceia, independente da ordem em que o Set foi montado.
   const servicos = PCP_TURNOS.filter(t => t.id !== "todos" && (!servicosFiltro || servicosFiltro.has(t.id))).map(t => t.id);
   return { semana, dia, unidade: unidadeFiltro || "todos", servicos, receitas: lista, diretos: [...diretos.values()].sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR')), subs: pcpSubReceitasDoDia(lista), clientes: [...clientes.values()].sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome))), semProducao: semProducao.sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome))), avisos, pessoasTot, kgTotal };
@@ -12473,7 +12491,7 @@ async function renderPCP(){
         <div class="vn-card"><div class="vn-label">Clientes</div><div class="vn-value">${res.clientes.length}</div>${ehProducaoAmbas ? `<div class="vn-sub">Matriz ${listaRes[0].clientes.length} · Filial ${listaRes[1].clientes.length}</div>` : ""}</div>
       </div>
       ${res.servicos.length > 1 ? `<div class="es-kpis inner" style="margin-bottom:16px;">
-        ${res.servicos.map(id => `<div class="vn-card"><div class="vn-label">${PCP_TURNOS.find(t=>t.id===id).nome}</div><div class="vn-value">${fmtNum(res.receitas.reduce((s,r)=>s+(r.porTurno[id]||0),0),1)} kg</div></div>`).join("")}
+        ${res.servicos.map(id => `<div class="vn-card"><div class="vn-label">${PCP_TURNOS.find(t=>t.id===id).nome}</div><div class="vn-value">${fmtNum(res.receitas.reduce((s,r)=>pcpGrupoForaDoPeso(r.grupo)?s:s+(r.porTurno[id]||0),0),1)} kg</div></div>`).join("")}
       </div>` : ""}
       ${pcpConferirHtml(res)}
       ${ehProducao && !ehProducaoAmbas ? `<div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px;">
