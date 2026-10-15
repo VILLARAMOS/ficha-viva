@@ -11145,9 +11145,11 @@ function pcpVolumeHtml(res){
 //   mesma lógica da Ordem de produção) — é o guia de quanto produzir de cada item, pedido do Marcelo
 //   pra vir junto no mesmo papel.
 // - pcpEtiquetasProdutoImprimir: etiqueta de verdade, 1 por cliente×produto (cliente, produto, peso, data).
-//   Formato físico (tamanho de etiqueta, folha adesiva/impressora térmica) não foi confirmado com o
-//   Marcelo — saiu num grid 2 colunas, A4, cortável; avisar e perguntar o modelo real de etiqueta/
-//   impressora que ele usa pra ajustar a medida.
+//   Formato físico confirmado com o Marcelo (15/10/2026): impressora térmica, rolo em tamanho padrão —
+//   usado 60×40mm (o mais comum pra etiqueta de alimento nesse tipo de impressora); 1 etiqueta por
+//   "página" via @page+page-break, não grid (rolo contínuo, a térmica avança/corta etiqueta a etiqueta).
+//   Se o rolo dele for outra largura (40/50/80mm são as outras comuns), é só mudar ETQ_LARGURA_MM/
+//   ETQ_ALTURA_MM dentro da função.
 function pcpImprimirVolumePorCliente(res, margemPct){
   const fator = 1 + (margemPct || 0) / 100;
   const blocosClientes = res.clientes.map(cli => {
@@ -11192,6 +11194,11 @@ function pcpEtiquetasProdutoImprimir(res){
     });
   });
   if(!etiquetas.length){ showAlert("Nada a produzir neste dia — nenhuma etiqueta a gerar."); return; }
+  // 60×40mm (15/10/2026, confirmado com o Marcelo: impressora térmica, rolo em tamanho padrão) — 1 etiqueta
+  // por "página" (page-break-after), não grid: rolo contínuo, a impressora térmica avança/corta etiqueta a
+  // etiqueta. Se o rolo dele for de outra medida (40mm/50mm/80mm de largura são as outras comuns), só mudar
+  // ETQ_LARGURA_MM/ETQ_ALTURA_MM abaixo.
+  const ETQ_LARGURA_MM = 60, ETQ_ALTURA_MM = 40;
   const cards = etiquetas.map(e => `
     <div class="etq">
       <div class="etq-cliente">${escapeHtml(e.cliente)}</div>
@@ -11202,15 +11209,20 @@ function pcpEtiquetasProdutoImprimir(res){
   if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas — ${escapeHtml(DIA_LABEL[res.dia])}, ${escapeHtml(rotuloSemana(res.semana))}</title>
     <style>
-      @page{ margin:10mm; }
-      body{ font-family:Arial,Helvetica,sans-serif; color:#111; margin:0; padding:10mm; }
-      .etq-grid{ display:grid; grid-template-columns:repeat(2, 1fr); gap:6mm; }
-      .etq{ border:1px solid #333; border-radius:4px; padding:8px 10px; break-inside:avoid; page-break-inside:avoid; }
-      .etq-cliente{ font-size:11px; text-transform:uppercase; letter-spacing:.03em; color:#555; }
-      .etq-produto{ font-size:15px; font-weight:700; margin:3px 0 8px; }
-      .etq-rodape{ display:flex; justify-content:space-between; font-size:12px; font-weight:600; border-top:1px solid #ccc; padding-top:6px; }
+      @page{ size:${ETQ_LARGURA_MM}mm ${ETQ_ALTURA_MM}mm; margin:0; }
+      *{ box-sizing:border-box; }
+      body{ font-family:Arial,Helvetica,sans-serif; color:#000; margin:0; }
+      .etq{
+        width:${ETQ_LARGURA_MM}mm; height:${ETQ_ALTURA_MM}mm; padding:2mm 3mm;
+        display:flex; flex-direction:column; justify-content:space-between;
+        page-break-after:always; break-after:page; overflow:hidden;
+      }
+      .etq:last-child{ page-break-after:auto; break-after:auto; }
+      .etq-cliente{ font-size:9px; text-transform:uppercase; letter-spacing:.02em; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+      .etq-produto{ font-size:13px; font-weight:700; line-height:1.2; margin:1.5mm 0; overflow:hidden; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; }
+      .etq-rodape{ display:flex; justify-content:space-between; align-items:baseline; font-size:11px; font-weight:700; border-top:1px solid #000; padding-top:1.5mm; }
     </style></head><body>
-    <div class="etq-grid">${cards}</div>
+    ${cards}
   </body></html>`);
   w.document.close(); w.focus(); w.print();
 }
