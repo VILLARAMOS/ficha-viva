@@ -11901,10 +11901,14 @@ function pcpConferenciaLinhas(res, dia){
     return { cliente: cli, itens, substituicoes };
   }).filter(c => c.itens.length || c.substituicoes.length);
 }
-// fichas que fazem sentido como substituição de proteína — mesmo grupo das receitas normais de PROTEÍNA
-// mais EXTRA (onde ficam os "PRATO FIT 1..6" do cadastro real).
+// fichas que fazem sentido como substituição de proteína. Era só PROTEÍNA+EXTRA (onde ficam os "PRATO FIT
+// 1..6"), mas o próprio Marcelo pediu "Ovo frito" (16/10/2026) pra lista de itens substitutos — e no
+// cadastro real essa ficha está em GUARNIÇÃO DE SECOS, não PROTEÍNA/EXTRA. Restringir por grupo escondia
+// item válido do seletor, então abriu pra TODAS as fichas — é uma lista pequena e deliberada mesmo (cada
+// uma vira 1 coluna fixa na grade de Substituições), então não precisa mais do filtro por grupo pra não
+// poluir a lista.
 function pcpFichasSubstituiveis(){
-  return [...fichas.entries()].filter(([, f]) => f.grupo === "PROTEÍNA" || f.grupo === "EXTRA")
+  return [...fichas.entries()]
     .map(([id, f]) => ({ id, nome: f.nome }))
     .sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR'));
 }
