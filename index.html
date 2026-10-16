@@ -12491,7 +12491,7 @@ function pcpServicoAbrev(id){ return (PCP_TURNOS.find(t => t.id === id) || {}).n
 // existia uma tela pra lançar isso em grade.
 function pcpSubstGerenciarItensHtml(){
   const disponiveis = pcpFichasSubstituiveis().filter(f => !pcpItensSubstitutos.some(it => it.fichaId === f.id));
-  return `<details class="integrity-detail" style="margin-bottom:14px;">
+  return `<details class="integrity-detail" style="margin-bottom:14px;" ${pcpItensSubstitutos.length ? "" : "open"}>
     <summary>Itens substitutos configurados (${pcpItensSubstitutos.length}) — cada um vira uma coluna na grade</summary>
     <div style="display:flex; flex-wrap:wrap; gap:8px; margin:10px 0;">
       ${pcpItensSubstitutos.length ? pcpItensSubstitutos.map(it => `<span class="chip neutral">${escapeHtml(it.nome)} <button type="button" class="btn small ghost" data-subst-item-remover="${it.id}" style="padding:1px 6px; margin-left:4px;">✕</button></span>`).join("") : `<span class="footnote">Nenhum item configurado ainda — adicione abaixo pra liberar a grade.</span>`}
