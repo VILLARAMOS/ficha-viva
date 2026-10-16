@@ -11889,15 +11889,22 @@ function pcpCafeCandidatos(unidadeFiltro){
     .map(([id, c]) => ({id, nome: c.nome_cliente}))
     .sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
 }
-// valor efetivo do dia pra um item: exceção lançada hoje > per cápita calculado > padrão
-function pcpCafeValorEfetivo(item, pedidoRow, hospedes){
+const CAFE_DIAS_SEMANA_CURTO = ["dom","seg","ter","qua","qui","sex","sab"];
+const CAFE_DIAS_SEMANA_LABEL = {dom:"dom", seg:"seg", ter:"ter", qua:"qua", qui:"qui", sex:"sex", sab:"sáb"};
+function cafeDiaSemanaCurto(ymd){ return CAFE_DIAS_SEMANA_CURTO[new Date(ymd+"T00:00:00Z").getUTCDay()]; }
+// valor efetivo do dia pra um item: exceção lançada hoje > per cápita calculado > padrão, exceto se o item
+// só roda em certos dias da semana (ex.: pão de leite seg/qui) — fora desses dias o padrão não se aplica,
+// mesmo sem exceção lançada. Exceção lançada manualmente no dia vale sempre, mesmo fora do dia_semana.
+function pcpCafeValorEfetivo(item, ymd, pedidoRow, hospedes){
+  const overrides = (pedidoRow && Array.isArray(pedidoRow.itens)) ? pedidoRow.itens : [];
+  const ov = overrides.find(o => o.item_id === item.id);
+  if(ov) return {valor: ov.valor, origem: "excecao"};
+  const foraDoDia = Array.isArray(item.dias_semana) && item.dias_semana.length && !item.dias_semana.includes(cafeDiaSemanaCurto(ymd));
+  if(foraDoDia) return {valor: 0, origem: "fora_do_dia"};
   if(item.grupo === "per_capita"){
     if(hospedes === null || hospedes === undefined || hospedes === "") return {valor: null, origem: "sem_hospedes"};
     return {valor: Math.round(hospedes * (item.fator_per_capita || 0) * 100) / 100, origem: "per_capita"};
   }
-  const overrides = (pedidoRow && Array.isArray(pedidoRow.itens)) ? pedidoRow.itens : [];
-  const ov = overrides.find(o => o.item_id === item.id);
-  if(ov) return {valor: ov.valor, origem: "excecao"};
   return {valor: item.valor_padrao ?? null, origem: "padrao"};
 }
 async function pcpCafeSalvarPedidoDia(contratoId, ymd, patch){
@@ -11974,24 +11981,29 @@ function pcpCafeHtml(unidadeFiltro, ymd, diaLabel){
     const temPerCapita = itens.some(i => i.grupo === "per_capita");
     const fornecedorIdPadrao = itens[0] ? itens[0].fornecedor_id : (fornecedoresPad[0] ? fornecedoresPad[0].id : "");
     const linhas = itens.map(it => {
-      const ef = pcpCafeValorEfetivo(it, pedidoRow, pedidoRow ? pedidoRow.hospedes_previstos : null);
+      const ef = pcpCafeValorEfetivo(it, ymd, pedidoRow, pedidoRow ? pedidoRow.hospedes_previstos : null);
       const badge = it.grupo === "servico" ? `<span class="chip neutral">Serviço</span>`
         : it.grupo === "fixo" ? `<span class="chip neutral">Fixo</span>`
         : it.grupo === "per_capita" ? `<span class="chip warn">Per cápita</span>`
         : `<span class="chip ok">Variável</span>`;
+      const diasChip = Array.isArray(it.dias_semana) && it.dias_semana.length
+        ? ` <span class="chip neutral" title="Só nesses dias — fora disso o padrão não entra no pedido">${it.dias_semana.map(d => CAFE_DIAS_SEMANA_LABEL[d] || d).join("/")}</span>` : "";
       return `<tr data-cafe-item="${it.id}" data-cafe-cliente="${cli.id}">
         <td class="name-cell" style="font-size:12px;">${escapeHtml(it.produto)}${it.insumo_id ? "" : ` <span class="chip warn" title="Produto ainda não vinculado a um insumo cadastrado">sem insumo</span>`}</td>
         <td class="num-cell">${it.valor_padrao != null ? fmtNum(it.valor_padrao,0) : "—"}</td>
-        <td><input type="number" min="0" step="1" class="cafe-valor" style="width:76px;" value="${ef.valor ?? ""}" placeholder="${it.grupo === "per_capita" ? "—" : "—"}" ${it.grupo === "per_capita" ? "disabled title=\"Calculado a partir dos hóspedes previstos\"" : ""}></td>
-        <td style="font-size:11px; white-space:nowrap;">${badge}${ef.origem === "excecao" ? ` <span class="chip warn">hoje</span>` : ""}</td>
-        <td><button type="button" class="btn small ghost" data-cafe-remover-item="${it.id}" title="Remover produto">×</button></td>
+        <td><input type="number" min="0" step="1" class="cafe-valor" style="width:76px;" value="${ef.origem === "fora_do_dia" ? "" : (ef.valor ?? "")}" placeholder="${ef.origem === "fora_do_dia" ? "não hoje" : "—"}" ${it.grupo === "per_capita" ? "disabled title=\"Calculado a partir dos hóspedes previstos\"" : ""}></td>
+        <td style="font-size:11px; white-space:nowrap;">${badge}${diasChip}${ef.origem === "excecao" ? ` <span class="chip warn">hoje</span>` : ""}</td>
+        <td><button type="button" class="btn small ghost" data-cafe-editar-item="${it.id}" title="Editar produto">✎</button> <button type="button" class="btn small ghost" data-cafe-remover-item="${it.id}" title="Remover produto">×</button></td>
       </tr>`;
     }).join("");
     return `<div class="panel cafe-card">
       <div class="panel-head"><h3 style="font-size:14px;">${escapeHtml(cli.nome_cliente)}</h3>
         <button type="button" class="btn small ghost" data-cafe-excluir-cliente="${cli.id}">Remover cliente</button></div>
       <div class="panel-body" style="padding:10px 14px;">
-        ${temPerCapita ? `<div class="field" style="max-width:240px; margin-bottom:10px;"><label style="font-size:11px;">Hóspedes previstos (${escapeHtml(diaLabel)})</label><input type="number" min="0" step="1" class="cafe-hospedes" data-cafe-hosp="${cli.id}" value="${pedidoRow && pedidoRow.hospedes_previstos != null ? pedidoRow.hospedes_previstos : ""}" placeholder="informar à tarde"></div>` : ""}
+        <div style="display:flex; gap:14px; flex-wrap:wrap; margin-bottom:10px;">
+          ${temPerCapita ? `<div class="field" style="max-width:240px; margin:0;"><label style="font-size:11px;">Hóspedes previstos (${escapeHtml(diaLabel)})</label><input type="number" min="0" step="1" class="cafe-hospedes" data-cafe-hosp="${cli.id}" value="${pedidoRow && pedidoRow.hospedes_previstos != null ? pedidoRow.hospedes_previstos : ""}" placeholder="informar à tarde"></div>` : ""}
+          <div class="field" style="max-width:160px; margin:0;"><label style="font-size:11px;">Horário de entrega</label><input type="text" class="cafe-horario" data-cafe-horario="${cli.id}" value="${escapeHtml(contratos.get(cli.id)?.cafe_horario_entrega || "")}" placeholder="ex.: 7h00"></div>
+        </div>
         <div class="table-wrap"><table style="font-size:12px;"><thead><tr><th>Produto</th><th class="num-cell">Padrão</th><th>Pedido hoje</th><th>Grupo</th><th></th></tr></thead><tbody>${linhas}</tbody></table></div>
         <div style="display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap;">
           <button type="button" class="btn small ghost" data-cafe-add-produto="${cli.id}" data-cafe-fornecedor-padrao="${fornecedorIdPadrao}">+ Produto</button>
@@ -12030,16 +12042,17 @@ function pcpCafeTextoPedido(fornecedorId, ymd, diaLabel){
     const itens = (cafePadariaItens.get(cli.id) || []).filter(i => i.fornecedor_id === fornecedorId);
     const pedidoRow = cafePadariaPedidoDiaCache.get(cli.id);
     const linhas = itens.map(it => {
-      const ef = pcpCafeValorEfetivo(it, pedidoRow, pedidoRow ? pedidoRow.hospedes_previstos : null);
+      const ef = pcpCafeValorEfetivo(it, ymd, pedidoRow, pedidoRow ? pedidoRow.hospedes_previstos : null);
       if(ef.valor === null || ef.valor <= 0) return null;
       return `${fmtNum(ef.valor,0)} ${it.produto}`;
     }).filter(Boolean);
     if(!linhas.length) return null;
-    return `📍 ${cli.nome}\n\n${linhas.join("\n")}`;
+    const horario = contratos.get(cli.id)?.cafe_horario_entrega;
+    return `📍 ${cli.nome}${horario ? ` — entregar ${horario}` : ""}\n\n${linhas.join("\n")}`;
   }).filter(Boolean);
   return `${f ? f.nome : "Padaria"} — ${diaLabel}, ${fmtDataYMD(ymd)}\n\n${blocos.join("\n\n____________\n\n")}`;
 }
-function pcpCafeMontarPedidosDia(fornecedorId){
+function pcpCafeMontarPedidosDia(fornecedorId, ymd){
   const porUnidade = new Map();
   [...contratos.entries()].forEach(([contratoId, c]) => {
     const itens = (cafePadariaItens.get(contratoId) || []).filter(i => i.fornecedor_id === fornecedorId);
@@ -12051,7 +12064,7 @@ function pcpCafeMontarPedidosDia(fornecedorId){
     if(!(pedidoRow && pedidoRow.confirmado)){ g.fora.push(c.nome_cliente); return; }
     g.incluidos.push(c.nome_cliente);
     itens.forEach(it => {
-      const ef = pcpCafeValorEfetivo(it, pedidoRow, pedidoRow.hospedes_previstos);
+      const ef = pcpCafeValorEfetivo(it, ymd, pedidoRow, pedidoRow.hospedes_previstos);
       if(ef.valor === null || ef.valor <= 0) return;
       if(it.grupo === "servico" || !it.insumo_id){
         g.servico.push({nome: `${it.produto} — ${c.nome_cliente}`, quantidade: ef.valor, preco_unitario: it.valor_unitario || 0});
@@ -12078,7 +12091,7 @@ function pcpCafeMontarPedidosDia(fornecedorId){
   return saida;
 }
 async function pcpCafeGerarPedido(fornecedorId, ymd, semana){
-  const grupos = pcpCafeMontarPedidosDia(fornecedorId);
+  const grupos = pcpCafeMontarPedidosDia(fornecedorId, ymd);
   if(!grupos.length){ showAlert("Nenhum cliente confirmado hoje para essa padaria ainda."); return null; }
   const f = fornecedores.get(fornecedorId);
   for(const g of grupos){
@@ -12110,6 +12123,18 @@ function pcpCafeBind(content, unidadeFiltro, ymd, diaLabel, semana){
     await pcpCafeSalvarPedidoDia(inp.dataset.cafeHosp, ymd, {hospedes_previstos: v});
     renderPCP();
   }));
+  content.querySelectorAll(".cafe-horario").forEach(inp => inp.addEventListener("change", async () => {
+    const contratoId = inp.dataset.cafeHorario;
+    const valor = inp.value.trim() || null;
+    const { error } = await sb.from('contratos').update({cafe_horario_entrega: valor}).eq('id', contratoId);
+    if(error){ showAlert("Erro ao salvar horário: " + error.message); return; }
+    const c = contratos.get(contratoId); if(c) c.cafe_horario_entrega = valor;
+  }));
+  content.querySelectorAll("[data-cafe-editar-item]").forEach(b => b.addEventListener("click", () => {
+    const tr = b.closest("tr[data-cafe-item]");
+    const item = (cafePadariaItens.get(tr.dataset.cafeCliente) || []).find(i => i.id === tr.dataset.cafeItem);
+    if(item) pcpCafeAbrirAddProduto(tr.dataset.cafeCliente, item.fornecedor_id, item);
+  }));
   content.querySelectorAll("[data-cafe-remover-item]").forEach(b => b.addEventListener("click", async () => {
     const ok = await confirmDialog("Remover este produto do padrão do cliente?");
     if(!ok) return;
@@ -12138,52 +12163,84 @@ function pcpCafeBind(content, unidadeFiltro, ymd, diaLabel, semana){
   });
   content.querySelectorAll("[data-cafe-texto]").forEach(b => b.addEventListener("click", () => {
     const txt = pcpCafeTextoPedido(b.dataset.cafeTexto, ymd, diaLabel);
-    document.getElementById("cafe-texto-saida").innerHTML = `<div class="field"><label>Texto para WhatsApp — copie e cole</label><textarea rows="10" readonly style="font-family:inherit; font-size:12.5px;">${escapeHtml(txt)}</textarea></div>`;
+    const saida = document.getElementById("cafe-texto-saida");
+    saida.innerHTML = `<div class="field"><label>Texto para WhatsApp — pode editar antes de copiar</label>
+      <textarea id="cafe-texto-ta" rows="10" style="font-family:inherit; font-size:12.5px;">${escapeHtml(txt)}</textarea>
+      <div style="display:flex; align-items:center; gap:10px; margin-top:6px;">
+        <button type="button" class="btn small primary" id="cafe-texto-copiar">Copiar texto</button>
+        <span class="footnote" id="cafe-texto-copiado" style="margin:0;"></span>
+      </div></div>`;
+    document.getElementById("cafe-texto-copiar").addEventListener("click", async () => {
+      const ta = document.getElementById("cafe-texto-ta");
+      const aviso = document.getElementById("cafe-texto-copiado");
+      try{ await navigator.clipboard.writeText(ta.value); aviso.textContent = "Copiado!"; }
+      catch(e){ ta.select(); aviso.textContent = "Não deu pra copiar automaticamente — texto selecionado, use Ctrl+C."; }
+    });
   }));
   content.querySelectorAll("[data-cafe-gerar-pedido]").forEach(b => b.addEventListener("click", async () => {
     const grupos = await pcpCafeGerarPedido(b.dataset.cafeGerarPedido, ymd, semana);
     if(grupos) showAlert(`Pedido gravado em Compras → Pedidos: ${grupos.map(g => nomeUnidadeCompra(g.unidade)+" ("+fmtMoney(g.valor_total)+")").join(", ")}.`);
   }));
 }
-function pcpCafeAbrirAddProduto(contratoId, fornecedorIdPadrao){
+// itemExistente presente = edição (inclui mudar a padaria do item e o padrão semanal); ausente = novo produto.
+function pcpCafeAbrirAddProduto(contratoId, fornecedorIdPadrao, itemExistente){
   const root = document.getElementById("modal-root");
   const fornecedoresPad = pcpCafeFornecedores();
+  const it = itemExistente || null;
+  const diasOpcoes = ["seg","ter","qua","qui","sex","sab","dom"];
+  const diasSelecionados = new Set((it && Array.isArray(it.dias_semana)) ? it.dias_semana : []);
   root.innerHTML = `<div class="modal-overlay" id="cafe-add-ov"><div class="modal" style="max-width:460px;">
-    <div class="modal-head"><h2>Novo produto</h2><button class="close-x" id="cafe-add-close">&times;</button></div>
+    <div class="modal-head"><h2>${it ? "Editar produto" : "Novo produto"}</h2><button class="close-x" id="cafe-add-close">&times;</button></div>
     <div class="modal-body">
-      <div class="field"><label>Produto</label><input type="text" id="cafe-add-produto" list="cafe-produtos-dl" placeholder="ex.: Pão francês"></div>
-      <div class="field"><label>Padaria</label><select id="cafe-add-fornecedor">${fornecedoresPad.map(f => `<option value="${f.id}" ${f.id === fornecedorIdPadrao ? "selected" : ""}>${escapeHtml(f.nome)}</option>`).join("")}</select></div>
+      <div class="field"><label>Produto</label><input type="text" id="cafe-add-produto" list="cafe-produtos-dl" placeholder="ex.: Pão francês" value="${escapeHtml(it ? it.produto : "")}"></div>
+      <div class="field"><label>Padaria</label><select id="cafe-add-fornecedor">${fornecedoresPad.map(f => `<option value="${f.id}" ${f.id === (it ? it.fornecedor_id : fornecedorIdPadrao) ? "selected" : ""}>${escapeHtml(f.nome)}</option>`).join("")}</select></div>
       <div class="field"><label>Como o valor do dia é definido</label><select id="cafe-add-grupo">
-        <option value="variavel">Variável (padrão + exceção do dia)</option>
-        <option value="fixo">Fixo (qualquer diferença pede confirmação)</option>
-        <option value="per_capita">Per cápita (calculado pelos hóspedes previstos)</option>
-        <option value="servico">Serviço (ex. frete — não é insumo)</option>
+        <option value="variavel" ${it && it.grupo==="variavel"?"selected":""}>Variável (padrão + exceção do dia)</option>
+        <option value="fixo" ${it && it.grupo==="fixo"?"selected":""}>Fixo (qualquer diferença pede confirmação)</option>
+        <option value="per_capita" ${it && it.grupo==="per_capita"?"selected":""}>Per cápita (calculado pelos hóspedes previstos)</option>
+        <option value="servico" ${it && it.grupo==="servico"?"selected":""}>Serviço (ex. frete — não é insumo)</option>
       </select></div>
-      <div class="field" id="cafe-add-padrao-wrap"><label>Valor padrão</label><input type="number" id="cafe-add-padrao" min="0" step="1"></div>
-      <div class="field" id="cafe-add-fator-wrap" hidden><label>Fator per cápita (unidades por hóspede)</label><input type="number" id="cafe-add-fator" min="0" step="0.01"></div>
+      <div class="field" id="cafe-add-padrao-wrap"><label>Valor padrão</label><input type="number" id="cafe-add-padrao" min="0" step="1" value="${it && it.valor_padrao != null ? it.valor_padrao : ""}"></div>
+      <div class="field" id="cafe-add-fator-wrap" hidden><label>Fator per cápita (unidades por hóspede)</label><input type="number" id="cafe-add-fator" min="0" step="0.01" value="${it && it.fator_per_capita != null ? it.fator_per_capita : ""}"></div>
+      <div class="field">
+        <label>Dias da semana (deixe tudo desmarcado = todo dia)</label>
+        <div style="display:flex; gap:10px; flex-wrap:wrap;">${diasOpcoes.map(d => `<label style="font-size:12.5px; display:flex; align-items:center; gap:4px;"><input type="checkbox" class="cafe-add-dia" value="${d}" style="width:auto;" ${diasSelecionados.has(d)?"checked":""}>${CAFE_DIAS_SEMANA_LABEL[d]||d}</label>`).join("")}</div>
+        <div class="footnote" style="margin-top:4px;">Pra item que só entra em dias específicos (ex.: pão de leite seg/qui, bolo só terça).</div>
+      </div>
     </div>
-    <div class="modal-foot"><button class="btn primary" id="cafe-add-salvar">Salvar</button></div>
+    <div class="modal-foot">${it ? `<button class="btn ghost" id="cafe-add-remover" style="margin-right:auto;">Remover produto</button>` : ""}<button class="btn primary" id="cafe-add-salvar">Salvar</button></div>
   </div></div>`;
   const close = () => { root.innerHTML = ""; };
   document.getElementById("cafe-add-close").onclick = close;
   document.getElementById("cafe-add-ov").addEventListener("click", e => { if(e.target.id === "cafe-add-ov") close(); });
   const selGrupo = document.getElementById("cafe-add-grupo");
-  selGrupo.addEventListener("change", () => {
+  const sincronizarCampos = () => {
     document.getElementById("cafe-add-fator-wrap").toggleAttribute("hidden", selGrupo.value !== "per_capita");
     document.getElementById("cafe-add-padrao-wrap").toggleAttribute("hidden", selGrupo.value === "per_capita");
-  });
+  };
+  selGrupo.addEventListener("change", sincronizarCampos);
+  sincronizarCampos();
+  const btnRemover = document.getElementById("cafe-add-remover");
+  if(btnRemover) btnRemover.onclick = async () => {
+    const ok = await confirmDialog("Remover este produto do padrão do cliente?");
+    if(!ok) return;
+    if(await pcpCafeRemoverItem(it.id)){ close(); renderPCP(); }
+  };
   document.getElementById("cafe-add-salvar").onclick = async () => {
     const produto = document.getElementById("cafe-add-produto").value.trim();
     if(!produto){ showAlert("Informe o nome do produto."); return; }
     const grupo = selGrupo.value;
     const ins = [...insumos.entries()].find(([, i]) => normalizeText(i.nome) === normalizeText(produto));
+    const diasMarcados = [...document.querySelectorAll(".cafe-add-dia")].filter(c => c.checked).map(c => c.value);
     const row = {
+      id: it ? it.id : undefined,
       contrato_id: contratoId,
       fornecedor_id: document.getElementById("cafe-add-fornecedor").value || null,
       produto, insumo_id: ins ? ins[0] : null, grupo,
       valor_padrao: grupo === "per_capita" ? null : (parseFloat(document.getElementById("cafe-add-padrao").value) || null),
       fator_per_capita: grupo === "per_capita" ? (parseFloat(document.getElementById("cafe-add-fator").value) || null) : null,
-      ordem: (cafePadariaItens.get(contratoId) || []).length
+      dias_semana: diasMarcados.length ? diasMarcados : null,
+      ordem: it ? it.ordem : (cafePadariaItens.get(contratoId) || []).length
     };
     if(await pcpCafeSalvarItem(row)){ close(); renderPCP(); }
   };
