@@ -2196,12 +2196,45 @@ function custoFichaOuInsumo(item){
   }
   return null;
 }
+// 17/10/2026, confirmado com o Marcelo: Salada e Sobremesa são lançadas por PORÇÃO/UNIDADE na grade do
+// Cardápio, não por peso — o número digitado em gramagem_kg pra essas duas categorias significa "porções
+// por pessoa" (1 = porção inteira, 0,5 = meia porção...), nunca kg de verdade. Converte pra kg real (mesma
+// régua já usada nas substituições, ver pcpGramagemSubstituicao): kg por porção = rendimento_kg / rendimento_und
+// da ficha.
+// CORREÇÃO DE ROTA (mesma sessão, antes de ir pra produção): o plano original era, sem rendimento_und
+// cadastrado, assumir rendimento_und=1 (1 porção = rendimento_kg inteiro). Revertido depois de checar o
+// banco: fichas como "BOLO DE MILHO" (rendimento_kg=100, sem rendimento_und) dariam 1 porção = 100kg — um
+// erro catastrófico pra Compras/Requisição do estoque, não uma correção. Por isso SÓ converte quando
+// rendimento_kg E rendimento_und estão os dois cadastrados; sem um dos dois, devolve o valor como está
+// (comportamento antigo, inalterado) em vez de arriscar um fator de conversão inventado.
+// ACHADO GRAVE (17/10): das fichas que TÊM rendimento_und preenchido, 100% têm rendimento_und === rendimento_kg
+// (27/27 Sobremesa, 53/53 Salada, confirmado no banco) — ou seja, isso não é uma contagem real de porções,
+// é um valor placeholder/copiado. Com isso o fator de conversão cai sempre em 1 e esta função, hoje, NÃO
+// MUDA NENHUM NÚMERO — só fica pronta pra funcionar quando o cadastro de rendimento_und for corrigido com
+// a contagem real de porções por ficha. Demais grupos continuam kg/pessoa direto, sem conversão.
+// Decisão explícita do Marcelo: isso muda só os MOTORES de cálculo (custo, Compras, Produção, Requisição
+// do estoque, CMV) — NÃO muda o rótulo/placeholder da célula na grade do Cardápio, que continua mostrando "kg".
+function gramagemPorcaoParaKg(valor, ficha){
+  if(valor === null || valor === undefined) return valor;
+  if(!ficha || (ficha.grupo !== "SALADA" && ficha.grupo !== "SOBREMESA")) return valor;
+  if(!(ficha.rendimento_kg > 0) || !(ficha.rendimento_und > 0)) return valor;
+  return valor * (ficha.rendimento_kg / ficha.rendimento_und);
+}
+// custo (R$) de uma linha do cardápio (item com ficha ou insumo direto) — já considera a conversão
+// porção→kg de Salada/Sobremesa acima. Não aplica peso de expedição (ver gramagemKgEfetiva): o custo
+// planejado do cardápio não muda por cliente, só a compra/produção (decisão 27/09, v91).
+function custoLinhaCardapio(item){
+  if(!item) return 0;
+  const c = custoFichaOuInsumo(item);
+  if(c == null || item.gramagem_kg == null) return 0;
+  const kg = item.ficha_id ? gramagemPorcaoParaKg(item.gramagem_kg, fichas.get(item.ficha_id)) : item.gramagem_kg;
+  return c * kg;
+}
 // custo da opção (célula) com base na gramagem digitada — mostrado embaixo do campo de gramagem na grade de cardápio
 function custoItemTxt(item){
   if(!item || !item.nome) return "";
-  const c = custoFichaOuInsumo(item);
-  if(c==null || item.gramagem_kg==null) return "—";
-  return fmtMoney(c * item.gramagem_kg);
+  if(custoFichaOuInsumo(item)==null || item.gramagem_kg==null) return "—";
+  return fmtMoney(custoLinhaCardapio(item));
 }
 
 let draftAlmoco = null; // { [dia]: { id, precoVenda, itens:[20] } }
@@ -2382,7 +2415,7 @@ function _sortearPonderado(lista, pesos){
 // dia. Nunca retorna null se candidatos.length > 0 — passo 5-7 do desenho: "nunca deixa a célula vazia".
 function _escolherFicha(candidatos, {num, semanaAlvo, usadosNestaSemana, custoAcumulado, tetoDia}){
   if(!candidatos.length) return null;
-  const custoDe = c => (c.gramagemPadrao != null ? c.custoKg * c.gramagemPadrao : null);
+  const custoDe = c => (c.gramagemPadrao != null && c.custoKg != null) ? c.custoKg * gramagemPorcaoParaKg(c.gramagemPadrao, fichas.get(c.id)) : null;
 
   const livres = candidatos.filter(c => {
     if(usadosNestaSemana.has(c.id)) return false;
@@ -2495,8 +2528,7 @@ function gerarSugestaoSemana(grupo, num, semana, modo /* 'vazios' | 'sobrescreve
   // conta o que já estiver fixo no draft (modo "vazios" preserva o que já tem gramagem lançada) no teto do dia
   DIAS_ORDEM.forEach(dia => draft[dia].itens.forEach(it => {
     if(it.ficha_id && it.gramagem_kg != null){
-      const c = custoFichaOuInsumo(it);
-      if(c != null) custoAcumuladoDia[dia] += c * it.gramagem_kg;
+      custoAcumuladoDia[dia] += custoLinhaCardapio(it);
     }
   }));
 
@@ -3058,10 +3090,7 @@ function montarTabelaAlmoco(num, semana){
   if(draftAlmocoOverridePendente){ draftAlmoco = draftAlmocoOverridePendente; draftAlmocoOverridePendente = null; }
   else draftAlmoco = construirDraftAlmoco(num, semana);
 
-  const custoDia = dia => draftAlmoco[dia].itens.reduce((s,l) => {
-    const c = custoFichaOuInsumo(l);
-    return s + (c!=null && l.gramagem_kg!=null ? c*l.gramagem_kg : 0);
-  }, 0);
+  const custoDia = dia => draftAlmoco[dia].itens.reduce((s,l) => s + custoLinhaCardapio(l), 0);
 
   // Categorias sem nenhum prato em nenhum dia da semana ficam ocultas por padrão (decisão de 07/10/2026),
   // com um link pra reaparecer quando precisar lançar algo nelas. Ressalva: numa semana totalmente vazia
@@ -3286,7 +3315,7 @@ function montarTabelaAlmoco(num, semana){
       for(const dia of DIAS_ORDEM){
         const d = draftAlmoco[dia];
         const itensParaSalvar = d.itens.map(l => ({ categoria: l.categoria, nome: l.nome||"", ficha_id: l.ficha_id||null, insumo_id: l.insumo_id||null, gramagem_kg: l.gramagem_kg ?? null }));
-        const custoPlanejado = d.itens.reduce((s,l) => { const c = custoFichaOuInsumo(l); return s + (c!=null && l.gramagem_kg!=null ? c*l.gramagem_kg : 0); }, 0);
+        const custoPlanejado = d.itens.reduce((s,l) => s + custoLinhaCardapio(l), 0);
         const data = { cardapio_num: num, semana, dia, itens: itensParaSalvar, custo_planejado: custoPlanejado, preco_venda_planejado: d.precoVenda };
         Object.assign(data, carimbo());
         let error;
@@ -3369,7 +3398,7 @@ function montarTabelaCafe(num, semana){
       const itens = draftCafe.itens[dia];
       if(!itens.some(l=>l.nome)) return;
       dias++;
-      custoTotal += itens.reduce((s,l) => { const c = custoFichaOuInsumo(l); return s + (c!=null && l.gramagem_kg!=null ? c*l.gramagem_kg : 0); }, 0);
+      custoTotal += itens.reduce((s,l) => s + custoLinhaCardapio(l), 0);
     });
     const custoMedioDia = dias ? custoTotal/dias : null;
     document.getElementById("card-resumo-semana-cafe").innerHTML =
@@ -3559,7 +3588,7 @@ async function copiarSemanaCardapio(grupo, srcNum, srcSemana, destNum, destSeman
   for(const dia of DIAS_ORDEM){
     const src = srcPorDia.get(dia);
     const itensParaSalvar = (src?.itens||[]).map(i => ({...i}));
-    const custoPlanejado = itensParaSalvar.reduce((s,l) => { const c = custoFichaOuInsumo(l); return s + (c!=null && l.gramagem_kg!=null ? c*l.gramagem_kg : 0); }, 0);
+    const custoPlanejado = itensParaSalvar.reduce((s,l) => s + custoLinhaCardapio(l), 0);
     const data = { cardapio_num: destNum, semana: destSemana, dia, itens: itensParaSalvar, custo_planejado: custoPlanejado, preco_venda_planejado: src?.preco_venda_planejado ?? null };
     Object.assign(data, carimbo());
     const dest = destPorDia.get(dia);
@@ -3825,8 +3854,7 @@ function imprimirCardapioCompleto(grupo, num, semana){
   let linhasHtml = "";
   const celTxt = (it) => {
     if(!it || !it.nome) return `<td class="vazio">—</td>`;
-    const c = custoFichaOuInsumo(it);
-    const custo = (c!=null && it.gramagem_kg!=null) ? c*it.gramagem_kg : 0;
+    const custo = custoLinhaCardapio(it);
     const gramTxt = it.gramagem_kg!=null ? `${Number(it.gramagem_kg).toLocaleString('pt-BR',{maximumFractionDigits:3})} kg` : "";
     return {custo, html: `<td><div>${escapeHtml(it.nome)}</div><div class="sub">${[gramTxt, custo?fmtMoney(custo):""].filter(Boolean).join(" · ")}</div></td>`};
   };
@@ -5707,10 +5735,7 @@ function custoCafeDia(cafeIdx, num, semana, dia){
   const row = cafeIdx.get(`${num}|${semana}`);
   if(!row) return null;
   const itensDia = (row.dias && row.dias[DIA_KEY_CAFE[dia]] && row.dias[DIA_KEY_CAFE[dia]].itens) || [];
-  return itensDia.reduce((s,l) => {
-    const c = custoFichaOuInsumo(l);
-    return s + (c!=null && l.gramagem_kg!=null ? c*l.gramagem_kg : 0);
-  }, 0);
+  return itensDia.reduce((s,l) => s + custoLinhaCardapio(l), 0);
 }
 function catalogoPorProduto(produtoId){
   return [...catalogoItens.values()].find(c => c.produto_id === produtoId) || null;
@@ -9399,7 +9424,7 @@ function rankingPratos(mesId){
       if(!item || !item.nome || !(item.ficha_id || item.insumo_id)) return;
       const custoKg = custoFichaOuInsumo(item);
       if(custoKg === null || custoKg === undefined) return;
-      const custoPorcao = custoKg * (item.gramagem_kg || 0);
+      const custoPorcao = custoLinhaCardapio(item);
       const categoria = CATEGORIAS_CARDAPIO[ci] || "";
       const key = normalizeText(item.nome).trim();
       const acc = porItem.get(key) || { nome: item.nome, categoria, soma: 0, n: 0 };
@@ -9591,11 +9616,7 @@ function orcadoCompradoBarChart(mesId, escopo){
    mostra o quanto a inflação de insumo já corroeu a margem planejada daquele cardápio. */
 function custoRealCardapioDia(row){
   if(!row || !row.itens || !row.itens.length) return 0;
-  return row.itens.reduce((s,item) => {
-    if(!item) return s;
-    const c = custoFichaOuInsumo(item);
-    return (c!==null && c!==undefined && item.gramagem_kg!=null) ? s + c*item.gramagem_kg : s;
-  }, 0);
+  return row.itens.reduce((s,item) => s + custoLinhaCardapio(item), 0);
 }
 function formulacaoCmvPorCardapio(mesId){
   const mes = MESES_REFERENCIA.find(m => m.id === mesId);
@@ -10240,8 +10261,13 @@ function temPesoExpedicao(ct){ return !!(ct && ct.peso_expedicao && Object.keys(
 // gramagem); = fixa o peso por pessoa em qualquer cardápio. Sem `ct`, sem ficha (insumo direto) ou sem
 // override gravado, devolve a gramagem do cardápio sem alteração nenhuma.
 function gramagemKgEfetiva(it, ct){
-  const base = it && it.gramagem_kg;
-  if(base === null || base === undefined || !it.ficha_id || !ct) return base;
+  let base = it && it.gramagem_kg;
+  if(base === null || base === undefined || !it.ficha_id) return base;
+  // 17/10/2026: converte porção→kg pra Salada/Sobremesa (ver gramagemPorcaoParaKg) ANTES de aplicar peso
+  // de expedição — o override de expedição é sempre em kg/pessoa (gramas), nunca em porções, então precisa
+  // somar/fixar sobre o kg já convertido, não sobre o número bruto de porções.
+  base = gramagemPorcaoParaKg(base, fichas.get(it.ficha_id));
+  if(!ct) return base;
   const pe = pesoExpDoItem(ct, it.ficha_id);
   if(!pe) return base;
   return pe.modo === "fixo" ? Number(pe.g) / 1000 : Math.max(0, base + Number(pe.g) / 1000);
@@ -12834,10 +12860,11 @@ function pesoExpSemanaCliente(contratoId, ct, semana){
         const f = fichas.get(it.ficha_id);
         if(!f) return;
         const ef = gramagemKgEfetiva(it, ct);
+        const baseKg = gramagemPorcaoParaKg(it.gramagem_kg, f);
         const x = itens.get(it.ficha_id) || { fichaId: it.ficha_id, nome: f.nome, categoria: it.categoria, grupo: pcpGrupoFicha(f), bases: new Set(), dias: [], pessoas: 0, kgBase: 0, kgExp: 0, custoKg: null };
-        x.bases.add(Math.round(it.gramagem_kg * 1000));
+        x.bases.add(Math.round(baseKg * 1000));
         if(!x.dias.includes(dia)) x.dias.push(dia);
-        x.pessoas += qtd; x.kgBase += it.gramagem_kg * qtd; x.kgExp += (ef || 0) * qtd;
+        x.pessoas += qtd; x.kgBase += baseKg * qtd; x.kgExp += (ef || 0) * qtd;
         if(x.custoKg === null){ const c = computeFicha(f, it.ficha_id); x.custoKg = c.custoKg; }
         itens.set(it.ficha_id, x);
       });
