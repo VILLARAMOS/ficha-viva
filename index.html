@@ -10738,6 +10738,71 @@ function pcpCalcularRequisicaoComMapa(semana, dia, unidadeFiltro){
   return { semana, dia, unidade: res.unidade, setores };
 }
 
+// ---------- Requisição do estoque: cobertura D-1 (17/10/2026, pedido do Marcelo — réplica de um recurso
+// que existia num protótipo mais avançado do Ficha Viva) ----------
+// Mesma ideia da cobertura do açougue (pcpCalcularAcougueComCobertura/pcpDiasCobertos): o estoque também
+// não separa sáb/dom por padrão (pcpEstDias(), já configurável na mesma tela "Cortes e dias" — só não
+// estava sendo usada em lugar nenhum até agora). No dia selecionado, se ele é dia de operação, a separação
+// cobre ele + os dias seguintes sem operação (ex.: sexta cobre sexta+sábado+domingo). Diferente do
+// açougue, aqui soma por SETOR (cozinha/saladas/sobremesas — suco continua fora, decisão de 12/10/2026,
+// ver pcpSetorDoGrupo), mantendo quebra por dia (porDia, pra tabela) e por receita (origens, pra coluna
+// "Para"). "Mapa de insumos" (tabela simples insumo×receita×dia) saiu da tela — essa cobertura substitui
+// o papel dele; "Fichas" (cartão por insumo/dia) continuam, agora alimentadas pelo mapa combinado dos dias
+// cobertos em vez de só o dia selecionado.
+function pcpCalcularReqComCobertura(semana, diaSel, unidadeFiltro){
+  const diasCobertos = pcpDiasCobertos(diaSel, pcpEstDias());
+  if(!diasCobertos.length) return { diasCobertos: [], setores: [] };
+  const porDiaRes = diasCobertos.map(dia => ({ dia, ...pcpCalcularRequisicaoComMapa(semana, dia, unidadeFiltro) }));
+  const SETOR_LABEL_PADRAO = { cozinha: "Cozinha", saladas: "Saladas", sobremesas: "Sobremesas" };
+  const setores = ["cozinha", "saladas", "sobremesas"].map(setorId => {
+    const porInsumo = new Map(); // insumoId -> {insumoId, nome, unidade, porDia:[kg×diasCobertos], qtd, origens:Map(receita->{nome,qtd})}
+    let label = SETOR_LABEL_PADRAO[setorId];
+    porDiaRes.forEach((pd, k) => {
+      const s = pd.setores.find(x => x.setor === setorId);
+      if(!s) return;
+      label = s.label;
+      s.itens.forEach(it => {
+        const c = porInsumo.get(it.insumoId) || { insumoId: it.insumoId, nome: it.nome, unidade: it.unidade, porDia: diasCobertos.map(() => 0), qtd: 0, origens: new Map() };
+        c.porDia[k] += it.kg; c.qtd += it.kg;
+        porInsumo.set(it.insumoId, c);
+      });
+      s.mapa.forEach(l => {
+        const match = s.itens.find(it => it.nome === l.item);
+        const c = match && porInsumo.get(match.insumoId);
+        if(!c) return;
+        const o = c.origens.get(l.receita) || { nome: l.receita, qtd: 0 };
+        o.qtd += l.kg;
+        c.origens.set(l.receita, o);
+      });
+    });
+    const itens = [...porInsumo.values()]
+      .map(c => ({ ...c, origens: [...c.origens.values()].sort((a, b) => b.qtd - a.qtd) }))
+      .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
+    const mapa = porDiaRes.flatMap(pd => { const s = pd.setores.find(x => x.setor === setorId); return s ? s.mapa : []; });
+    return { setor: setorId, label, itens, mapa };
+  });
+  return { diasCobertos, setores };
+}
+
+// Embalagem como unidade (17/10/2026, portado de um protótipo mais avançado do Ficha Viva): insumo
+// comprado em KG/LT cuja embalagem não é 1 (unidade_convertida ≠ 1 — ex.: limão em caixa de 20kg, massa em
+// pacote de 0,5kg) ganha também a contagem em "nº de embalagens" na Requisição, pra separar fechado em vez
+// de pesar. Não muda nada do cadastro de insumos — é só como a Requisição mostra.
+function embalagemDoInsumo(ins){
+  if(!ins) return null;
+  const un = String(ins.unidade_medida || "").trim().toUpperCase();
+  const conv = Number(ins.unidade_convertida);
+  if(!["KG", "LT", "L"].includes(un)) return null;
+  if(!(conv > 0) || Math.abs(conv - 1) < 1e-9) return null;
+  return { conteudo: conv, un, txt: fmtNum(conv, 3) + " " + un };
+}
+function pcpFmtEmb(it){
+  const emb = embalagemDoInsumo(insumos.get(it.insumoId));
+  if(!emb || !(it.qtd > 0)) return "";
+  const n = it.qtd / emb.conteudo;
+  return `${fmtNum(n, n < 10 ? 1 : 0)} × ${escapeHtml(emb.txt)}`;
+}
+
 // combina a Requisição do açougue do dia selecionado com os dias seguintes em que ele NÃO opera (ex.:
 // sexta cobre sábado+domingo, se o açougue só funciona seg-sex) — as outras bancadas (cozinha/saladas/
 // sobremesas) continuam só do dia selecionado, porque são preparadas todo dia; só o açougue acumula.
@@ -11530,30 +11595,82 @@ function pcpAbrirGerenciarRotas(){
 // setor "acougue" agora é a aba separada "Açougue" (pcpMapaCarnesHtml/pcpFichasCorteHtml/
 // pcpEtiquetasCarnesHtml), com a cobertura de múltiplos dias — aqui só entram as bancadas do dia a dia
 // (cozinha/saladas/sobremesas), que são a aba "Requisição do estoque".
-// Mapa de insumos — 1ª peça da Requisição do estoque, igual à ordem do açougue (confirmado 13/10/2026):
-// 1 tabela por setor (cozinha/saladas/sobremesas), insumo × kg × receita × dia de uso.
-function pcpMapaInsumosHtml(setorObj){
-  const s = setorObj;
+// Tabela consolidada — 1ª peça da Requisição do estoque (17/10/2026, réplica de um protótipo mais
+// avançado do Ficha Viva, no lugar do antigo "Mapa de insumos"): 1 tabela por setor, já somada pelos dias
+// cobertos pela separação (coluna por dia quando são vários + Total), com "Em embalagens" e "Para"
+// (receitas de destino). Fichas (abaixo) continuam a 2ª peça, sem mudança de papel.
+function pcpReqTabelaHtml(s, diasCobertos){
+  const varios = diasCobertos.length > 1;
+  const cabDias = varios ? diasCobertos.map(d => `<th style="text-align:right;">${DIA_LABEL[d].slice(0,3)}</th>`).join("") : "";
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3>Mapa de insumos — ${escapeHtml(s.label)}</h3><span class="hint">${s.mapa.length} linha${s.mapa.length===1?"":"s"}</span>${s.mapa.length ? `<button class="btn small ghost" data-mapa-imprimir="${s.setor}" style="margin-left:auto;">Imprimir mapa</button>` : ""}</div>
-    <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Insumo</th><th style="text-align:right;">Quantidade</th><th>Receita</th><th>Dia de uso</th></tr></thead><tbody>
-      ${s.mapa.length ? s.mapa.map(l => `<tr><td class="name-cell">${escapeHtml(l.item)}</td><td class="num-cell">${fmtNum(l.kg,3)} ${escapeHtml(l.unidade)}</td><td>${escapeHtml(l.receita)}</td><td>${escapeHtml(DIA_LABEL[l.dia]||l.dia)}</td></tr>`).join("") : `<tr><td colspan="4" class="footnote">Nada a requisitar neste dia.</td></tr>`}
+    <div class="panel-head"><h3>${escapeHtml(s.label)}</h3><span class="hint">${s.itens.length} item${s.itens.length===1?"":"s"}</span>${s.itens.length ? `<button class="btn small ghost" data-req-imprimir="${s.setor}" style="margin-left:auto;">Imprimir separação</button>` : ""}</div>
+    <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Insumo</th>${cabDias}<th style="text-align:right;">${varios?"Total":"Quantidade"}</th><th style="text-align:right;">Em embalagens</th><th>Para</th></tr></thead><tbody>
+      ${s.itens.length ? s.itens.map(it => `<tr>
+        <td class="name-cell">${escapeHtml(it.nome)}</td>
+        ${varios ? it.porDia.map(q => `<td class="num-cell">${q ? fmtNum(q,2) : "—"}</td>`).join("") : ""}
+        <td class="num-cell"><strong>${fmtNum(it.qtd,2)} ${escapeHtml(it.unidade)}</strong></td>
+        <td class="num-cell">${pcpFmtEmb(it) || "—"}</td>
+        <td style="font-size:12px;">${it.origens.slice(0,4).map(o => `${escapeHtml(o.nome)} <span class="footnote">(${fmtNum(o.qtd,2)})</span>`).join(" · ")}${it.origens.length>4 ? ` <span class="footnote">+${it.origens.length-4}</span>` : ""}</td>
+      </tr>`).join("") : `<tr><td colspan="${3+(varios?diasCobertos.length:0)}" class="footnote">Nada a requisitar nesta separação.</td></tr>`}
     </tbody></table></div>
-    <div class="footnote" style="margin-top:10px;">Total por insumo: ${s.itens.map(it => `<strong>${escapeHtml(it.nome)}</strong> ${fmtNum(it.kg,3)} ${escapeHtml(it.unidade)}`).join(" · ") || "—"}</div>
+    <p class="footnote" style="margin-top:10px;">Mesma conta da lista de compra (peso bruto da ficha × produção). Suco e carnes do açougue não entram aqui (suco é feito na unidade do cliente; carnes saem pela ordem do açougue).</p>
     </div>
   </div>`;
 }
-function pcpImprimirMapaInsumos(s, semana, unidadeLabel){
-  const linhas = s.mapa.map(l => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(l.item)}</td><td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(l.kg,3)} ${escapeHtml(l.unidade)}</td><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(l.receita)}</td><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(DIA_LABEL[l.dia]||l.dia)}</td></tr>`).join("");
+// conteúdo (sem moldura de documento) de uma folha de separação de UM setor — reaproveitado tanto pra
+// imprimir a separação do dia quanto, em lote, pra imprimir a semana inteira (pcpImprimirReqSemana).
+function pcpReqFolhaPrintHtml(s, diasCobertos, semana, diaSep, unidadeLabel){
+  const varios = diasCobertos.length > 1;
+  const rotulo = diasCobertos.map(d => DIA_LABEL[d]).join(" + ");
+  const cabDias = varios ? diasCobertos.map(d => `<th style="text-align:right; padding-bottom:2px;">${DIA_LABEL[d].slice(0,3)}</th>`).join("") : "";
+  const linhas = s.itens.map(it => `<tr>
+    <td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(it.nome)}</td>
+    ${varios ? it.porDia.map(q => `<td style="padding:4px 0; border-top:1px solid #ddd; text-align:right;">${q?fmtNum(q,2):"—"}</td>`).join("") : ""}
+    <td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(it.qtd,2)} ${escapeHtml(it.unidade)}</td>
+    <td style="padding:4px 0; border-top:1px solid #ddd; text-align:right;">${pcpFmtEmb(it) || "—"}</td>
+    <td style="padding:4px 0; border-top:1px solid #ddd; font-size:11px;">${it.origens.slice(0,3).map(o => escapeHtml(o.nome)).join("; ")}${it.origens.length>3 ? ` +${it.origens.length-3}` : ""}</td>
+  </tr>`).join("");
+  return `<h1>Requisição do estoque — ${escapeHtml(s.label)}</h1>
+    <div style="font-size:12px; color:#666; margin-bottom:14px;">${escapeHtml(unidadeLabel)} · ${escapeHtml(rotuloSemana(semana))} · separar ${escapeHtml(DIA_LABEL[diaSep]||diaSep)} · cobre ${escapeHtml(rotulo)}</div>
+    <table style="width:100%; border-collapse:collapse; font-size:12px;"><thead><tr><th style="text-align:left; padding-bottom:2px;">Insumo</th>${cabDias}<th style="text-align:right; padding-bottom:2px;">${varios?"Total":"Quantidade"}</th><th style="text-align:right; padding-bottom:2px;">Embalagens</th><th style="text-align:left; padding-bottom:2px;">Para</th></tr></thead><tbody>${linhas || `<tr><td colspan="${3+(varios?diasCobertos.length:0)}">Nada a requisitar.</td></tr>`}</tbody></table>
+    <p style="font-size:11px; color:#666; margin-top:12px;">Mesma conta da lista de compra (peso bruto da ficha × produção). Suco e carnes do açougue não entram aqui.</p>
+    <div style="margin-top:24px; font-size:11px; color:#666; display:flex; justify-content:space-between;"><span>Separado por: ____________________ &nbsp; Recebido por: ____________________</span><span>Impresso em ${fmtDataCompleta(new Date())}</span></div>`;
+}
+function pcpImprimirReqSeparacao(s, diasCobertos, semana, diaSep, unidadeLabel){
   const w = window.open("", "_blank");
   if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
-  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Mapa de insumos — ${escapeHtml(s.label)}</title>
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Requisição — ${escapeHtml(s.label)}</title>
     <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()}</style></head><body>
-    ${printHeadHtml()}<h1>${escapeHtml(s.label)} — mapa de insumos</h1>
-    <div style="font-size:12px; color:#666; margin-bottom:14px;">${escapeHtml(unidadeLabel)} · ${escapeHtml(rotuloSemana(semana))} · ${escapeHtml(DIA_LABEL[s.dia]||s.dia)}</div>
-    <table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr><th style="text-align:left; padding-bottom:4px;">Insumo</th><th style="text-align:right; padding-bottom:4px;">Quantidade</th><th style="text-align:left; padding-bottom:4px;">Receita</th><th style="text-align:left; padding-bottom:4px;">Dia</th></tr></thead><tbody>${linhas || `<tr><td colspan="4">Nada a requisitar neste dia.</td></tr>`}</tbody></table>
+    ${printHeadHtml()}${pcpReqFolhaPrintHtml(s, diasCobertos, semana, diaSep, unidadeLabel)}
     </body></html>`);
   w.document.close(); w.focus(); w.print();
+}
+// Imprimir a semana inteira: uma separação por dia de operação do estoque (pcpEstDias) — sexta cobre
+// sábado, domingo e a segunda seguinte dentro da própria semana; uma folha por setor em cada separação.
+function pcpImprimirReqSemana(semana, unidadeFiltro, unidadeLabel){
+  const op = pcpEstDias();
+  const partes = [];
+  DIAS_ORDEM.filter(d => op.includes(d)).forEach(dia => {
+    const cob = pcpCalcularReqComCobertura(semana, dia, unidadeFiltro);
+    if(!cob.diasCobertos.length) return;
+    cob.setores.forEach(s => { if(s.itens.length) partes.push(pcpReqFolhaPrintHtml(s, cob.diasCobertos, semana, dia, unidadeLabel)); });
+  });
+  if(!partes.length){ showAlert("Nada a requisitar nesta semana."); return; }
+  const w = window.open("", "_blank");
+  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Requisição do estoque — semana</title>
+    <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()} .pcp-req-folha{page-break-after:always;}</style></head><body>
+    ${partes.map((h,i) => `<div class="${i<partes.length-1?"pcp-req-folha":""}">${printHeadHtml()}${h}</div>`).join("")}
+    </body></html>`);
+  w.document.close(); w.focus(); w.print();
+}
+function pcpReqAvisoHtml(diasCobertos){
+  if(!diasCobertos.length) return `<p class="footnote">Estoque não separa hoje — a requisição deste dia precisa ter sido separada num dia anterior de operação (confira em "Cortes e dias").</p>`;
+  if(diasCobertos.length > 1){
+    const rotulo = diasCobertos.map(d => DIA_LABEL[d]).join(" + ");
+    return `<p class="footnote" style="margin-bottom:12px;">O estoque não separa entre um dia e outro: esta separação cobre ${escapeHtml(rotulo)}. As colunas por dia mostram quanto cada um usa; "Total" é o que sai do estoque nesta separação.</p>`;
+  }
+  return "";
 }
 
 // Fichas do estoque — 2ª peça: 1 ficha de papel por insumo×dia (agrupa as receitas que usam aquele
@@ -12901,8 +13018,7 @@ async function renderPCP(){
   // Matriz+Filial numa tabela só, mesmo padrão de pcpProducaoAmbasHtml) — então em "Ambas" precisa dos dois
   // `res` separados, igual Produção já faz com `listaRes`.
   const listaResSubst = ehSubst && !unidadeFiltro ? ["matriz", "filial"].map(u => pcpCalcularDia(pcpSemanaSel, pcpDiaSel, u, null)) : null;
-  const reqMapa = ehEstoque ? pcpCalcularRequisicaoComMapa(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
-  const reqFichas = ehEstoque ? reqMapa.setores.map(s => ({ setor: s, fichas: pcpFichasEstoqueAgrupadas(s.mapa) })) : null;
+  const reqCobertura = ehEstoque ? pcpCalcularReqComCobertura(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
   const acougueCobertura = ehAcougue ? pcpCalcularAcougueComCobertura(pcpSemanaSel, pcpDiaSel, unidadeFiltro, servicosFiltro) : null;
   const fichasCorte = ehAcougue ? pcpFichasCorteAgrupadas(acougueCobertura.mapaCarnes) : null;
   const mapaSemana = ehAcougue ? pcpMapaCarnesSemana(pcpSemanaSel, unidadeFiltro, servicosFiltro) : null;
@@ -12937,8 +13053,12 @@ async function renderPCP(){
       ${pcpMapaSemanaHtml(mapaSemana, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial")}
       ${pcpEtiquetasCarnesHtml(acougueCobertura.mapaCarnes)}
     ` : ehEstoque ? (
-      !reqMapa.setores.length ? `<p class="footnote">Nada a requisitar neste dia.</p>` :
-      reqMapa.setores.map((s, idx) => `${pcpMapaInsumosHtml(s)}${pcpFichasEstoqueHtml(s, reqFichas[idx].fichas)}`).join("")
+      !reqCobertura.diasCobertos.length ? pcpReqAvisoHtml(reqCobertura.diasCobertos) : `
+        ${pcpReqAvisoHtml(reqCobertura.diasCobertos)}
+        <div style="display:flex; justify-content:flex-end; margin-bottom:14px;"><button class="btn small primary" id="pcp-req-imprimir-semana">Imprimir separação da semana</button></div>
+        ${reqCobertura.setores.every(s => !s.itens.length) ? `<div class="panel"><div class="empty-state">Nada a requisitar nesta separação.</div></div>` :
+          reqCobertura.setores.map(s => `${pcpReqTabelaHtml(s, reqCobertura.diasCobertos)}${pcpFichasEstoqueHtml(s, pcpFichasEstoqueAgrupadas(s.mapa))}`).join("")}
+      `
     ) : ehConferencia ? (
       !unidadeFiltro
         ? `<div class="empty-state">Selecione Matriz ou Filial acima — a conferência é por unidade real (é o que sai na doca de verdade), "Ambas" não se aplica aqui.</div>`
@@ -13040,14 +13160,16 @@ async function renderPCP(){
   } else if(ehEstoque){
     document.getElementById("pcp-acg-config").addEventListener("click", pcpAbrirConfigAcougue);
     const unidadeLabel = unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial";
-    content.querySelectorAll("button[data-mapa-imprimir]").forEach(btn => {
-      const s = reqMapa.setores.find(s => s.setor === btn.dataset.mapaImprimir);
-      btn.addEventListener("click", () => pcpImprimirMapaInsumos(s, pcpSemanaSel, unidadeLabel));
+    content.querySelectorAll("button[data-req-imprimir]").forEach(btn => {
+      const s = reqCobertura.setores.find(s => s.setor === btn.dataset.reqImprimir);
+      if(s) btn.addEventListener("click", () => pcpImprimirReqSeparacao(s, reqCobertura.diasCobertos, pcpSemanaSel, pcpDiaSel, unidadeLabel));
     });
     content.querySelectorAll("button[data-fichas-imprimir]").forEach(btn => {
-      const idx = reqMapa.setores.findIndex(s => s.setor === btn.dataset.fichasImprimir);
-      btn.addEventListener("click", () => pcpImprimirFichasEstoque(reqMapa.setores[idx], reqFichas[idx].fichas, pcpSemanaSel));
+      const s = reqCobertura.setores.find(s => s.setor === btn.dataset.fichasImprimir);
+      if(s) btn.addEventListener("click", () => pcpImprimirFichasEstoque(s, pcpFichasEstoqueAgrupadas(s.mapa), pcpSemanaSel));
     });
+    const btnReqSemana = document.getElementById("pcp-req-imprimir-semana");
+    if(btnReqSemana) btnReqSemana.addEventListener("click", () => pcpImprimirReqSemana(pcpSemanaSel, unidadeFiltro, unidadeLabel));
   } else if(ehConferencia){
     const wrap = document.getElementById("pcp-conf-wrap");
     if(wrap) wrap.addEventListener("change", async e => {
