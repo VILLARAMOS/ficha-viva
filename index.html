@@ -417,6 +417,10 @@ table.cardapio-table .autocomplete{position:relative;}
       <label for="loginPass">Senha</label>
       <input id="loginPass" type="password" autocomplete="current-password" placeholder="••••••••">
     </div>
+    <div style="display:flex; flex-direction:column; gap:6px; margin-top:2px;">
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted); cursor:pointer;"><input id="loginSalvarEmail" type="checkbox" style="width:auto;"> Salvar meu email</label>
+      <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted); cursor:pointer;"><input id="loginManterConectado" type="checkbox" style="width:auto;"> Manter conectado neste aparelho</label>
+    </div>
     <p class="loginErr" id="loginErr"></p>
     <button type="submit" class="btn primary" id="loginBtn">Entrar</button>
   </form>
@@ -509,6 +513,20 @@ const loginForm = document.getElementById('loginForm');
 const loginErr = document.getElementById('loginErr');
 const loginBtn = document.getElementById('loginBtn');
 const meEmailEl = document.getElementById('meEmail');
+const loginSalvarEmailEl = document.getElementById('loginSalvarEmail');
+const loginManterConectadoEl = document.getElementById('loginManterConectado');
+
+const LS_SAVED_EMAIL = 'fv-saved-email';
+const LS_MANTER_CONECTADO = 'fv-manter-conectado';
+
+// Preenche o email salvo (se houver) assim que a tela de login existe.
+(function preencherEmailSalvo(){
+  const salvo = localStorage.getItem(LS_SAVED_EMAIL);
+  if (salvo){
+    document.getElementById('loginEmail').value = salvo;
+    loginSalvarEmailEl.checked = true;
+  }
+})();
 
 let currentUser = null;
 let currentView = "insumos";
@@ -600,10 +618,19 @@ loginForm.addEventListener('submit', async (e)=>{
   loginBtn.disabled = false;
   loginBtn.textContent = 'Entrar';
   if (error){ loginErr.textContent = 'Não foi possível entrar: ' + error.message; return; }
+
+  if (loginSalvarEmailEl.checked) localStorage.setItem(LS_SAVED_EMAIL, email);
+  else localStorage.removeItem(LS_SAVED_EMAIL);
+
+  // "Manter conectado" é o que de fato evita pedir a senha de novo: mantemos a sessão
+  // (token) que o Supabase já guarda, em vez de salvar a senha em texto puro no navegador.
+  localStorage.setItem(LS_MANTER_CONECTADO, loginManterConectadoEl.checked ? '1' : '0');
+
   showApp(data.user);
 });
 
 document.getElementById('logoutBtn').addEventListener('click', async ()=>{
+  localStorage.setItem(LS_MANTER_CONECTADO, '0');
   await sb.auth.signOut();
   showLogin();
 });
@@ -13239,9 +13266,13 @@ async function renderPCP(){
 /* ===================================================================== INIT */
 (async function init(){
   const { data } = await sb.auth.getSession();
-  if (data.session && data.session.user){
+  const manterConectado = localStorage.getItem(LS_MANTER_CONECTADO) === '1';
+  if (data.session && data.session.user && manterConectado){
     showApp(data.session.user);
   } else {
+    // Sem "manter conectado" marcado, qualquer sessão guardada pelo navegador é
+    // descartada aqui, então a tela de login aparece sempre que a pessoa reabrir.
+    if (data.session) await sb.auth.signOut();
     showLogin();
   }
 })();
