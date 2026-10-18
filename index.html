@@ -12434,6 +12434,154 @@ function pcpBaixarPdfEtiquetasAcougue(linhas, tamanho, orient, unidadeLabel){
   doc.save(`etiquetas-acougue-${tamanho}.pdf`);
 }
 
+// ---------- Saladas/Sobremesas (18/10/2026, pedido do Marcelo) ----------
+// Aba nova, mesmo modelo de 3 peças do Açougue (produção do dia, mapa da semana, etiquetas) — mas pras
+// bancadas de Salada e Sobremesa, que preparam TODO dia (sem cobertura entre dias, igual às bancadas da
+// Requisição do estoque — ver pcpCalcularReqComCobertura) e usam o MESMO motor (pcpCalcularDia) que já
+// alimenta "Produção da cozinha", só filtrado por grupo — não é um cálculo novo, é o mesmo número.
+// Suco fica de fora do mapa da semana e das etiquetas: confirmado com o Marcelo (12/10/2026, revalidado
+// nesta sessão) que Suco é preparado na própria unidade do cliente, não sai pronto da cozinha central —
+// por isso já não entra na Requisição do estoque nem no Açougue (ver pcpSetorDoGrupo). Continua aparecendo
+// na tabela de quantidade (igual já aparecia em "Produção da cozinha"), só pro planejamento de compra do
+// insumo via cardápio — não tem embalagem saindo daqui pra etiquetar, nem mapa de produção central.
+// "Quantidade" hoje é a contagem por porção/unidade do cardápio (gramagemPorcaoParaKg com fator 1, ver nota
+// datada 17–18/10/2026) — passa a ser kg de verdade automaticamente quando o rendimento_und de cada ficha
+// for corrigido, sem precisar mudar nenhuma linha deste bloco.
+const PCP_SALSOB_GRUPOS_CENTRAL = ["SALADA", "SOBREMESA"]; // mapa da semana + etiqueta — só o que sai pronto daqui
+function pcpSalSobLinhasDia(res, grupos){
+  return res.receitas.filter(r => grupos.includes(r.grupo)).sort((a,b) => a.grupo.localeCompare(b.grupo,'pt-BR') || b.total - a.total);
+}
+// tabela de produção do dia — mesmo layout de pcpProducaoHtml (receita/quantidade/clientes/atende), sem as
+// colunas de turno/cuba (cuba é conceito de refeição transportada, não se aplica direto aqui). Inclui Suco
+// de propósito (ver nota acima).
+function pcpSalSobProducaoHtml(res){
+  const linhas = pcpSalSobLinhasDia(res, GRUPOS_PORCAO_NAO_PESO);
+  if(!linhas.length) return `<div class="panel" style="margin-bottom:14px;"><div class="panel-body"><div class="empty-state">Nenhuma salada, sobremesa ou suco prevista para este dia.</div></div></div>`;
+  let grupoAtual = null;
+  const corpo = linhas.map(r => {
+    const novoGrupo = r.grupo !== grupoAtual; grupoAtual = r.grupo;
+    return (novoGrupo ? `<tr><th colspan="5" style="background:var(--surface-alt); font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted);">${escapeHtml(r.grupo)}</th></tr>` : "") +
+      `<tr><td class="name-cell">${escapeHtml(r.nome)}</td><td class="num-cell">${pcpFmtQtd(r.total)}</td><td class="num-cell">${r.porCliente.size}</td><td class="footnote" style="margin:0;">${[...new Set([...r.porCliente.values()].map(p=>p.nome))].join(", ")}</td><td class="num-cell">${r.fichaId ? `<button class="btn small ghost" data-pcp-imprimir-receita="${r.fichaId}" title="Imprimir esta receita">${iconeImprimir()}</button>` : "—"}</td></tr>`;
+  }).join("");
+  return `<div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head"><h3><i class="ico" data-lucide="salad"></i>Produção do dia</h3><span class="hint">Salada, Sobremesa e Suco — quantidade por prato, mesma régua de "Produção da cozinha"</span></div>
+    <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Prato</th><th style="text-align:right;">Quantidade</th><th style="text-align:right;">Clientes</th><th>Atende</th><th></th></tr></thead><tbody>${corpo}</tbody></table></div>
+    <p class="footnote" style="margin-top:8px;">Suco entra só nesta tabela (planejamento de compra do insumo) — é preparado na unidade do cliente, por isso não aparece no mapa da semana nem nas etiquetas abaixo.</p>
+    </div>
+  </div>`;
+}
+// mapa da semana: Salada/Sobremesa só — 1 linha por prato, 1 coluna por dia, mesma ideia de
+// pcpMapaCarnesSemana, sem "dia de preparo" (não há cobertura aqui, cada dia já é independente).
+function pcpSalSobMapaSemana(semana, unidadeFiltro, servicosFiltro){
+  const porDia = DIAS_ORDEM.map(dia => {
+    const res = pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro);
+    return { dia, linhas: pcpSalSobLinhasDia(res, PCP_SALSOB_GRUPOS_CENTRAL) };
+  });
+  const porPrato = new Map(); // fichaId -> {nome, grupo, porDia:[7], total}
+  porDia.forEach((pd, idx) => {
+    pd.linhas.forEach(r => {
+      const c = porPrato.get(r.fichaId) || { nome: r.nome, grupo: r.grupo, porDia: DIAS_ORDEM.map(()=>0), total: 0 };
+      c.porDia[idx] += r.total; c.total += r.total;
+      porPrato.set(r.fichaId, c);
+    });
+  });
+  const pratos = [...porPrato.values()].sort((a,b) => a.grupo.localeCompare(b.grupo,'pt-BR') || b.total - a.total);
+  return { porDia, pratos };
+}
+function pcpSalSobMapaSemanaHtml(mapaSemana, unidadeLabel){
+  if(!mapaSemana.pratos.length) return `<div class="panel" style="margin-bottom:14px;"><div class="panel-head"><h3>Mapa da semana</h3></div><div class="panel-body"><div class="empty-state">Sem salada/sobremesa na semana.</div></div></div>`;
+  const cab = mapaSemana.porDia.map(pd => `<th style="text-align:right;">${DIA_LABEL[pd.dia].slice(0,3)}</th>`).join("");
+  return `<div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head"><h3>Mapa da semana</h3><span class="hint">${escapeHtml(unidadeLabel)} — quantidade por dia, Salada e Sobremesa (Suco fica fora, ver nota acima)</span><button class="btn small ghost" id="pcp-salsob-mapa-sem-imprimir" style="margin-left:auto;">Imprimir semana</button></div>
+    <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Prato</th>${cab}<th style="text-align:right;">Total</th></tr></thead><tbody>
+      ${mapaSemana.pratos.map(p => `<tr><td class="name-cell">${escapeHtml(p.nome)}</td>${p.porDia.map(q => `<td class="num-cell">${q ? fmtNum(q,2) : "—"}</td>`).join("")}<td class="num-cell"><strong>${fmtNum(p.total,2)}</strong></td></tr>`).join("")}
+    </tbody></table></div>
+    </div>
+  </div>`;
+}
+function pcpImprimirSalSobMapaSemana(mapaSemana, semana, unidadeLabel){
+  const cab = mapaSemana.porDia.map(pd => `<th style="text-align:right; padding-bottom:2px;">${DIA_LABEL[pd.dia].slice(0,3)}</th>`).join("");
+  const linhas = mapaSemana.pratos.map(p => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(p.nome)}</td>${p.porDia.map(q => `<td style="padding:4px 0; border-top:1px solid #ddd; text-align:right;">${q ? fmtNum(q,2) : "—"}</td>`).join("")}<td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(p.total,2)}</td></tr>`).join("");
+  const w = window.open("", "_blank");
+  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Mapa da semana — Saladas/Sobremesas</title>
+    <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()}</style></head><body>
+    ${printHeadHtml()}<h1>Saladas/Sobremesas — mapa da semana</h1>
+    <div style="font-size:12px; color:#666; margin-bottom:14px;">${escapeHtml(unidadeLabel)} · ${escapeHtml(rotuloSemana(semana))}</div>
+    <table style="width:100%; border-collapse:collapse; font-size:12px;"><thead><tr><th style="text-align:left; padding-bottom:2px;">Prato</th>${cab}<th style="text-align:right; padding-bottom:2px;">Total</th></tr></thead><tbody>${linhas || `<tr><td colspan="9">Sem salada/sobremesa na semana.</td></tr>`}</tbody></table>
+    </body></html>`);
+  w.document.close(); w.focus(); w.print();
+}
+// etiquetas: 1 linha por prato×cliente do dia selecionado (Salada/Sobremesa só) — campos confirmados com o
+// Marcelo: nome do prato, cliente/unidade destino, data e operador (os dois últimos em branco pra anotar
+// na embalagem). Quantidade incluída também — sem ela a etiqueta não diz o que tem dentro; fácil de tirar
+// depois (pcpSalSobEtiquetaPreview) se não quiser.
+function pcpSalSobEtiquetaLinhas(res, dia){
+  const linhas = pcpSalSobLinhasDia(res, PCP_SALSOB_GRUPOS_CENTRAL);
+  const saida = [];
+  linhas.forEach(r => {
+    [...r.porCliente.values()].forEach(pc => {
+      if(!(pc.qtd > 0)) return;
+      saida.push({ prato: r.nome, grupo: r.grupo, cliente: pc.nome, qtd: pc.qtd, dia });
+    });
+  });
+  return saida.sort((a,b) => a.cliente.localeCompare(b.cliente,'pt-BR') || a.prato.localeCompare(b.prato,'pt-BR'));
+}
+function pcpSalSobEtiquetaPreview(l, unidadeLabel){
+  return `<div class="etqa-card" style="border:1px solid #333; border-radius:6px; padding:8px 10px; width:230px; font-size:11.5px; line-height:1.35;">
+    <div style="font-weight:700; font-size:10.5px;">VILLA RAMOS · ${escapeHtml(unidadeLabel.toUpperCase())}</div>
+    <div style="font-weight:700; font-size:14px; margin:3px 0 1px;">${escapeHtml(l.prato.toUpperCase())}</div>
+    <div class="footnote" style="margin:0;">${escapeHtml(l.grupo)}</div>
+    <div style="margin-top:3px;">Para: <strong>${escapeHtml(l.cliente)}</strong></div>
+    <div style="margin-top:2px;">Qtd.: ${fmtNum(l.qtd,2)}</div>
+    <div style="display:flex; justify-content:space-between; border-top:1px solid #ccc; margin-top:3px; padding-top:3px;"><span>Data: ____/____</span><span>Resp.: ______</span></div>
+  </div>`;
+}
+function pcpSalSobEtiquetasHtml(linhas){
+  if(!linhas.length) return `<div class="panel" style="margin-bottom:14px;"><div class="panel-head"><h3>Etiquetas</h3></div><div class="panel-body"><div class="empty-state">Nada a etiquetar neste dia.</div></div></div>`;
+  return `<div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head"><h3>Etiquetas</h3><span class="hint">${linhas.length} linha${linhas.length===1?"":"s"} (prato × cliente) do dia selecionado — data e responsável em branco pra anotar na embalagem</span><button class="btn small primary" id="pcp-salsob-etiquetas-abrir" style="margin-left:auto;">Preparar etiquetas</button></div>
+  </div>`;
+}
+function pcpAbrirEtiquetasSalSob(linhas, unidadeLabel){
+  const root = document.getElementById("modal-root");
+  const qtdPorLinha = new Map(linhas.map((l,i) => [i, 1]));
+  const desenhar = () => {
+    const total = linhas.reduce((s,_,i) => s + (qtdPorLinha.get(i)||0), 0);
+    root.innerHTML = `<div class="modal-overlay" id="salsobetq-ov"><div class="modal" style="max-width:820px;">
+      <div class="modal-head"><h2>Etiquetas — Saladas/Sobremesas</h2><button class="close-x" id="salsobetq-close">&times;</button></div>
+      <div class="modal-body">
+        <p class="footnote">Data e responsável ficam em branco pra anotar na embalagem — igual às etiquetas do açougue.</p>
+        <div style="max-height:40vh; overflow:auto; border:1px solid var(--border); border-radius:8px;"><table><thead><tr><th>Prato</th><th>Cliente</th><th style="text-align:right;">Qtd.</th><th style="text-align:right;">Etiquetas</th></tr></thead><tbody>
+          ${linhas.map((l,i) => `<tr><td class="name-cell">${escapeHtml(l.prato)}</td><td>${escapeHtml(l.cliente)}</td><td class="num-cell">${fmtNum(l.qtd,2)}</td><td class="num-cell"><input type="number" min="0" step="1" data-salsobetq-qtd="${i}" value="${qtdPorLinha.get(i)}" style="width:60px; text-align:right;"></td></tr>`).join("")}
+        </tbody></table></div>
+        <p class="footnote" style="margin-top:8px;">${total} etiqueta${total===1?"":"s"} no total.</p>
+      </div>
+      <div class="modal-foot">
+        <button class="btn small ghost" id="salsobetq-imprimir" type="button">Imprimir</button>
+      </div>
+    </div></div>`;
+    document.getElementById("salsobetq-close").addEventListener("click", () => { root.innerHTML = ""; });
+    document.getElementById("salsobetq-ov").addEventListener("click", e => { if(e.target.id==="salsobetq-ov") root.innerHTML = ""; });
+    root.querySelectorAll("[data-salsobetq-qtd]").forEach(inp => inp.addEventListener("change", () => {
+      qtdPorLinha.set(Number(inp.dataset.salsobetqQtd), Math.max(0, Math.floor(Number(inp.value)||0)));
+    }));
+    document.getElementById("salsobetq-imprimir").addEventListener("click", () => {
+      const saida = [];
+      linhas.forEach((l,i) => { for(let k=0;k<(qtdPorLinha.get(i)||0);k++) saida.push(l); });
+      if(!saida.length){ showAlert("Nenhuma etiqueta pra imprimir (quantidade zerada)."); return; }
+      const etiquetas = saida.map(l => pcpSalSobEtiquetaPreview(l, unidadeLabel)).join("");
+      const w = window.open("", "_blank");
+      if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
+      w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Etiquetas — Saladas/Sobremesas</title>
+        <style>body{font-family:Arial,Helvetica,sans-serif; padding:16px; color:#111;} .etqa-card{display:inline-block; margin:0 6px 10px 0; vertical-align:top; break-inside:avoid;}</style></head><body>
+        ${etiquetas}</body></html>`);
+      w.document.close(); w.focus(); w.print();
+    });
+  };
+  desenhar();
+}
+
 // ---------- Fase 3: Conferência de expedição ----------
 // Checklist operacional por cliente/item: cozinha confirma que produziu/embalou, expedição confirma que
 // carregou, com a quantidade realmente enviada e observação quando diverge do previsto. Usa os MESMOS
@@ -13410,12 +13558,13 @@ async function renderPCP(){
   const ehPesos = pcpSubView === "pesos";
   const ehAjustes = pcpSubView === "ajustes";
   const ehProducao = pcpSubView === "producao";
+  const ehSalSob = pcpSubView === "saladas";
   const pcpDataSel = dataDoDia(pcpSemanaSel, pcpDiaSel).toISOString().slice(0,10);
   const pcpDiaLabelSel = DIA_LABEL[pcpDiaSel];
   document.getElementById("topbar-actions").innerHTML = (ehAcougue || ehEstoque) ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-acg-config">Cortes e dias</button>
-    </div>` : (ehConferencia || ehCafe || ehSubst || ehPesos || ehAjustes) ? "" : ehRomaneio ? `
+    </div>` : (ehConferencia || ehCafe || ehSubst || ehPesos || ehAjustes || ehSalSob) ? "" : ehRomaneio ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-rotas-gerenciar">Gerenciar rotas</button>
     </div>` : `
@@ -13432,7 +13581,7 @@ async function renderPCP(){
   // serviços (Almoço/Jantar/Ceia, multi-seleção) se aplica em Produção, Volume por cliente, Açougue (desde
   // 17/10/2026) e, desde 18/10/2026 (pedido do Marcelo), também Requisição do estoque — antes ficava sempre
   // nos 3 serviços somados. Substituições/Pesos/Romaneio continuam como sempre foram.
-  const servicosAplicavel = ehProducao || ehAcougue || ehEstoque;
+  const servicosAplicavel = ehProducao || ehAcougue || ehEstoque || ehSalSob;
   const servicosFiltro = servicosAplicavel ? pcpServicosSel : null;
   // precisa carregar a semana INTEIRA (não só o dia selecionado) porque a cobertura do açougue chama a
   // Requisição de outros dias internamente — ver comentário em pcpSubstituicoesCache.
@@ -13463,6 +13612,10 @@ async function renderPCP(){
   if(ehAcougue) await pcpCarregarAvulsas(pcpSemanaSel, unidadeFiltro, "acougue");
   const reqSemana = ehEstoque ? pcpReqSemanaPorDiaServido(pcpSemanaSel, unidadeFiltro, "estoque", servicosFiltro) : null;
   const acgSemana = ehAcougue ? pcpReqSemanaPorDiaServido(pcpSemanaSel, unidadeFiltro, "acougue", servicosFiltro) : null;
+  // aba nova "Saladas/Sobremesas" (18/10/2026, pedido do Marcelo) — mapa da semana e linhas de etiqueta do
+  // dia selecionado, mesmo `res` que a Produção já calcula acima (só filtrado por grupo, ver pcpSalSobLinhasDia).
+  const salSobMapaSemana = ehSalSob ? pcpSalSobMapaSemana(pcpSemanaSel, unidadeFiltro, servicosFiltro) : null;
+  const salSobEtqLinhas = ehSalSob ? pcpSalSobEtiquetaLinhas(res, pcpDiaSel) : null;
   let confLinhas = null;
   if(ehConferencia && unidadeFiltro){
     await pcpCarregarConferencia(pcpSemanaSel, pcpDiaSel, unidadeFiltro);
@@ -13478,6 +13631,7 @@ async function renderPCP(){
       <button type="button" data-pcpsub="cafe" class="${pcpSubView==="cafe"?"active":""}">Café / Padaria</button>
       <button type="button" data-pcpsub="substituicoes" class="${pcpSubView==="substituicoes"?"active":""}">Substituições</button>
       <button type="button" data-pcpsub="pesos" class="${pcpSubView==="pesos"?"active":""}">Peso por prato (por cliente)</button>
+      <button type="button" data-pcpsub="saladas" class="${pcpSubView==="saladas"?"active":""}">Saladas / Sobremesas</button>
       <button type="button" data-pcpsub="acougue" class="${pcpSubView==="acougue"?"active":""}">Açougue</button>
       <button type="button" data-pcpsub="estoque" class="${pcpSubView==="estoque"?"active":""}">Requisição do estoque</button>
       <button type="button" data-pcpsub="conferencia" class="${pcpSubView==="conferencia"?"active":""}">Conferência de expedição</button>
@@ -13521,6 +13675,10 @@ async function renderPCP(){
       pcpPesosHtml(unidadeFiltro, pcpSemanaSel)
     ) : ehAjustes ? (
       pcpAjustesHtml(res)
+    ) : ehSalSob ? (
+      pcpSalSobProducaoHtml(res) +
+      pcpSalSobMapaSemanaHtml(salSobMapaSemana, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial") +
+      pcpSalSobEtiquetasHtml(salSobEtqLinhas)
     ) : `
       <div class="es-kpis" style="margin-bottom:16px;">
         <div class="vn-card"><div class="vn-label">Pessoas previstas</div><div class="vn-value">${fmtNum(res.pessoasTot,0)}</div>${ehProducaoAmbas ? `<div class="vn-sub">Matriz ${fmtNum(listaRes[0].pessoasTot,0)} · Filial ${fmtNum(listaRes[1].pessoasTot,0)}</div>` : ""}</div>
@@ -13585,6 +13743,15 @@ async function renderPCP(){
         pcpImprimirOrdemProducao(res, margemPct, btn.dataset.pcpOrdem);
       });
     });
+  } else if(ehSalSob){
+    content.querySelectorAll("button[data-pcp-imprimir-receita]").forEach(btn => {
+      btn.addEventListener("click", () => pcpImprimirReceitaUnica(res, margemPct, btn.dataset.pcpImprimirReceita));
+    });
+    const unidadeLabel = unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial";
+    const btnMapaSem = document.getElementById("pcp-salsob-mapa-sem-imprimir");
+    if(btnMapaSem) btnMapaSem.addEventListener("click", () => pcpImprimirSalSobMapaSemana(salSobMapaSemana, pcpSemanaSel, unidadeLabel));
+    const btnEtiquetas = document.getElementById("pcp-salsob-etiquetas-abrir");
+    if(btnEtiquetas) btnEtiquetas.addEventListener("click", () => pcpAbrirEtiquetasSalSob(salSobEtqLinhas, unidadeLabel));
   }
   // pcpConferirHtml fica embutido no preâmbulo de Produção E de Volume por cliente (15/10/2026) — wiring
   // genérico, fora do if/else acima, pra pegar os checkboxes nas duas telas.
