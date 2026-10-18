@@ -2241,9 +2241,14 @@ function custoFichaOuInsumo(item){
 // a contagem real de porções por ficha. Demais grupos continuam kg/pessoa direto, sem conversão.
 // Decisão explícita do Marcelo: isso muda só os MOTORES de cálculo (custo, Compras, Produção, Requisição
 // do estoque, CMV) — NÃO muda o rótulo/placeholder da célula na grade do Cardápio, que continua mostrando "kg".
+// EXTENSÃO (18/10/2026, confirmado com o Marcelo): Suco (SUCO SIMPLES/SUCO NATURAL) é a mesma lógica —
+// também lançado por porção/unidade, não por peso. Mesma régua, mesma trava (só converte com os dois campos
+// preenchidos); mesmo achado provavelmente se aplica (precisa checar o rendimento_und real de Suco antes de
+// confiar no número — ver lista levantada junto com esta mudança).
+const GRUPOS_PORCAO_NAO_PESO = ["SALADA", "SOBREMESA", "SUCO SIMPLES", "SUCO NATURAL"];
 function gramagemPorcaoParaKg(valor, ficha){
   if(valor === null || valor === undefined) return valor;
-  if(!ficha || (ficha.grupo !== "SALADA" && ficha.grupo !== "SOBREMESA")) return valor;
+  if(!ficha || !GRUPOS_PORCAO_NAO_PESO.includes(ficha.grupo)) return valor;
   if(!(ficha.rendimento_kg > 0) || !(ficha.rendimento_und > 0)) return valor;
   return valor * (ficha.rendimento_kg / ficha.rendimento_und);
 }
