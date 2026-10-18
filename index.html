@@ -9139,7 +9139,7 @@ function openFornecedorModal(id, opts){
 // Grupo inteiro/Matriz/Filial — sem os recortes menores do sistema antigo (RB, Cardápio 1/2).
 let orcamentoMesSel = null;
 let orcamentoEscopoSel = "todos"; // "todos" | "matriz" | "filial"
-let orcamentoMetricaSel = "orcado"; // "orcado" | "comprado" | "saldo"
+let orcamentoMetricaSel = "orcado"; // "orcado" | "comprado" | "utilizado" | "saldo"
 
 function orcadoPorBlocoSemana(mesId, escopo){
   const mes = MESES_REFERENCIA.find(m => m.id === mesId);
@@ -9204,6 +9204,26 @@ function compradoPorBlocoSemana(mesId, escopo){
   });
   return {mes, porSemanaBloco};
 }
+// Utilizado (18/10/2026, pedido do Marcelo): baixas reais do kardex geradas pela Requisição do estoque/
+// Açougue (tipo baixa_pcp_*, ver pcpBaixarDiaServido) — é o 3º lado do painel, ao lado de Orçado e Comprado.
+// semanaDaData converte a `data` real do movimento pra número de semana do sistema; movimento fora do mês
+// de referência (semana sem bater com nenhuma de mes.semanas) é ignorado aqui, de propósito.
+function utilizadoPorBlocoSemana(mesId, escopo){
+  const mes = MESES_REFERENCIA.find(m => m.id === mesId);
+  if(!mes) return null;
+  const porSemanaBloco = mes.semanas.map(semana => ({semana, porBloco: new Map()}));
+  const porSemanaMap = new Map(porSemanaBloco.map(x => [x.semana, x.porBloco]));
+  [...estoqueMovimentos.values()].forEach(m => {
+    if(!/^baixa_pcp_/.test(m.tipo||"")) return;
+    if(!(m.quantidade < 0)) return;
+    if(escopo !== "todos" && m.unidade !== escopo) return;
+    const porBloco = porSemanaMap.get(semanaDaData(m.data));
+    if(!porBloco) return;
+    const grupo = blocoDoInsumo(m.insumo_id);
+    porBloco.set(grupo, (porBloco.get(grupo)||0) + Math.abs(m.quantidade) * (m.custo_unitario||0));
+  });
+  return {mes, porSemanaBloco};
+}
 function saldoChip(saldo, orcado){
   const cls = saldo < 0 ? "critical" : (orcado > 0 && saldo/orcado < 0.15) ? "warn" : "ok";
   return `<span class="chip ${cls}"><span class="dot"></span>${fmtMoney(saldo)}</span>`;
@@ -9211,7 +9231,7 @@ function saldoChip(saldo, orcado){
 
 function renderOrcamento(){
   document.getElementById("page-title").textContent = "Orçamento";
-  document.getElementById("page-desc").textContent = "Orçado (demanda de insumo) × Comprado (pedidos) × Saldo, por bloco de compra e semana";
+  document.getElementById("page-desc").textContent = "Orçado (demanda de insumo) × Comprado (pedidos) × Utilização (baixa real no estoque), por bloco de compra e semana";
   document.getElementById("topbar-actions").innerHTML = "";
 
   const meses = MESES_REFERENCIA;
@@ -9222,28 +9242,33 @@ function renderOrcamento(){
 
   const orc = orcadoPorBlocoSemana(orcamentoMesSel, orcamentoEscopoSel);
   const comp = compradoPorBlocoSemana(orcamentoMesSel, orcamentoEscopoSel);
+  // Utilização (18/10/2026): baixa real gerada pela Requisição do estoque/Açougue ao imprimir — só existe a
+  // partir do dia em que o PCP passou a gerar baixa de verdade (ver pcpBaixarDiaServido); meses/semanas
+  // anteriores a essa mudança ficam sem Utilização, o que é esperado, não um bug.
+  const util = utilizadoPorBlocoSemana(orcamentoMesSel, orcamentoEscopoSel);
   const mes = orc.mes;
   const blocos = ["CAFÉ", ...blocosCadastro(), "SEM GRUPO"];
 
-  const totalMesBloco = lista => lista.map(porSB => {
-    const t = new Map(); porSB.porSemanaBloco.forEach(sb => sb.porBloco.forEach((v,g) => t.set(g,(t.get(g)||0)+v))); return t;
-  });
   const orcMesPorBloco = new Map(); orc.porSemanaBloco.forEach(sb => sb.porBloco.forEach((v,g) => orcMesPorBloco.set(g,(orcMesPorBloco.get(g)||0)+v)));
   const compMesPorBloco = new Map(); comp.porSemanaBloco.forEach(sb => sb.porBloco.forEach((v,g) => compMesPorBloco.set(g,(compMesPorBloco.get(g)||0)+v)));
+  const utilMesPorBloco = new Map(); util.porSemanaBloco.forEach(sb => sb.porBloco.forEach((v,g) => utilMesPorBloco.set(g,(utilMesPorBloco.get(g)||0)+v)));
 
-  const blocosVisiveis = blocos.filter(g => (orcMesPorBloco.get(g)||0) > 0.004 || (compMesPorBloco.get(g)||0) > 0.004);
+  const blocosVisiveis = blocos.filter(g => (orcMesPorBloco.get(g)||0) > 0.004 || (compMesPorBloco.get(g)||0) > 0.004 || (utilMesPorBloco.get(g)||0) > 0.004);
   const totOrcMes = [...orcMesPorBloco.values()].reduce((a,b)=>a+b,0);
   const totCompMes = [...compMesPorBloco.values()].reduce((a,b)=>a+b,0);
+  const totUtilMes = [...utilMesPorBloco.values()].reduce((a,b)=>a+b,0);
   const usoMes = totOrcMes > 0 ? totCompMes/totOrcMes : null;
+  const usoRealMes = totOrcMes > 0 ? totUtilMes/totOrcMes : null;
 
-  function celula(o, c){
+  function celula(o, c, u){
     if(orcamentoMetricaSel === "saldo") return (o || c) ? saldoChip(o-c, o) : "—";
+    if(orcamentoMetricaSel === "utilizado") return u ? fmtMoney(u) : "—";
     const v = orcamentoMetricaSel === "orcado" ? o : c;
     return v ? fmtMoney(v) : "—";
   }
 
   content.innerHTML = `
-    <div class="footnote" style="margin-bottom:14px;">V1 só CMV: Orçado é o custo de insumo da demanda (mesmo motor da Lista de compra); Comprado é a soma dos Pedidos cuja semana de uso cai neste mês. O bloco <strong>CAFÉ</strong> junta todo insumo consumido pelo cardápio de café (independente do grupo de compra do insumo) — mas como os Pedidos não são lançados separando café de refeição, essa linha só tem Orçado, nunca Comprado/Saldo. Ainda sem "fora do CMV" (serviço, limpeza, consumível, escritório) nem embalagem configurável — e sem os recortes menores do sistema antigo (RB, Cardápio 1/2), só Grupo inteiro/Matriz/Filial.</div>
+    <div class="footnote" style="margin-bottom:14px;">V1 só CMV: Orçado é o custo de insumo da demanda (mesmo motor da Lista de compra); Comprado é a soma dos Pedidos cuja semana de uso cai neste mês; <strong>Utilização</strong> é a baixa real gerada no estoque pela Requisição do estoque/Açougue (receita + retirada avulsa) ao imprimir — rastreia o que de fato saiu, não só o que foi comprado. O bloco <strong>CAFÉ</strong> junta todo insumo consumido pelo cardápio de café (independente do grupo de compra do insumo) — mas como os Pedidos não são lançados separando café de refeição, essa linha só tem Orçado. Ainda sem "fora do CMV" (serviço, limpeza, consumível, escritório) nem embalagem configurável — e sem os recortes menores do sistema antigo (RB, Cardápio 1/2), só Grupo inteiro/Matriz/Filial.</div>
     <div class="menu-controls">
       <select id="or-mes">${meses.map(m => `<option value="${m.id}" ${m.id===orcamentoMesSel?"selected":""}>${escapeHtml(m.nome)}</option>`).join("")}</select>
       <div class="seg-toggle" id="or-escopo">
@@ -9255,17 +9280,19 @@ function renderOrcamento(){
     <div class="two-col-num" style="margin-bottom:16px;">
       <div class="stat-block"><div class="label">Orçado — ${escapeHtml(mes.nome)}</div><div class="val">${fmtMoney(totOrcMes)}</div></div>
       <div class="stat-block"><div class="label">Comprado (pedidos)</div><div class="val">${fmtMoney(totCompMes)}</div></div>
+      <div class="stat-block"><div class="label">Utilizado (baixa real)</div><div class="val">${fmtMoney(totUtilMes)}</div></div>
       <div class="stat-block"><div class="label">Saldo do mês</div><div>${saldoChip(totOrcMes-totCompMes, totOrcMes)}</div></div>
-      <div class="stat-block"><div class="label">Orçado já consumido</div><div class="val">${usoMes!==null?fmtPct(usoMes):"—"}</div></div>
+      <div class="stat-block"><div class="label">Orçado já comprado</div><div class="val">${usoMes!==null?fmtPct(usoMes):"—"}</div></div>
+      <div class="stat-block"><div class="label">Orçado já utilizado</div><div class="val">${usoRealMes!==null?fmtPct(usoRealMes):"—"}</div></div>
     </div>
     <div class="panel">
       <div class="panel-head">
         <h3>Bloco × semana</h3>
         <div class="seg-toggle" id="or-metrica">
-          ${[["orcado","Orçado"],["comprado","Comprado"],["saldo","Saldo"]].map(([k,l]) => `<button type="button" data-met="${k}" class="${orcamentoMetricaSel===k?"active":""}">${l}</button>`).join("")}
+          ${[["orcado","Orçado"],["comprado","Comprado"],["utilizado","Utilizado"],["saldo","Saldo"]].map(([k,l]) => `<button type="button" data-met="${k}" class="${orcamentoMetricaSel===k?"active":""}">${l}</button>`).join("")}
         </div>
       </div>
-      <div class="footnote" style="margin:0 20px 10px;">Saldo em vermelho = comprou mais que o orçado do bloco; amarelo = sobrou menos de 15%.</div>
+      <div class="footnote" style="margin:0 20px 10px;">Saldo em vermelho = comprou mais que o orçado do bloco; amarelo = sobrou menos de 15%. Utilizado é independente do Saldo (compara com Orçado, não com Comprado).</div>
       <div class="table-wrap">
         <table class="cardapio-table">
           <thead><tr>
@@ -9275,14 +9302,14 @@ function renderOrcamento(){
           </tr></thead>
           <tbody>
             ${blocosVisiveis.map(g => {
-              const porSem = mes.semanas.map((s,si) => ({o: orc.porSemanaBloco[si].porBloco.get(g)||0, c: comp.porSemanaBloco[si].porBloco.get(g)||0}));
-              const oMes = orcMesPorBloco.get(g)||0, cMes = compMesPorBloco.get(g)||0;
+              const porSem = mes.semanas.map((s,si) => ({o: orc.porSemanaBloco[si].porBloco.get(g)||0, c: comp.porSemanaBloco[si].porBloco.get(g)||0, u: util.porSemanaBloco[si].porBloco.get(g)||0}));
+              const oMes = orcMesPorBloco.get(g)||0, cMes = compMesPorBloco.get(g)||0, uMes = utilMesPorBloco.get(g)||0;
               return `<tr>
                 <td class="cat-col">${escapeHtml(g)}</td>
-                ${porSem.map(x => `<td class="num-cell">${celula(x.o, x.c)}</td>`).join("")}
-                <td class="num-cell"><b>${celula(oMes, cMes)}</b></td>
+                ${porSem.map(x => `<td class="num-cell">${celula(x.o, x.c, x.u)}</td>`).join("")}
+                <td class="num-cell"><b>${celula(oMes, cMes, uMes)}</b></td>
               </tr>`;
-            }).join("") || `<tr><td colspan="${mes.semanas.length+2}" class="empty-state">Sem orçado ou comprado neste mês ainda.</td></tr>`}
+            }).join("") || `<tr><td colspan="${mes.semanas.length+2}" class="empty-state">Sem orçado, comprado ou utilizado neste mês ainda.</td></tr>`}
           </tbody>
           <tfoot>
             <tr class="row-total">
@@ -9290,9 +9317,10 @@ function renderOrcamento(){
               ${mes.semanas.map((s,si) => {
                 const o = [...orc.porSemanaBloco[si].porBloco.values()].reduce((a,b)=>a+b,0);
                 const c = [...comp.porSemanaBloco[si].porBloco.values()].reduce((a,b)=>a+b,0);
-                return `<td class="num-cell">${celula(o,c)}</td>`;
+                const u = [...util.porSemanaBloco[si].porBloco.values()].reduce((a,b)=>a+b,0);
+                return `<td class="num-cell">${celula(o,c,u)}</td>`;
               }).join("")}
-              <td class="num-cell">${celula(totOrcMes, totCompMes)}</td>
+              <td class="num-cell">${celula(totOrcMes, totCompMes, totUtilMes)}</td>
             </tr>
           </tfoot>
         </table>
@@ -10779,9 +10807,11 @@ function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosF
 // (os insumos do estoque são heterogêneos demais — hortifruti, laticínios, secos — pra um prazo de
 // validade genérico sem risco de inventar número; se precisar etiqueta de validade aqui no futuro,
 // precisa antes de prazos reais por categoria confirmados com a nutricionista, como foi feito pro açougue).
-function pcpCalcularRequisicaoComMapa(semana, dia, unidadeFiltro){
+// servicosFiltro (18/10/2026, pedido do Marcelo): Requisição do estoque passa a respeitar Almoço/Jantar/
+// Ceia igual Produção/Açougue já faziam — antes era sempre undefined (= soma os 3 serviços) nesta função.
+function pcpCalcularRequisicaoComMapa(semana, dia, unidadeFiltro, servicosFiltro){
   const coletor = criarColetorReceitas();
-  const res = pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor);
+  const res = pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosFiltro);
   const setores = res.porSetor.filter(s => s.setor !== "acougue").map(s => {
     const mapa = [];
     s.itens.forEach(it => {
@@ -10805,16 +10835,16 @@ function pcpCalcularRequisicaoComMapa(semana, dia, unidadeFiltro){
 // "Grupo" é a categoria de COMPRA do próprio insumo, igual à planilha, não o setor de produção), em blocos
 // "PRODUZIR EM <dia> <data> → PARA SERVIR EM <dia> <data>", um por dia servido coberto pela separação
 // selecionada. Proteínas do açougue continuam fora (aba "Açougue"). "Fichas" (cartão por insumo) saiu.
-function pcpCalcularReqComCobertura(semana, diaProd, unidadeFiltro){
+function pcpCalcularReqComCobertura(semana, diaProd, unidadeFiltro, servicosFiltro){
   const diasCobertos = pcpDiasCobertos(diaProd, pcpEstDias());
-  const porDia = diasCobertos.map(dia => ({ diaProd, diaServido: dia, ...pcpReqListaDia(semana, dia, unidadeFiltro) }));
+  const porDia = diasCobertos.map(dia => ({ diaProd, diaServido: dia, ...pcpReqListaDia(semana, dia, unidadeFiltro, servicosFiltro) }));
   return { diasCobertos, porDia };
 }
 // lista única (cozinha+saladas+sobremesas somados por insumo, sem distinguir setor) pra um dia SERVIDO
 // específico — sempre o dia exato passado, sem cobertura (a cobertura entre dias é tratada em
 // pcpCalcularReqComCobertura, que chama esta função 1x por dia coberto).
-function pcpReqListaDia(semana, dia, unidadeFiltro){
-  const res = pcpCalcularRequisicaoComMapa(semana, dia, unidadeFiltro);
+function pcpReqListaDia(semana, dia, unidadeFiltro, servicosFiltro){
+  const res = pcpCalcularRequisicaoComMapa(semana, dia, unidadeFiltro, servicosFiltro);
   const porInsumo = new Map(); // insumoId -> {insumoId, nome, unidade, qtd, receitas:Map(receita->qtd)}
   res.setores.forEach(s => {
     s.itens.forEach(it => {
@@ -10930,6 +10960,157 @@ function pcpMapaCarnesSemana(semana, unidadeFiltro, servicosFiltro){
   return { porDia, cortes };
 }
 
+// ---------- Retirada avulsa de estoque + baixa real no kardex (18/10/2026, pedido do Marcelo) ----------
+// Até aqui a Requisição do estoque e o Açougue eram só planejamento/impressão — nunca geravam movimento em
+// estoque_movimentos (existe até uma função pronta pra isso, registrarBaixaLote, com o comentário "pronta
+// pra ser chamada quando o módulo de PCP existir", nunca chamada). Decisão do Marcelo: agora geram, incluindo
+// o consumo de receita (não só o avulso) — pra fechar o painel Orçado × Comprado × Utilização no Orçamento.
+// `area` ("estoque" = Cozinha/Saladas/Sobremesas | "acougue") distingue as duas telas, que têm staging
+// próprio mas o mesmo mecanismo. A retirada avulsa fica em staging (pcp_retiradas_avulsas) até a impressão
+// — pode ser editada/removida livremente antes disso; o gatilho da baixa real é o clique em "Imprimir"
+// (não ao marcar linha por linha), e é idempotente por (unidade real, data, tipo) — reimprimir não duplica.
+let pcpAvulsasCache = new Map(); // "semana|dia|unidade|area" -> array de linhas do banco
+function pcpAvulsasChave(semana, dia, unidade, area){ return `${semana}|${dia}|${unidade}|${area}`; }
+async function pcpCarregarAvulsas(semana, unidade, area){
+  pcpAvulsasCache = new Map();
+  let q = sb.from('pcp_retiradas_avulsas').select('*').eq('semana', semana).eq('area', area);
+  if(unidade && unidade !== "todos") q = q.eq('unidade', unidade);
+  const { data, error } = await q;
+  if(error){ showAlert("Erro ao carregar retiradas avulsas: " + error.message); return; }
+  (data || []).forEach(row => {
+    const chave = pcpAvulsasChave(row.semana, row.dia, row.unidade, row.area);
+    const lista = pcpAvulsasCache.get(chave) || [];
+    lista.push(row);
+    pcpAvulsasCache.set(chave, lista);
+  });
+}
+function pcpAvulsasDoDia(semana, dia, unidade, area){
+  if(!unidade || unidade === "todos") return []; // exige unidade real — ver pcpAvulsoFormHtml
+  return pcpAvulsasCache.get(pcpAvulsasChave(semana, dia, unidade, area)) || [];
+}
+async function pcpSalvarAvulsa(semana, dia, unidade, area, insumoId, quantidade, observacao){
+  if(!(quantidade > 0)){ showAlert("Informe uma quantidade maior que zero."); return false; }
+  const row = { semana, dia, unidade, area, insumo_id: insumoId, quantidade, observacao: observacao || null, criado_por: usuarioId || null };
+  const { error } = await sb.from('pcp_retiradas_avulsas').insert(row);
+  if(error){ showAlert("Erro ao lançar retirada avulsa: " + error.message); return false; }
+  return true;
+}
+async function pcpRemoverAvulsa(id){
+  const { error } = await sb.from('pcp_retiradas_avulsas').delete().eq('id', id).is('baixado_em', null);
+  if(error){ showAlert("Erro ao remover retirada avulsa (talvez já tenha sido baixada — não dá pra remover depois de baixada): " + (error.message||"")); return false; }
+  return true;
+}
+// linha no mesmo formato das linhas de receita (pra entrar junto na mesma tabela), marcada avulso:true.
+function pcpAvulsaParaLinha(row){
+  const ins = insumos.get(row.insumo_id);
+  return {
+    insumoId: row.insumo_id, nome: ins ? ins.nome : row.insumo_id, grupo: (ins && ins.grupo_compra) || "—",
+    unidade: ins ? (ins.unidade_medida || "kg") : "kg", qtd: Number(row.quantidade) || 0,
+    receitas: [{ nome: `Retirada avulsa${row.observacao ? " — " + row.observacao : ""}`, qtd: Number(row.quantidade) || 0 }],
+    avulso: true, avulsoId: row.id, avulsoBaixado: !!row.baixado_em,
+  };
+}
+// junta a lista "de receita" de um dia servido com as retiradas avulsas pendentes/já baixadas do MESMO
+// insumo — soma a quantidade, mas mantém o detalhe de receita/avulso separado em `receitas` (coluna "Pratos
+// / receitas que usam"), e guarda cada linha de avulso original em `avulsos` (pro botão de remover por linha).
+function pcpMesclarAvulsas(baseLinhas, semana, dia, unidadeFiltro, area){
+  const porInsumo = new Map();
+  (baseLinhas||[]).forEach(l => porInsumo.set(l.insumoId, { ...l, receitas: [...l.receitas] }));
+  pcpAvulsasDoDia(semana, dia, unidadeFiltro, area).forEach(row => {
+    const linhaAv = pcpAvulsaParaLinha(row);
+    const atual = porInsumo.get(row.insumo_id);
+    if(atual){ atual.qtd += linhaAv.qtd; atual.receitas.push(linhaAv.receitas[0]); atual.avulsos = [...(atual.avulsos||[]), linhaAv]; }
+    else porInsumo.set(row.insumo_id, { ...linhaAv, avulsos: [linhaAv] });
+  });
+  return [...porInsumo.values()].sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR'));
+}
+// base por dia servido do Açougue — mesma ideia de pcpReqListaDia (bucket "acougue" de pcpCalcularRequisicaoDia,
+// com o coletor pra montar "Pratos/receitas que usam"), mas pra UM dia servido isolado, sem a cobertura entre
+// dias que pcpCalcularAcougueComCobertura faz pra tela normal — essa cobertura continua intacta e sem mudança
+// nenhuma; esta função é só a base nova, usada pela visão "semana inteira"/impressão com escolha de dias.
+function pcpAcgListaDia(semana, dia, unidadeFiltro, servicosFiltro){
+  const coletor = criarColetorReceitas();
+  const res = pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosFiltro);
+  const bucket = res.porSetor.find(s => s.setor === "acougue");
+  if(!bucket) return [];
+  return bucket.itens.map(it => {
+    const receitas = [...coletor.get(it.insumoId).entries()].map(([chave,kg]) => ({ nome: chave.slice(chave.indexOf("|")+1), qtd: kg })).sort((a,b)=>b.qtd-a.qtd);
+    return { insumoId: it.insumoId, nome: it.nome, grupo: (insumos.get(it.insumoId)||{}).grupo_compra || "—", unidade: it.unidade, qtd: it.kg, receitas };
+  }).sort((a,b)=>a.nome.localeCompare(b.nome,'pt-BR'));
+}
+// Lista a semana INTEIRA já organizada por dia SERVIDO (Segunda→Domingo, ordem de DIAS_ORDEM) em vez de por
+// dia de produção — resolve de graça o pedido do Marcelo de sempre abrir o print pela segunda-feira, e
+// fecha sozinho o gap conhecido de pcpDiasCobertos (que não atravessa virada de semana: o item usado na
+// segunda, produzido na sexta da semana ANTERIOR, não entrava no print da semana): aqui cada dia servido é
+// calculado direto (mesma conta de sempre, só sem passar pelo agrupamento "dia de produção"), então a
+// segunda desta semana sai certa sem precisar ir buscar nada na semana passada.
+// Não troca nem reaproveita pcpCalcularReqComCobertura/pcpCalcularAcougueComCobertura (continuam do jeito
+// que estavam, pro print/tela de "hoje") — esta é só pra "semana inteira"/escolha de dias, pedido novo.
+function pcpReqSemanaPorDiaServido(semana, unidadeFiltro, area, servicosFiltro){
+  return DIAS_ORDEM.map(dia => {
+    const base = area === "acougue" ? pcpAcgListaDia(semana, dia, unidadeFiltro, servicosFiltro) : pcpReqListaDia(semana, dia, unidadeFiltro, servicosFiltro).linhas;
+    const linhas = pcpMesclarAvulsas(base, semana, dia, unidadeFiltro, area);
+    return { dia, linhas };
+  }).filter(d => d.linhas.length);
+}
+// custo do dia = mesma soma usada na baixa do kardex (qtd × custo_kg_l_und do insumo) — é o número que
+// aparece na tela/impressão como "Custo do dia" e o que alimenta a coluna Utilização do Orçamento.
+function pcpCustoLinha(l){ const ins = insumos.get(l.insumoId); return l.qtd * ((ins && ins.custo_kg_l_und) || 0); }
+function pcpCustoLinhas(linhas){ return (linhas||[]).reduce((s,l) => s + pcpCustoLinha(l), 0); }
+// gera a baixa real no kardex pro dia servido (unidade REAL, nunca "todos" — ver pcpBaixarReqUnidades) —
+// idempotente por (unidade, data, tipo): se já existe baixa_pcp_requisicao desta unidade nesta data, não
+// gera de novo (reimpressão não duplica); mesma checagem separada pra avulso, que além disso marca
+// baixado_em/baixado_movimento_id em pcp_retiradas_avulsas (trava a edição/remoção depois de baixado).
+// Retorna {gerou:boolean, jaTinha:boolean, custo:number} pro aviso na tela.
+async function pcpBaixarDiaServido(semana, dia, unidadeReal, area, linhasReceita, usuarioNome){
+  const dataYMD = dataDoDia(semana, dia).toISOString().slice(0,10);
+  const tipoReceita = area === "acougue" ? "baixa_pcp_acougue" : "baixa_pcp_requisicao";
+  const { data: existentes, error: errChk } = await sb.from('estoque_movimentos').select('id').eq('unidade', unidadeReal).eq('data', dataYMD).eq('tipo', tipoReceita).limit(1);
+  if(errChk){ showAlert("Erro ao checar baixa existente: " + errChk.message); return { gerou:false, jaTinha:false, custo:0 }; }
+  const jaTinha = !!(existentes && existentes.length);
+  let custo = 0;
+  if(!jaTinha && linhasReceita.length){
+    const itens = linhasReceita.filter(l => l.qtd > 0).map(l => ({ insumo_id: l.insumoId, quantidade: l.qtd }));
+    const obs = `${area === "acougue" ? "Açougue" : "Requisição do estoque"} — ${DIA_LABEL[dia]||dia} ${fmtData(dataDoDia(semana,dia))}`;
+    const n = await registrarBaixaLote(unidadeReal, tipoReceita, itens, obs);
+    if(n < 0) return { gerou:false, jaTinha:false, custo:0 };
+  }
+  custo += linhasReceita.reduce((s,l) => s + pcpCustoLinha(l), 0);
+  // avulsos pendentes do dia (baixado_em null) — cada um vira 1 movimento próprio (tipo baixa_pcp_avulso),
+  // e a linha de staging é marcada como baixada (trava edição/remoção futura, mas mantém o histórico visível).
+  const pendentes = pcpAvulsasDoDia(semana, dia, unidadeReal, area).filter(r => !r.baixado_em);
+  for(const row of pendentes){
+    const ins = insumos.get(row.insumo_id);
+    const { data: mov, error: errIns } = await sb.from('estoque_movimentos').insert({
+      unidade: unidadeReal, insumo_id: row.insumo_id, tipo: area === "acougue" ? "baixa_pcp_avulso_acougue" : "baixa_pcp_avulso",
+      quantidade: -Math.abs(row.quantidade), custo_unitario: ins ? ins.custo_kg_l_und : null, status: "aprovado", data: dataYMD,
+      observacao: `Retirada avulsa${row.observacao ? " — "+row.observacao : ""} (${DIA_LABEL[dia]||dia})`, criado_por: usuarioNome || null,
+    }).select('id').single();
+    if(errIns){ showAlert("Erro ao baixar retirada avulsa: " + errIns.message); continue; }
+    await sb.from('pcp_retiradas_avulsas').update({ baixado_em: new Date().toISOString(), baixado_por: usuarioNome || null, baixado_movimento_id: mov.id }).eq('id', row.id);
+    custo += Math.abs(row.quantidade) * (ins ? ins.custo_kg_l_und : 0);
+  }
+  return { gerou: !jaTinha, jaTinha, custo };
+}
+// orquestra a baixa de 1+ dias servidos, numa ou nas duas unidades reais — se a tela está em "todos"
+// (Matriz+Filial juntas), calcula e baixa as DUAS separadamente (o kardex exige unidade real por linha;
+// a lista "todos" combinada da tela não serve pra isso), e só então soma pro resumo mostrado ao final.
+async function pcpBaixarReqUnidades(semana, dias, unidadeFiltro, area, servicosFiltro){
+  const unidades = (unidadeFiltro && unidadeFiltro !== "todos") ? [unidadeFiltro] : ["matriz","filial"];
+  await loadEstoqueMovimentos(); // garante pcpAvulsasCache/estoqueMovimentos frescos antes de checar idempotência
+  let totalGerado = 0, totalJaTinha = 0, custoTotal = 0;
+  for(const uni of unidades){
+    await pcpCarregarAvulsas(semana, uni, area);
+    for(const dia of dias){
+      const base = area === "acougue" ? pcpAcgListaDia(semana, dia, uni, servicosFiltro) : pcpReqListaDia(semana, dia, uni, servicosFiltro).linhas;
+      const r = await pcpBaixarDiaServido(semana, dia, uni, area, base, usuarioId);
+      if(r.gerou) totalGerado++; else if(r.jaTinha) totalJaTinha++;
+      custoTotal += r.custo;
+    }
+  }
+  return { totalGerado, totalJaTinha, custoTotal, totalDias: dias.length * unidades.length };
+}
+
 // ---------- Etiquetas de segurança alimentar do açougue (idem: adaptado do mesmo protótipo, 13/10/2026) ----------
 // Estampa corte, receita de destino, unidade, data de processamento (= o dia selecionado na tela — é
 // quando o açougue está cortando AGORA), data de uso (dia da linha do Mapa de carnes — pode ser outro dia
@@ -11002,6 +11183,10 @@ let pcpDiaSel = "SEGUNDA";
 // fica vazio: ao desmarcar o último, pcp-serv-tabs recoloca o marcado de volta (ver evento abaixo).
 let pcpServicosSel = new Set(["almoco", "jantar", "ceia"]);
 let pcpConferirRevisados = new Set(); // chaves marcadas como "já vi/corrigido" na tela de Conferir — só da sessão, não grava no banco
+// dias marcados pra impressão na seção "Semana inteira — por dia de uso" (18/10/2026) — só da sessão, não
+// grava no banco; um Set por área (Estoque/Açougue) porque são telas independentes.
+let pcpReqDiasSel = new Set();
+let pcpAcgDiasSel = new Set();
 const PCP_UNIDADES = [{id:"matriz", nome:"Matriz"}, {id:"filial", nome:"Filial"}, {id:"todos", nome:"Ambas"}];
 // só pra mostrar "N clientes" embaixo da aba de unidade (igual ao protótipo de referência) — não muda o cálculo.
 function pcpContagemUnidade(unidade){
@@ -11738,6 +11923,158 @@ function pcpReqAvisoHtml(diasCobertos){
     return `<p class="footnote" style="margin-bottom:12px;">O estoque não separa entre um dia e outro: esta produção também cobre ${escapeHtml(rotulo)} (fim de semana sem operação). Cada dia abaixo tem seu próprio bloco e quantidade — não somada.</p>`;
   }
   return "";
+}
+
+// ---------- Blocos por Grupo + Custo do dia + retirada avulsa (18/10/2026) ----------
+// Tabela nova, em blocos por grupo_compra do insumo (mesma ordem de ORDEM_GRUPO_COMPRA_BASE/blocosCadastro)
+// — ajuda o estoquista a separar por bancada/corredor em vez de uma lista única alfabética. Usada pela visão
+// "Todos os dias" e pelo print com escolha de dias; a tela/print "de hoje" (pcpReqDiaHtml/pcpReqFolhaDiaPrintHtml,
+// ambos acima) continuam do jeito que estavam, sem Grupo em blocos nem Custo — não mexi nelas.
+function pcpReqLinhaGrupoHtml(l, print, podeRemover){
+  const receitasTxt = l.receitas.length ? l.receitas.map(r => escapeHtml(r.nome)).join(" | ") : "";
+  const td = print ? `padding:5px 4px; border-top:1px solid #ddd;` : "";
+  const custo = pcpCustoLinha(l);
+  const temAvulsoPendente = podeRemover && (l.avulsos||[]).some(a => !a.avulsoBaixado);
+  return `<tr${l.avulsos && l.avulsos.length ? ` style="background:${print?"#f7f3e8":"var(--warn-bg,#fff8e6)"};"` : ""}>
+    <td style="${td}">${escapeHtml(l.nome)}${l.avulsos && l.avulsos.length ? ` <span class="chip warn" style="margin-left:4px;">avulso</span>` : ""}</td>
+    <td style="${td} white-space:nowrap;">${escapeHtml(l.unidade)}</td>
+    <td style="${td} text-align:right; font-weight:600; white-space:nowrap;">${fmtNum(l.qtd,2)}</td>
+    <td style="${td} text-align:right; white-space:nowrap;">${pcpFmtEmb(l) || "—"}</td>
+    <td style="${td} text-align:right; white-space:nowrap;">${fmtMoney(custo)}</td>
+    <td style="${td} font-size:${print?11:12}px;">${receitasTxt}</td>
+    ${print ? `<td style="${td} min-width:60px;">&nbsp;</td><td style="${td} min-width:120px;">&nbsp;</td>` : `
+    <td style="min-width:60px;">&nbsp;</td>
+    <td>${temAvulsoPendente ? l.avulsos.filter(a=>!a.avulsoBaixado).map(a => `<button class="btn small ghost" data-pcp-avulso-remover="${a.avulsoId}" title="Remover esta retirada avulsa"><i class="ico" data-lucide="trash-2" style="width:14px; height:14px;"></i></button>`).join("") : ""}</td>`}
+  </tr>`;
+}
+const PCP_REQ_GRUPO_COLS_HEAD = `<th>Ingrediente</th><th>Un.</th><th style="text-align:right;">Qtd necessária</th><th style="text-align:right;">Em embalagens</th><th style="text-align:right;">Custo</th><th>Pratos / receitas que usam</th><th>Conferido</th><th></th>`;
+function pcpReqBlocosGrupoHtml(linhas, print){
+  if(!linhas.length) return print ? `<p>Nada a separar.</p>` : `<p class="footnote">Nada a separar para este dia.</p>`;
+  const grupos = blocosCadastro();
+  const porGrupo = new Map();
+  linhas.forEach(l => { const g = l.grupo || "SEM GRUPO"; if(!porGrupo.has(g)) porGrupo.set(g, []); porGrupo.get(g).push(l); });
+  const ordem = [...grupos, ...[...porGrupo.keys()].filter(g => !grupos.includes(g)).sort((a,b)=>a.localeCompare(b,'pt-BR'))];
+  return ordem.filter(g => porGrupo.has(g)).map(g => {
+    const ls = porGrupo.get(g);
+    const subtotal = pcpCustoLinhas(ls);
+    return `<div class="${print?"":"table-wrap"}" style="margin-bottom:${print?16:14}px;">
+      <div style="font-weight:700; font-size:${print?12:12.5}px; text-transform:uppercase; letter-spacing:.03em; padding:${print?"6px 0":"4px 2px"}; border-bottom:2px solid ${print?"#333":"var(--border,#333)"}; margin-bottom:4px; display:flex; justify-content:space-between;"><span>${escapeHtml(g)}</span><span style="font-weight:600;">${fmtMoney(subtotal)}</span></div>
+      <table${print?' style="width:100%; border-collapse:collapse; font-size:12px;"':""}><thead><tr>${PCP_REQ_GRUPO_COLS_HEAD}</tr></thead><tbody>
+        ${ls.map(l => pcpReqLinhaGrupoHtml(l, print, true)).join("")}
+      </tbody></table>
+    </div>`;
+  }).join("");
+}
+// formulário de retirada avulsa — exige unidade real selecionada (Matriz ou Filial); some junto do bloco
+// quando "Ambas" está selecionado, porque o avulso precisa saber de QUAL unidade real está saindo.
+function pcpAvulsoFormHtml(dia, unidadeFiltro, area){
+  if(!unidadeFiltro || unidadeFiltro === "todos"){
+    return `<p class="footnote" style="margin:4px 0 14px;">Selecione Matriz ou Filial acima pra lançar uma retirada avulsa (precisa saber de qual unidade real o item está saindo).</p>`;
+  }
+  const insumosOrdenados = [...insumos.entries()].filter(([id]) => area === "acougue" ? pcpAcougueSet().has(id) : !pcpAcougueSet().has(id)).sort((a,b)=>a[1].nome.localeCompare(b[1].nome,'pt-BR'));
+  return `<div class="panel-body" style="padding-top:0;">
+    <details><summary style="cursor:pointer; font-size:12.5px; color:var(--text-muted);">+ Retirar item do estoque sem estar em receita</summary>
+      <div data-pcp-avulso-form="${dia}" style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:8px;">
+        <select class="avl-insumo" style="min-width:220px;">${insumosOrdenados.map(([id,ins]) => `<option value="${id}">${escapeHtml(ins.nome)}</option>`).join("")}</select>
+        <input class="avl-qtd" type="number" step="0.001" min="0" placeholder="Qtd" style="width:90px;">
+        <input class="avl-obs" type="text" placeholder="Motivo (opcional)" style="min-width:180px; flex:1 1 180px;">
+        <button class="btn small primary" data-pcp-avulso-add="${dia}">Lançar</button>
+      </div>
+    </details>
+  </div>`;
+}
+// bloco "PARA SERVIR EM <dia> <data>" por dia servido — usado pela visão "Todos os dias" na tela.
+function pcpReqDiaServidoHtml(diaInfo, semana, unidadeFiltro, area){
+  const { dia, linhas } = diaInfo;
+  const custoDia = pcpCustoLinhas(linhas);
+  return `<div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head"><h3 style="font-size:13.5px;">PARA SERVIR EM ${escapeHtml(PCP_DIA_LABEL_FEIRA[dia]||dia)} ${escapeHtml(fmtData(dataDoDia(semana,dia)))}</h3><span class="hint">${linhas.length} item${linhas.length===1?"":"s"} · Custo do dia: <strong>${fmtMoney(custoDia)}</strong></span></div>
+    <div class="panel-body">${pcpReqBlocosGrupoHtml(linhas, false)}</div>
+    ${pcpAvulsoFormHtml(dia, unidadeFiltro, area)}
+  </div>`;
+}
+function pcpReqDiaServidoPrintHtml(diaInfo, semana, unidadeLabel, area){
+  const { dia, linhas } = diaInfo;
+  const custoDia = pcpCustoLinhas(linhas);
+  return `<h1>${area === "acougue" ? "AÇOUGUE" : "ESTOQUE"} — PARA SERVIR EM ${escapeHtml(PCP_DIA_LABEL_FEIRA[dia]||dia)} ${escapeHtml(fmtData(dataDoDia(semana,dia)))}</h1>
+    <div style="font-size:12px; color:#666; margin-bottom:14px;">${escapeHtml(unidadeLabel)} · ${escapeHtml(rotuloSemana(semana))} · Custo do dia: <strong>${fmtMoney(custoDia)}</strong></div>
+    ${pcpReqBlocosGrupoHtml(linhas, true)}
+    <div style="margin-top:24px; font-size:11px; color:#666; display:flex; justify-content:space-between;"><span>Separado por: ____________________ &nbsp; Entregue por: ____________________</span><span>Impresso em ${fmtDataCompleta(new Date())}</span></div>`;
+}
+// imprime os dias ESCOLHIDOS (checkboxes da tela, sempre em ordem Segunda→Domingo) — gera a baixa real no
+// kardex primeiro (pcpBaixarReqUnidades, idempotente), avisa o resultado, e só então abre a janela de
+// impressão com os blocos por grupo.
+async function pcpImprimirReqDiasEscolhidos(dias, semana, unidadeFiltro, unidadeLabel, area, servicosFiltro){
+  if(!dias.length){ showAlert("Escolha ao menos um dia pra imprimir."); return; }
+  const resumo = await pcpBaixarReqUnidades(semana, dias, unidadeFiltro, area, servicosFiltro);
+  const todos = pcpReqSemanaPorDiaServido(semana, unidadeFiltro, area, servicosFiltro);
+  const porDia = new Map(todos.map(d => [d.dia, d]));
+  const partes = dias.map(dia => pcpReqDiaServidoPrintHtml(porDia.get(dia) || {dia, linhas:[]}, semana, unidadeLabel, area));
+  const w = window.open("", "_blank");
+  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${area==="acougue"?"Açougue":"Requisição do estoque"} — dias selecionados</title>
+    <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()} .pcp-req-folha{page-break-after:always;}</style></head><body>
+    ${partes.map((h,i) => `<div class="${i<partes.length-1?"pcp-req-folha":""}">${printHeadHtml()}${h}</div>`).join("")}
+    </body></html>`);
+  w.document.close(); w.focus(); w.print();
+  const msg = resumo.totalGerado ? `Baixa gerada no estoque: ${resumo.totalGerado} dia(s)/unidade(s), ${fmtMoney(resumo.custoTotal)}.${resumo.totalJaTinha ? ` (${resumo.totalJaTinha} já tinham baixa anterior — não duplicado.)` : ""}` : (resumo.totalJaTinha ? "Todos os dias selecionados já tinham baixa anterior — reimpressão não duplica." : "Nada a baixar.");
+  showAlert(msg);
+}
+// seção completa "Semana inteira — por dia de uso": checkboxes de dia (default: todos marcados na 1ª vez
+// que a semana aparece, preservando a marcação entre renders dentro da mesma sessão), botões de impressão
+// (fichas técnicas e separação) e os blocos por dia servido (grupo + custo + avulso). `diasSelState` é o
+// Set vindo de pcpReqDiasSel (Estoque) ou pcpAcgDiasSel (Açougue) — mutado in-place pelos checkboxes.
+function pcpReqSemanaSecaoHtml(dias, diasSelState, semana, unidadeFiltro, area){
+  if(!dias.length) return `<div class="panel"><div class="empty-state">Nada a separar nesta semana.</div></div>`;
+  const disponiveis = dias.map(d => d.dia);
+  if(![...diasSelState].some(d => disponiveis.includes(d))) disponiveis.forEach(d => diasSelState.add(d));
+  [...diasSelState].forEach(d => { if(!disponiveis.includes(d)) diasSelState.delete(d); });
+  return `
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="panel-body" style="display:flex; flex-wrap:wrap; gap:14px; align-items:center;">
+        ${dias.map(d => `<label style="display:flex; align-items:center; gap:6px; font-size:13px;"><input type="checkbox" data-pcp-reqdia-sel="${d.dia}" ${diasSelState.has(d.dia)?"checked":""}> ${escapeHtml(PCP_DIA_LABEL_FEIRA[d.dia]||d.dia)}</label>`).join("")}
+        <span style="flex:1 1 auto;"></span>
+        <button class="btn small ghost" data-pcp-reqdia-fichas="1">Imprimir fichas técnicas (dias marcados)</button>
+        <button class="btn small primary" data-pcp-reqdia-imprimir="1">Imprimir dias marcados</button>
+      </div>
+    </div>
+    ${dias.map(d => pcpReqDiaServidoHtml(d, semana, unidadeFiltro, area)).join("")}
+  `;
+}
+function pcpReqSemanaSecaoBind(content, semana, unidadeFiltro, unidadeLabel, area, diasSelState, servicosFiltro, margemPct){
+  content.querySelectorAll("input[data-pcp-reqdia-sel]").forEach(chk => {
+    chk.addEventListener("change", () => {
+      if(chk.checked) diasSelState.add(chk.dataset.pcpReqdiaSel); else diasSelState.delete(chk.dataset.pcpReqdiaSel);
+    });
+  });
+  const btnImprimir = content.querySelector("button[data-pcp-reqdia-imprimir]");
+  if(btnImprimir) btnImprimir.addEventListener("click", async () => {
+    const dias = DIAS_ORDEM.filter(d => diasSelState.has(d));
+    await pcpImprimirReqDiasEscolhidos(dias, semana, unidadeFiltro, unidadeLabel, area, servicosFiltro);
+    renderPCP();
+  });
+  const btnFichas = content.querySelector("button[data-pcp-reqdia-fichas]");
+  if(btnFichas) btnFichas.addEventListener("click", () => {
+    const dias = DIAS_ORDEM.filter(d => diasSelState.has(d));
+    if(!dias.length){ showAlert("Marque ao menos um dia."); return; }
+    dias.forEach(dia => pcpImprimirReceitasProducao(pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro), margemPct));
+  });
+  content.querySelectorAll("[data-pcp-avulso-form]").forEach(form => {
+    const dia = form.dataset.pcpAvulsoForm;
+    const btn = form.querySelector("button[data-pcp-avulso-add]");
+    if(btn) btn.addEventListener("click", async () => {
+      const sel = form.querySelector(".avl-insumo"), qtdI = form.querySelector(".avl-qtd"), obsI = form.querySelector(".avl-obs");
+      const ok = await pcpSalvarAvulsa(semana, dia, unidadeFiltro, area, sel.value, parseFloat(qtdI.value), obsI.value);
+      if(ok) renderPCP();
+    });
+  });
+  content.querySelectorAll("button[data-pcp-avulso-remover]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      if(!(await confirmDialog("Remover esta retirada avulsa?"))) return;
+      const ok = await pcpRemoverAvulsa(btn.dataset.pcpAvulsoRemover);
+      if(ok) renderPCP();
+    });
+  });
 }
 
 // Mapa de carnes: 1ª coisa que o açougue vê — corte × kg × receita de destino × dia de uso, cobrindo o
@@ -13018,12 +13355,10 @@ async function renderPCP(){
     </div>`;
 
   const unidadeFiltro = pcpUnidadeSel === "todos" ? null : pcpUnidadeSel;
-  // serviços (Almoço/Jantar/Ceia, multi-seleção) se aplica em 3 telas: Produção, Volume por cliente (lêem
-  // "quanto produzir" direto) e, desde 17/10/2026 (pedido do Marcelo), Açougue — mapa de carnes, mapa da
-  // semana e etiquetas passam a respeitar o filtro de serviço igual à Produção. Substituições/Pesos/
-  // Romaneio/Requisição do estoque continuam como sempre foram (todos os 3 serviços), pra não mudar o
-  // significado de telas que o Marcelo não pediu pra mexer agora.
-  const servicosAplicavel = ehProducao || ehAcougue;
+  // serviços (Almoço/Jantar/Ceia, multi-seleção) se aplica em Produção, Volume por cliente, Açougue (desde
+  // 17/10/2026) e, desde 18/10/2026 (pedido do Marcelo), também Requisição do estoque — antes ficava sempre
+  // nos 3 serviços somados. Substituições/Pesos/Romaneio continuam como sempre foram.
+  const servicosAplicavel = ehProducao || ehAcougue || ehEstoque;
   const servicosFiltro = servicosAplicavel ? pcpServicosSel : null;
   // precisa carregar a semana INTEIRA (não só o dia selecionado) porque a cobertura do açougue chama a
   // Requisição de outros dias internamente — ver comentário em pcpSubstituicoesCache.
@@ -13043,10 +13378,17 @@ async function renderPCP(){
   // Matriz+Filial numa tabela só, mesmo padrão de pcpProducaoAmbasHtml) — então em "Ambas" precisa dos dois
   // `res` separados, igual Produção já faz com `listaRes`.
   const listaResSubst = ehSubst && !unidadeFiltro ? ["matriz", "filial"].map(u => pcpCalcularDia(pcpSemanaSel, pcpDiaSel, u, null)) : null;
-  const reqCobertura = ehEstoque ? pcpCalcularReqComCobertura(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
+  const reqCobertura = ehEstoque ? pcpCalcularReqComCobertura(pcpSemanaSel, pcpDiaSel, unidadeFiltro, servicosFiltro) : null;
   const acougueCobertura = ehAcougue ? pcpCalcularAcougueComCobertura(pcpSemanaSel, pcpDiaSel, unidadeFiltro, servicosFiltro) : null;
   const fichasCorte = ehAcougue ? pcpFichasCorteAgrupadas(acougueCobertura.mapaCarnes) : null;
   const mapaSemana = ehAcougue ? pcpMapaCarnesSemana(pcpSemanaSel, unidadeFiltro, servicosFiltro) : null;
+  // seção nova "Semana inteira — por dia de uso" (18/10/2026): blocos por grupo + custo + retirada avulsa +
+  // escolha de dias pra imprimir, em cima de pcpReqSemanaPorDiaServido (Monday-first, não usa diaProd/cobertura
+  // — ver comentário da função). Precisa das retiradas avulsas carregadas ANTES de montar os blocos.
+  if(ehEstoque) await pcpCarregarAvulsas(pcpSemanaSel, unidadeFiltro, "estoque");
+  if(ehAcougue) await pcpCarregarAvulsas(pcpSemanaSel, unidadeFiltro, "acougue");
+  const reqSemana = ehEstoque ? pcpReqSemanaPorDiaServido(pcpSemanaSel, unidadeFiltro, "estoque", servicosFiltro) : null;
+  const acgSemana = ehAcougue ? pcpReqSemanaPorDiaServido(pcpSemanaSel, unidadeFiltro, "acougue", servicosFiltro) : null;
   let confLinhas = null;
   if(ehConferencia && unidadeFiltro){
     await pcpCarregarConferencia(pcpSemanaSel, pcpDiaSel, unidadeFiltro);
@@ -13077,17 +13419,21 @@ async function renderPCP(){
       ${pcpMapaCarnesHtml(acougueCobertura)}
       ${pcpMapaSemanaHtml(mapaSemana, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial")}
       ${pcpEtiquetasCarnesHtml(acougueCobertura.mapaCarnes)}
+      <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="calendar-range"></i>Semana inteira — por dia de uso</h3><span class="hint">Segunda→Domingo, já com retirada avulsa e Custo do dia · escolha os dias pra imprimir (gera baixa real no estoque)</span></div>
+      ${pcpReqSemanaSecaoHtml(acgSemana, pcpAcgDiasSel, pcpSemanaSel, unidadeFiltro, "acougue")}
     ` : ehEstoque ? (
       !reqCobertura.diasCobertos.length ? pcpReqAvisoHtml(reqCobertura.diasCobertos) : `
         ${pcpReqAvisoHtml(reqCobertura.diasCobertos)}
         <div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:14px;">
-          <button class="btn small ghost" id="pcp-req-imprimir">Imprimir separação</button>
-          <button class="btn small primary" id="pcp-req-imprimir-semana">Imprimir separação da semana</button>
+          <button class="btn small ghost" id="pcp-req-imprimir">Imprimir separação de hoje</button>
         </div>
         ${reqCobertura.porDia.every(d => !d.linhas.length) ? `<div class="panel"><div class="empty-state">Nada a requisitar nesta separação.</div></div>` :
           reqCobertura.porDia.map(d => pcpReqDiaHtml(d, pcpSemanaSel)).join("")}
       `
-    ) : ehConferencia ? (
+    ) + `
+      <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="calendar-range"></i>Semana inteira — por dia de uso</h3><span class="hint">Segunda→Domingo, já com retirada avulsa e Custo do dia · escolha os dias pra imprimir (gera baixa real no estoque)</span></div>
+      ${pcpReqSemanaSecaoHtml(reqSemana, pcpReqDiasSel, pcpSemanaSel, unidadeFiltro, "estoque")}
+    ` : ehConferencia ? (
       !unidadeFiltro
         ? `<div class="empty-state">Selecione Matriz ou Filial acima — a conferência é por unidade real (é o que sai na doca de verdade), "Ambas" não se aplica aqui.</div>`
         : `<p class="footnote" style="margin:0 0 14px;">Cozinha confirma que produziu/embalou, expedição confirma que carregou. Salva sozinho a cada campo alterado.</p><div id="pcp-conf-wrap">${pcpConferenciaHtml(confLinhas)}</div>`
@@ -13185,13 +13531,13 @@ async function renderPCP(){
     if(btnFichas) btnFichas.addEventListener("click", () => pcpImprimirFichasCorte(fichasCorte, pcpSemanaSel));
     const btnEtiquetas = document.getElementById("pcp-etiquetas-abrir");
     if(btnEtiquetas) btnEtiquetas.addEventListener("click", () => pcpAbrirEtiquetasAcougue(acougueCobertura, pcpSemanaSel, pcpDiaSel, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial"));
+    pcpReqSemanaSecaoBind(content, pcpSemanaSel, unidadeFiltro, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial", "acougue", pcpAcgDiasSel, servicosFiltro, margemPct);
   } else if(ehEstoque){
     document.getElementById("pcp-acg-config").addEventListener("click", pcpAbrirConfigAcougue);
     const unidadeLabel = unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial";
     const btnReq = document.getElementById("pcp-req-imprimir");
     if(btnReq) btnReq.addEventListener("click", () => pcpImprimirReqSeparacao(reqCobertura, pcpSemanaSel, unidadeLabel));
-    const btnReqSemana = document.getElementById("pcp-req-imprimir-semana");
-    if(btnReqSemana) btnReqSemana.addEventListener("click", () => pcpImprimirReqSemana(pcpSemanaSel, unidadeFiltro, unidadeLabel));
+    pcpReqSemanaSecaoBind(content, pcpSemanaSel, unidadeFiltro, unidadeLabel, "estoque", pcpReqDiasSel, servicosFiltro, margemPct);
   } else if(ehConferencia){
     const wrap = document.getElementById("pcp-conf-wrap");
     if(wrap) wrap.addEventListener("change", async e => {
