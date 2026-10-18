@@ -1299,10 +1299,17 @@ async function registrarMovimentacaoInterna(origemUnidade, destinoUnidade, insum
   }catch(e){ showAlert("Erro ao registrar movimentação interna: "+(e.message||e.code||e)); return false; }
 }
 // baixa manual "em lote" a partir de uma lista (ex.: geração futura de lista de PCP) — pronta pra ser chamada quando o módulo de PCP existir
-async function registrarBaixaLote(unidade, tipo, itens, observacao){
+// `dataYMD` (18/10/2026): opcional, default = hoje (comportamento antigo, inalterado pros outros chamadores
+// que não passam data). O PCP (pcpBaixarDiaServido) PRECISA passar a data do dia SERVIDO aqui — achado na
+// revisão desta sessão: antes disso, a baixa do PCP sempre gravava com a data de HOJE (dia do clique),
+// enquanto a checagem de idempotência comparava contra a data do dia servido planejado. Resultado: ao
+// planejar/imprimir com antecedência (ex. imprimir quinta pra servir segunda), a baixa duplicaria a cada
+// reimpressão (a checagem nunca encontrava a baixa anterior, porque procurava na data errada) — e o custo
+// entrava no Orçamento na semana do clique, não na semana real de consumo. Corrigido aqui.
+async function registrarBaixaLote(unidade, tipo, itens, observacao, dataYMD){
   const linhas = (itens||[]).filter(it => it.insumo_id && it.quantidade > 0).map(it => {
     const ins = insumos.get(it.insumo_id);
-    return { unidade, insumo_id: it.insumo_id, tipo: tipo||"baixa_manual", quantidade: -Math.abs(it.quantidade), custo_unitario: ins?ins.custo_kg_l_und:null, status:"aprovado", data: hojeYMD(), observacao: observacao||null, criado_por: usuarioId||null };
+    return { unidade, insumo_id: it.insumo_id, tipo: tipo||"baixa_manual", quantidade: -Math.abs(it.quantidade), custo_unitario: ins?ins.custo_kg_l_und:null, status:"aprovado", data: dataYMD||hojeYMD(), observacao: observacao||null, criado_por: usuarioId||null };
   });
   if(!linhas.length) return 0;
   try{
@@ -11051,12 +11058,16 @@ function pcpAcgListaDia(semana, dia, unidadeFiltro, servicosFiltro){
 // segunda desta semana sai certa sem precisar ir buscar nada na semana passada.
 // Não troca nem reaproveita pcpCalcularReqComCobertura/pcpCalcularAcougueComCobertura (continuam do jeito
 // que estavam, pro print/tela de "hoje") — esta é só pra "semana inteira"/escolha de dias, pedido novo.
+// 18/10/2026, pedido do Marcelo: sempre devolve os 7 dias (Segunda→Domingo), mesmo os sem nada a requisitar
+// — antes um dia sem itens desaparecia da tela (filter(linhas.length)), o que na prática fazia parecer que
+// só a segunda tinha tabela. pcpReqBlocosGrupoHtml já trata o caso vazio ("Nada a separar para este dia."),
+// então manter o dia na lista só mostra esse aviso em vez de sumir o bloco inteiro.
 function pcpReqSemanaPorDiaServido(semana, unidadeFiltro, area, servicosFiltro){
   return DIAS_ORDEM.map(dia => {
     const base = area === "acougue" ? pcpAcgListaDia(semana, dia, unidadeFiltro, servicosFiltro) : pcpReqListaDia(semana, dia, unidadeFiltro, servicosFiltro).linhas;
     const linhas = pcpMesclarAvulsas(base, semana, dia, unidadeFiltro, area);
     return { dia, linhas };
-  }).filter(d => d.linhas.length);
+  });
 }
 // custo do dia = mesma soma usada na baixa do kardex (qtd × custo_kg_l_und do insumo) — é o número que
 // aparece na tela/impressão como "Custo do dia" e o que alimenta a coluna Utilização do Orçamento.
@@ -11077,7 +11088,7 @@ async function pcpBaixarDiaServido(semana, dia, unidadeReal, area, linhasReceita
   if(!jaTinha && linhasReceita.length){
     const itens = linhasReceita.filter(l => l.qtd > 0).map(l => ({ insumo_id: l.insumoId, quantidade: l.qtd }));
     const obs = `${area === "acougue" ? "Açougue" : "Requisição do estoque"} — ${DIA_LABEL[dia]||dia} ${fmtData(dataDoDia(semana,dia))}`;
-    const n = await registrarBaixaLote(unidadeReal, tipoReceita, itens, obs);
+    const n = await registrarBaixaLote(unidadeReal, tipoReceita, itens, obs, dataYMD);
     if(n < 0) return { gerou:false, jaTinha:false, custo:0 };
   }
   custo += linhasReceita.reduce((s,l) => s + pcpCustoLinha(l), 0);
@@ -11114,6 +11125,41 @@ async function pcpBaixarReqUnidades(semana, dias, unidadeFiltro, area, servicosF
     }
   }
   return { totalGerado, totalJaTinha, custoTotal, totalDias: dias.length * unidades.length };
+}
+// desfaz a baixa de 1 dia servido (1 unidade real) — apaga do kardex os movimentos gerados por
+// pcpBaixarDiaServido pra essa (unidade, data servida, área): a baixa de receita (baixa_pcp_requisicao/
+// baixa_pcp_acougue) e os avulsos daquele dia (baixa_pcp_avulso[_acougue]). Devolve as retiradas avulsas
+// pro estado pendente (baixado_em = null) pra poderem ser editadas/removidas de novo. Não toca em nenhum
+// outro tipo de movimento (entrada, ajuste de contagem, movimentação interna) — só os 2 tipos gerados por
+// esta tela. 18/10/2026, pedido do Marcelo: botão de reverter pra quando "Dar baixa" é clicado por engano.
+async function pcpDesfazerBaixaDiaServido(semana, dia, unidadeReal, area){
+  const dataYMD = dataDoDia(semana, dia).toISOString().slice(0,10);
+  const tipoReceita = area === "acougue" ? "baixa_pcp_acougue" : "baixa_pcp_requisicao";
+  const tipoAvulso = area === "acougue" ? "baixa_pcp_avulso_acougue" : "baixa_pcp_avulso";
+  const { data: movs, error } = await sb.from('estoque_movimentos').select('id,quantidade,custo_unitario').eq('unidade', unidadeReal).eq('data', dataYMD).in('tipo', [tipoReceita, tipoAvulso]);
+  if(error){ showAlert("Erro ao buscar baixa pra desfazer: " + error.message); return { desfez:false, custo:0 }; }
+  if(!movs || !movs.length) return { desfez:false, custo:0 };
+  const ids = movs.map(m => m.id);
+  const custo = movs.reduce((s,m) => s + Math.abs(m.quantidade) * (m.custo_unitario||0), 0);
+  const { error: errDel } = await sb.from('estoque_movimentos').delete().in('id', ids);
+  if(errDel){ showAlert("Erro ao desfazer baixa: " + errDel.message); return { desfez:false, custo:0 }; }
+  const { error: errUp } = await sb.from('pcp_retiradas_avulsas').update({ baixado_em: null, baixado_por: null, baixado_movimento_id: null }).in('baixado_movimento_id', ids);
+  if(errUp) showAlert("Baixa desfeita no kardex, mas houve erro ao liberar a retirada avulsa pra edição: " + errUp.message);
+  return { desfez:true, custo };
+}
+// orquestra o desfazer de 1+ dias servidos, numa ou nas duas unidades reais — mesmo esquema de
+// pcpBaixarReqUnidades (unidade "todos" vira as 2 unidades reais separadas).
+async function pcpDesfazerBaixaUnidades(semana, dias, unidadeFiltro, area){
+  const unidades = (unidadeFiltro && unidadeFiltro !== "todos") ? [unidadeFiltro] : ["matriz","filial"];
+  let totalDesfeito = 0, custoTotal = 0;
+  for(const uni of unidades){
+    for(const dia of dias){
+      const r = await pcpDesfazerBaixaDiaServido(semana, dia, uni, area);
+      if(r.desfez){ totalDesfeito++; custoTotal += r.custo; }
+    }
+  }
+  await loadEstoqueMovimentos();
+  return { totalDesfeito, custoTotal, totalDias: dias.length * unidades.length };
 }
 
 // ---------- Etiquetas de segurança alimentar do açougue (idem: adaptado do mesmo protótipo, 13/10/2026) ----------
@@ -12006,12 +12052,13 @@ function pcpReqDiaServidoPrintHtml(diaInfo, semana, unidadeLabel, area){
     ${pcpReqBlocosGrupoHtml(linhas, true)}
     <div style="margin-top:24px; font-size:11px; color:#666; display:flex; justify-content:space-between;"><span>Separado por: ____________________ &nbsp; Entregue por: ____________________</span><span>Impresso em ${fmtDataCompleta(new Date())}</span></div>`;
 }
-// imprime os dias ESCOLHIDOS (checkboxes da tela, sempre em ordem Segunda→Domingo) — gera a baixa real no
-// kardex primeiro (pcpBaixarReqUnidades, idempotente), avisa o resultado, e só então abre a janela de
-// impressão com os blocos por grupo.
+// imprime os dias ESCOLHIDOS (checkboxes da tela, sempre em ordem Segunda→Domingo) — SÓ impressão, não
+// toca no kardex. 18/10/2026, pedido do Marcelo: a baixa real deixou de acontecer junto com o clique de
+// imprimir (decisão anterior desta mesma sessão) — agora é um botão separado (ver pcpReqSemanaSecaoBind:
+// data-pcp-reqdia-baixar), com um botão de desfazer do lado pra reverter um clique acidental. Imprimir
+// continua podendo ser feito quantas vezes quiser, antes ou depois da baixa, sem efeito no estoque.
 async function pcpImprimirReqDiasEscolhidos(dias, semana, unidadeFiltro, unidadeLabel, area, servicosFiltro){
   if(!dias.length){ showAlert("Escolha ao menos um dia pra imprimir."); return; }
-  const resumo = await pcpBaixarReqUnidades(semana, dias, unidadeFiltro, area, servicosFiltro);
   const todos = pcpReqSemanaPorDiaServido(semana, unidadeFiltro, area, servicosFiltro);
   const porDia = new Map(todos.map(d => [d.dia, d]));
   const partes = dias.map(dia => pcpReqDiaServidoPrintHtml(porDia.get(dia) || {dia, linhas:[]}, semana, unidadeLabel, area));
@@ -12022,12 +12069,11 @@ async function pcpImprimirReqDiasEscolhidos(dias, semana, unidadeFiltro, unidade
     ${partes.map((h,i) => `<div class="${i<partes.length-1?"pcp-req-folha":""}">${printHeadHtml()}${h}</div>`).join("")}
     </body></html>`);
   w.document.close(); w.focus(); w.print();
-  const msg = resumo.totalGerado ? `Baixa gerada no estoque: ${resumo.totalGerado} dia(s)/unidade(s), ${fmtMoney(resumo.custoTotal)}.${resumo.totalJaTinha ? ` (${resumo.totalJaTinha} já tinham baixa anterior — não duplicado.)` : ""}` : (resumo.totalJaTinha ? "Todos os dias selecionados já tinham baixa anterior — reimpressão não duplica." : "Nada a baixar.");
-  showAlert(msg);
 }
 // seção completa "Semana inteira — por dia de uso": checkboxes de dia (default: todos marcados na 1ª vez
-// que a semana aparece, preservando a marcação entre renders dentro da mesma sessão), botões de impressão
-// (fichas técnicas e separação) e os blocos por dia servido (grupo + custo + avulso). `diasSelState` é o
+// que a semana aparece, preservando a marcação entre renders dentro da mesma sessão), botões de impressão,
+// baixa e desfazer baixa, e os blocos por dia servido (grupo + custo + avulso) — sempre os 7 dias, mesmo os
+// sem nada a requisitar (18/10/2026, pedido do Marcelo; ver pcpReqSemanaPorDiaServido). `diasSelState` é o
 // Set vindo de pcpReqDiasSel (Estoque) ou pcpAcgDiasSel (Açougue) — mutado in-place pelos checkboxes.
 function pcpReqSemanaSecaoHtml(dias, diasSelState, semana, unidadeFiltro, area){
   if(!dias.length) return `<div class="panel"><div class="empty-state">Nada a separar nesta semana.</div></div>`;
@@ -12040,7 +12086,9 @@ function pcpReqSemanaSecaoHtml(dias, diasSelState, semana, unidadeFiltro, area){
         ${dias.map(d => `<label style="display:flex; align-items:center; gap:6px; font-size:13px;"><input type="checkbox" data-pcp-reqdia-sel="${d.dia}" ${diasSelState.has(d.dia)?"checked":""}> ${escapeHtml(PCP_DIA_LABEL_FEIRA[d.dia]||d.dia)}</label>`).join("")}
         <span style="flex:1 1 auto;"></span>
         <button class="btn small ghost" data-pcp-reqdia-fichas="1">Imprimir fichas técnicas (dias marcados)</button>
-        <button class="btn small primary" data-pcp-reqdia-imprimir="1">Imprimir dias marcados</button>
+        <button class="btn small ghost" data-pcp-reqdia-imprimir="1">Imprimir dias marcados</button>
+        <button class="btn small ghost" data-pcp-reqdia-desfazer="1" style="color:var(--danger,#c0392b); border-color:var(--danger,#c0392b);">Desfazer baixa (dias marcados)</button>
+        <button class="btn small primary" data-pcp-reqdia-baixar="1">Dar baixa no estoque (dias marcados)</button>
       </div>
     </div>
     ${dias.map(d => pcpReqDiaServidoHtml(d, semana, unidadeFiltro, area)).join("")}
@@ -12056,6 +12104,27 @@ function pcpReqSemanaSecaoBind(content, semana, unidadeFiltro, unidadeLabel, are
   if(btnImprimir) btnImprimir.addEventListener("click", async () => {
     const dias = DIAS_ORDEM.filter(d => diasSelState.has(d));
     await pcpImprimirReqDiasEscolhidos(dias, semana, unidadeFiltro, unidadeLabel, area, servicosFiltro);
+  });
+  const btnBaixar = content.querySelector("button[data-pcp-reqdia-baixar]");
+  if(btnBaixar) btnBaixar.addEventListener("click", async () => {
+    const dias = DIAS_ORDEM.filter(d => diasSelState.has(d));
+    if(!dias.length){ showAlert("Marque ao menos um dia."); return; }
+    const rotulo = dias.map(d => PCP_DIA_LABEL_FEIRA[d]||d).join(", ");
+    if(!(await confirmDialog(`Dar baixa real no estoque dos dias marcados (${rotulo})? Isso lança o consumo no kardex — reimprimir/clicar de novo não duplica, mas se marcar por engano use "Desfazer baixa".`))) return;
+    const resumo = await pcpBaixarReqUnidades(semana, dias, unidadeFiltro, area, servicosFiltro);
+    const msg = resumo.totalGerado ? `Baixa gerada no estoque: ${resumo.totalGerado} dia(s)/unidade(s), ${fmtMoney(resumo.custoTotal)}.${resumo.totalJaTinha ? ` (${resumo.totalJaTinha} já tinham baixa anterior — não duplicado.)` : ""}` : (resumo.totalJaTinha ? "Todos os dias marcados já tinham baixa anterior — nada a fazer." : "Nada a baixar (nenhum item nos dias marcados).");
+    showAlert(msg);
+    renderPCP();
+  });
+  const btnDesfazer = content.querySelector("button[data-pcp-reqdia-desfazer]");
+  if(btnDesfazer) btnDesfazer.addEventListener("click", async () => {
+    const dias = DIAS_ORDEM.filter(d => diasSelState.has(d));
+    if(!dias.length){ showAlert("Marque ao menos um dia."); return; }
+    const rotulo = dias.map(d => PCP_DIA_LABEL_FEIRA[d]||d).join(", ");
+    if(!(await confirmDialog(`Desfazer a baixa de estoque dos dias marcados (${rotulo})? Remove do kardex só os movimentos gerados por essa baixa (receita + avulsos daqueles dias) — não afeta entradas, ajustes de contagem ou movimentações internas.`))) return;
+    const resumo = await pcpDesfazerBaixaUnidades(semana, dias, unidadeFiltro, area);
+    const msg = resumo.totalDesfeito ? `Baixa desfeita: ${resumo.totalDesfeito} dia(s)/unidade(s), ${fmtMoney(resumo.custoTotal)} revertidos.` : "Nenhum dos dias marcados tinha baixa pra desfazer.";
+    showAlert(msg);
     renderPCP();
   });
   const btnFichas = content.querySelector("button[data-pcp-reqdia-fichas]");
@@ -13424,7 +13493,7 @@ async function renderPCP(){
       ${pcpMapaCarnesHtml(acougueCobertura)}
       ${pcpMapaSemanaHtml(mapaSemana, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial")}
       ${pcpEtiquetasCarnesHtml(acougueCobertura.mapaCarnes)}
-      <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="calendar-range"></i>Semana inteira — por dia de uso</h3><span class="hint">Segunda→Domingo, já com retirada avulsa e Custo do dia · escolha os dias pra imprimir (gera baixa real no estoque)</span></div>
+      <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="calendar-range"></i>Semana inteira — por dia de uso</h3><span class="hint">Segunda→Domingo, já com retirada avulsa e Custo do dia · escolha os dias · imprimir não baixa estoque — use "Dar baixa" pra lançar no kardex de verdade (e "Desfazer" se for engano)</span></div>
       ${pcpReqSemanaSecaoHtml(acgSemana, pcpAcgDiasSel, pcpSemanaSel, unidadeFiltro, "acougue")}
     ` : ehEstoque ? (
       !reqCobertura.diasCobertos.length ? pcpReqAvisoHtml(reqCobertura.diasCobertos) : `
@@ -13436,7 +13505,7 @@ async function renderPCP(){
           reqCobertura.porDia.map(d => pcpReqDiaHtml(d, pcpSemanaSel)).join("")}
       `
     ) + `
-      <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="calendar-range"></i>Semana inteira — por dia de uso</h3><span class="hint">Segunda→Domingo, já com retirada avulsa e Custo do dia · escolha os dias pra imprimir (gera baixa real no estoque)</span></div>
+      <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="calendar-range"></i>Semana inteira — por dia de uso</h3><span class="hint">Segunda→Domingo, já com retirada avulsa e Custo do dia · escolha os dias · imprimir não baixa estoque — use "Dar baixa" pra lançar no kardex de verdade (e "Desfazer" se for engano)</span></div>
       ${pcpReqSemanaSecaoHtml(reqSemana, pcpReqDiasSel, pcpSemanaSel, unidadeFiltro, "estoque")}
     ` : ehConferencia ? (
       !unidadeFiltro
