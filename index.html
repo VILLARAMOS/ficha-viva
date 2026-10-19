@@ -549,6 +549,7 @@ const VIEWS = {
 
 function goToView(view){
   if(!VIEWS[view]) return;
+  if(!possoVerView(view)){ view = primeiraViewPermitida(); if(!view) return; }
   currentView = view;
   document.querySelectorAll(".nav-btn[data-view]").forEach(b => b.classList.toggle("active", b.dataset.view === view));
   VIEWS[view]();
@@ -595,8 +596,55 @@ async function showApp(user){
   meEmailEl.textContent = user.email;
   loginScreen.hidden = true;
   appEl.hidden = false;
+  await carregarMeusAcessos();
+  aplicarMenuPorPerfil();
+  if(!possoVerView(currentView)) currentView = primeiraViewPermitida() || currentView;
   await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadRotas(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadFornecedores(), loadConjuntosCompra(), loadAjusteSeguranca(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas(), loadPcpConfig()]);
   goToView(currentView);
+}
+
+/* ===== U1: permissões por perfil (vem de usuario_acessos — ver RLS no banco, isto é só o espelho de UI) ===== */
+let meusAcessos = { diretoria: false, areas: {} };
+async function carregarMeusAcessos(){
+  meusAcessos = { diretoria: false, areas: {} };
+  const { data, error } = await sb.from('usuario_acessos').select('area,nivel');
+  if(error){ console.error('Falha ao carregar permissões:', error); return; }
+  (data||[]).forEach(r => {
+    if(r.area === 'diretoria') meusAcessos.diretoria = true;
+    else meusAcessos.areas[r.area] = r.nivel;
+  });
+}
+// nivelMin 'leitura' aceita leitura OU completo; nivelMin 'completo' exige completo.
+function temAcesso(area, nivelMin){
+  if(meusAcessos.diretoria) return true;
+  const nivel = meusAcessos.areas[area];
+  if(!nivel) return false;
+  if(nivelMin === 'completo') return nivel === 'completo';
+  return true;
+}
+// cada view do menu pertence a uma área; Painel é cross-área (qualquer uma das 3 já libera ver o resumo).
+const VIEW_AREA = {
+  insumos: 'insumos', fichas: 'fichas', cardapio: 'cardapio',
+  contratos: 'contratos', eventos: 'eventos', incidencia: 'incidencia', vendas: 'vendas', faturamento: 'faturamento',
+  fornecedores: 'compras', compras: 'compras', orcamento: 'compras', pcp: 'pcp'
+};
+function possoVerView(view){
+  if(meusAcessos.diretoria) return true;
+  if(view === 'painel') return temAcesso('faturamento','leitura') || temAcesso('compras','leitura') || temAcesso('pcp','leitura');
+  const area = VIEW_AREA[view];
+  return area ? temAcesso(area, 'leitura') : false;
+}
+function primeiraViewPermitida(){
+  return Object.keys(VIEWS).find(v => possoVerView(v)) || null;
+}
+function aplicarMenuPorPerfil(){
+  document.querySelectorAll(".nav-btn[data-view]").forEach(b => {
+    b.style.display = possoVerView(b.dataset.view) ? "" : "none";
+  });
+  document.querySelectorAll(".nav-group").forEach(g => {
+    const algumVisivel = [...g.querySelectorAll(".nav-btn[data-view]")].some(b => b.style.display !== "none");
+    g.style.display = algumVisivel ? "" : "none";
+  });
 }
 
 function showLogin(){
