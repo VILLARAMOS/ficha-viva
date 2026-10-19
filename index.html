@@ -2207,6 +2207,12 @@ const CATEGORIAS_CARDAPIO = ["Proteína 1","Proteína 2","Base 1","Base 2","Guar
 const DIAS_ORDEM = ["SEGUNDA","TERCA","QUARTA","QUINTA","SEXTA","SABADO","DOMINGO"];
 const DIA_LABEL = {SEGUNDA:"Segunda",TERCA:"Terça",QUARTA:"Quarta",QUINTA:"Quinta",SEXTA:"Sexta",SABADO:"Sábado",DOMINGO:"Domingo"};
 const DIA_KEY_CAFE = {SEGUNDA:"segunda",TERCA:"terca",QUARTA:"quarta",QUINTA:"quinta",SEXTA:"sexta",SABADO:"sabado",DOMINGO:"domingo"};
+// 19/10/2026 (pedido do Marcelo, cabeçalho de data do PCP): nome do dia por extenso — "-feira" só pra
+// dia útil, sábado/domingo não levam o sufixo.
+function diaSemanaExtenso(dia){
+  const nome = DIA_LABEL[dia];
+  return (dia === "SABADO" || dia === "DOMINGO") ? nome : nome + "-feira";
+}
 
 /* ===================================================================== CALENDÁRIO (semana → mês)
    Portado do sistema antigo: "semana" (1, 2, 3…) continua sendo a chave de tudo (ids, Cardápio, Contratos,
@@ -11876,8 +11882,10 @@ function pcpRomaneioPorRota(res){
   res.clientes.forEach(cli => {
     const linhas = [];
     let pesoTotal = 0;
-    res.receitas.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p){ linhas.push({nome: r.nome, qtd: p.qtd, fichaId: r.fichaId}); pesoTotal += p.qtd; } });
-    res.diretos.forEach(d => { const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: d.nome, qtd: p.qtd, unidade: d.unidade}); });
+    // grupo (PROTEÍNA/BASE/GUARNIÇÃO/SALADA/SOBREMESA/...) viaja junto com cada linha — é o que alimenta a
+    // separação quente/frio do romaneio impresso (19/10/2026, ver pcpRomaneioCategoriaGrupo).
+    res.receitas.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p){ linhas.push({nome: r.nome, qtd: p.qtd, fichaId: r.fichaId, grupo: r.grupo}); pesoTotal += p.qtd; } });
+    res.diretos.forEach(d => { const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: d.nome, qtd: p.qtd, unidade: d.unidade, grupo: d.grupo}); });
     if(!linhas.length) return;
     const ct = contratos.get(cli.id);
     const rotaId = ct && ct.rota_id ? ct.rota_id : null;
@@ -11896,6 +11904,33 @@ function pcpRomaneioPorRota(res){
   return lista;
 }
 
+// 19/10/2026 (pedido do Marcelo): classifica pelo MESMO grupo que o resto do PCP já usa (ficha.grupo ou
+// categoria do item direto, via pcpGrupoFicha/pcpGrupoDaCategoria) — não criei campo novo pra isso.
+// Confirmado com ele: Proteína+Base+Guarnição = quente, Salada+Sobremesa = frio. Suco não aparece aqui —
+// já fica fora da expedição desde 25/09/2026 (é feito na unidade do cliente, não sai da cozinha). Qualquer
+// outro grupo (Extra, Sem grupo, item direto sem categoria clara) cai em "Outros" em vez de eu chutar
+// quente ou frio — se aparecer algo nesse balde na prática, vale confirmar com ele onde entra.
+function pcpRomaneioCategoriaGrupo(grupo){
+  const g = (grupo || "").toUpperCase();
+  if(/^(PROTEÍNA|BASE|GUARNIÇÃO)/.test(g)) return "quente";
+  if(/^(SALADA|SOBREMESA)/.test(g)) return "frio";
+  return "outros";
+}
+// pequeno painel da área (pedido do Marcelo, 19/10/2026): rotas do dia, clientes sem rota (precisam de
+// atenção antes de imprimir) e total de entregas/pessoas — o mesmo resumo que já aparecia espalhado nos
+// cabeçalhos de cada rota, só que visível de cara ao abrir a aba.
+function pcpRomaneioPainelHtml(grupos){
+  const comRota = grupos.filter(g => g.rotaId);
+  const semRota = grupos.find(g => !g.rotaId);
+  const totClientes = grupos.reduce((s,g) => s + g.clientes.length, 0);
+  const totPessoas = grupos.reduce((s,g) => s + g.clientes.reduce((s2,c) => s2 + c.pessoas, 0), 0);
+  return `<div class="es-kpis" style="margin-bottom:14px;">
+    <div class="vn-card"><div class="vn-label">Rotas com entrega hoje</div><div class="vn-value">${comRota.length}</div></div>
+    <div class="vn-card"><div class="vn-label">Clientes</div><div class="vn-value">${totClientes}</div></div>
+    <div class="vn-card"><div class="vn-label">Pessoas atendidas</div><div class="vn-value">${fmtNum(totPessoas,0)}</div></div>
+    <div class="vn-card${semRota ? "" : " ok"}"><div class="vn-label">Sem rota cadastrada</div><div class="vn-value">${semRota ? semRota.clientes.length : 0}</div></div>
+  </div>`;
+}
 function pcpRomaneioHtml(grupos){
   if(!grupos.length) return `<div class="empty-state">Nenhum cliente com produção prevista para este dia.</div>`;
   return grupos.map(g => {
@@ -11918,20 +11953,55 @@ function pcpRomaneioHtml(grupos){
   }).join("");
 }
 
+// uma seção (Quente/Frio/Outros) dentro de uma via do romaneio — só aparece se tiver linha.
+function pcpRomaneioSecaoHtml(titulo, linhas){
+  if(!linhas.length) return "";
+  return `<div style="margin-bottom:6px;">
+    <div style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:#555; margin:6px 0 2px;">${titulo}</div>
+    <table style="width:100%; border-collapse:collapse; font-size:11.5px;">${linhas.map(l => `<tr><td style="padding:2px 0; border-top:1px solid #ddd;">${escapeHtml(l.nome)}</td><td style="padding:2px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd)}</td></tr>`).join("")}</table>
+  </div>`;
+}
+// uma via (cópia) do romaneio de 1 cliente — quente/frio separados, com assinatura de motorista e de
+// recebedor (19/10/2026, pedido do Marcelo: hoje não tem prova de entrega nenhuma, vira palavra contra
+// palavra numa reclamação de falta).
+function pcpRomaneioViaHtml(cli, viaLabel, contextoRota){
+  const quente = cli.linhas.filter(l => pcpRomaneioCategoriaGrupo(l.grupo) === "quente");
+  const frio = cli.linhas.filter(l => pcpRomaneioCategoriaGrupo(l.grupo) === "frio");
+  const outros = cli.linhas.filter(l => pcpRomaneioCategoriaGrupo(l.grupo) === "outros");
+  return `<div style="border:1px solid #333; border-radius:6px; padding:10px 12px;">
+    <div style="display:flex; justify-content:space-between; align-items:baseline;">
+      <div style="font-weight:700; font-size:14px;">${escapeHtml(cli.nome)}</div>
+      <div style="font-size:10px; color:#666; text-transform:uppercase; letter-spacing:.04em;">${escapeHtml(viaLabel)}</div>
+    </div>
+    <div style="font-size:10.5px; color:#666; margin-bottom:4px;">${contextoRota} · ${fmtNum(cli.pessoas,0)} pessoas</div>
+    ${pcpRomaneioSecaoHtml("Quente", quente)}
+    ${pcpRomaneioSecaoHtml("Frio", frio)}
+    ${pcpRomaneioSecaoHtml("Outros", outros)}
+    <div style="display:flex; gap:24px; margin-top:10px;">
+      <div style="flex:1; border-top:1px solid #333; padding-top:3px; font-size:10.5px;">Motorista</div>
+      <div style="flex:1; border-top:1px solid #333; padding-top:3px; font-size:10.5px;">Recebedor (nome e assinatura)</div>
+    </div>
+  </div>`;
+}
+// 19/10/2026 — reescrita a pedido do Marcelo: 1 cliente por folha (pra conferência na unidade de consumo
+// não misturar cliente errado), 2 vias na mesma folha (motorista leva uma de volta assinada, recebedor
+// fica com a outra), e cada via já separada em Quente/Frio (classificação em pcpRomaneioCategoriaGrupo).
 function pcpImprimirRomaneio(grupo, semana, dia){
-  const partes = grupo.clientes.map(cli => `<div style="break-inside:avoid; page-break-inside:avoid; border:1px solid #333; border-radius:6px; padding:12px 14px; margin-bottom:12px;">
-      <div style="font-weight:700; font-size:14px; margin-bottom:2px;">${escapeHtml(cli.nome)}</div>
-      <div style="font-size:11px; color:#666; margin-bottom:8px;">${fmtNum(cli.pessoas,0)} pessoas</div>
-      <table style="width:100%; border-collapse:collapse; font-size:12px;">${cli.linhas.map(l => `<tr><td style="padding:3px 0; border-top:1px solid #ddd;">${escapeHtml(l.nome)}</td><td style="padding:3px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd)}</td></tr>`).join("")}</table>
+  if(!grupo.clientes.length){ showAlert("Nada a entregar nesta rota."); return; }
+  const contextoRota = `${escapeHtml(grupo.rota?.nome || "Sem rota")}${grupo.rota?.motorista_nome ? " · " + escapeHtml(grupo.rota.motorista_nome) : ""}${grupo.rota?.veiculo ? " · " + escapeHtml(grupo.rota.veiculo) : ""} · ${escapeHtml(diaSemanaExtenso(dia))} ${escapeHtml(fmtDataCompleta(dataDoDia(semana, dia)))}`;
+  const folhas = grupo.clientes.map(cli => `<div class="rom-folha">
+      ${pcpRomaneioViaHtml(cli, "Via motorista", contextoRota)}
+      <div style="text-align:center; font-size:9px; color:#999; margin:10px 0; border-top:1px dashed #999; line-height:0;"><span style="background:#fff; padding:0 8px; position:relative; top:-6px;">✂ recorte aqui</span></div>
+      ${pcpRomaneioViaHtml(cli, "Via recebedor", contextoRota)}
     </div>`).join("");
   const w = window.open("", "_blank");
   if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
   const titulo = `Romaneio — ${escapeHtml(grupo.rota?.nome || "Rota")} — ${escapeHtml(DIA_LABEL[dia])} ${escapeHtml(rotuloSemana(semana))}`;
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${titulo}</title>
-    <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()}</style></head><body>
-    ${printHeadHtml()}<h1>${titulo}</h1>
-    <p style="font-size:12px; color:#666; margin:0 0 14px;">${grupo.rota?.motorista_nome ? "Motorista: "+escapeHtml(grupo.rota.motorista_nome) : ""}${grupo.rota?.veiculo ? " · Veículo: "+escapeHtml(grupo.rota.veiculo) : ""}</p>
-    ${partes || "<p>Nada a entregar nesta rota.</p>"}</body></html>`);
+    <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()}
+      .rom-folha{page-break-after:always; break-after:page;}
+      .rom-folha:last-child{page-break-after:auto; break-after:auto;}</style></head><body>
+    ${folhas}</body></html>`);
   w.document.close(); w.focus(); w.print();
 }
 
@@ -13136,6 +13206,32 @@ async function pcpSalvarConferenciaCampo(semana, dia, unidade, contratoId, chave
   if(error){ showAlert("Erro ao salvar conferência: " + error.message); return; }
   pcpConferenciaCache.set(contratoId + "|" + chave, data);
 }
+// 19/10/2026 (pedido do Marcelo: "todas as áreas da aba [PCP] tenham um pequeno painel, com as
+// informações mais relevantes da área") — helper genérico de cartõezinhos (mesma classe es-kpis/vn-card
+// que Produção já usava), pra não reescrever o mesmo HTML em cada sub-aba. `itens`: [{label, valor, sub?, ok?}].
+function pcpPainelAreaHtml(itens){
+  return `<div class="es-kpis" style="margin-bottom:14px;">
+    ${itens.map(it => `<div class="vn-card${it.ok ? " ok" : ""}"><div class="vn-label">${escapeHtml(it.label)}</div><div class="vn-value">${it.valor}</div>${it.sub ? `<div class="vn-sub">${it.sub}</div>` : ""}</div>`).join("")}
+  </div>`;
+}
+// 19/10/2026 (pedido do Marcelo): pequeno painel com o resumo da área, no topo da Conferência — quantos
+// clientes, quanto já foi confirmado pela cozinha/expedição, quantas substituições estão lançadas no dia
+// e se alguma delas ainda não foi marcada como revisada (mesma trava que já existia antes de imprimir).
+function pcpConferenciaPainelHtml(linhas, dia, unidadeFiltro){
+  let totalItens = 0, confCozinha = 0, confExped = 0, totalSubst = 0;
+  linhas.forEach(l => {
+    totalItens += l.itens.length;
+    l.itens.forEach(it => { if(it.cozinhaOk) confCozinha++; if(it.expedicaoOk) confExped++; });
+    totalSubst += l.substituicoes.length;
+  });
+  const pendentes = pcpSubstituicoesPendentes(dia, unidadeFiltro);
+  return `<div class="es-kpis" style="margin-bottom:14px;">
+    <div class="vn-card"><div class="vn-label">Clientes</div><div class="vn-value">${linhas.length}</div></div>
+    <div class="vn-card${totalItens && confCozinha === totalItens ? " ok" : ""}"><div class="vn-label">Cozinha confirmou</div><div class="vn-value">${confCozinha}/${totalItens}</div></div>
+    <div class="vn-card${totalItens && confExped === totalItens ? " ok" : ""}"><div class="vn-label">Expedição confirmou</div><div class="vn-value">${confExped}/${totalItens}</div></div>
+    <div class="vn-card"><div class="vn-label">Substituições lançadas</div><div class="vn-value">${totalSubst}</div>${pendentes.length ? `<div class="vn-sub" style="color:var(--warn);">revisão pendente</div>` : ""}</div>
+  </div>`;
+}
 function pcpConferenciaHtml(linhas){
   if(!linhas.length) return `<div class="empty-state">Nenhum cliente com produção prevista para este dia.</div>`;
   const fichasSubst = pcpFichasSubstituiveis();
@@ -13170,6 +13266,54 @@ function pcpConferenciaHtml(linhas){
       </div>
     </div>
   </div>`).join("");
+}
+
+// 19/10/2026 (pedido do Marcelo): impressão da Conferência de expedição — não existia no sistema novo (só
+// no protótipo antigo, v89). Espelha a tela de propósito (mesma função pcpConferenciaLinhas alimenta as
+// duas): o que a cozinha/expedição vê na tela é exatamente o que sai no papel, substituições incluídas —
+// nunca duas fontes de verdade. 1 bloco por cliente, evita quebrar no meio (break-inside:avoid).
+function pcpImprimirConferencia(linhas, semana, dia, unidadeLabel){
+  if(!linhas || !linhas.length){ showAlert("Nenhum cliente com produção prevista para este dia/unidade."); return; }
+  const corpo = linhas.map(({cliente, itens, substituicoes}) => `<div style="break-inside:avoid; page-break-inside:avoid; border:1px solid #333; border-radius:6px; padding:12px 14px; margin-bottom:14px;">
+      <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px;">
+        <div style="font-weight:700; font-size:14px;">${escapeHtml(cliente.nome)}</div>
+        <div style="font-size:11px; color:#666;">${fmtNum(cliente.pessoas,0)} pessoas</div>
+      </div>
+      ${itens.length ? `<table style="width:100%; border-collapse:collapse; font-size:11.5px;">
+        <thead><tr>
+          <th style="text-align:left; border-bottom:1px solid #999; padding:3px 4px;">Item</th>
+          <th style="text-align:right; border-bottom:1px solid #999; padding:3px 4px;">Previsto</th>
+          <th style="text-align:right; border-bottom:1px solid #999; padding:3px 4px;">Enviado</th>
+          <th style="text-align:center; border-bottom:1px solid #999; padding:3px 4px;">Cozinha</th>
+          <th style="text-align:center; border-bottom:1px solid #999; padding:3px 4px;">Expedição</th>
+          <th style="text-align:left; border-bottom:1px solid #999; padding:3px 4px;">Observação</th>
+        </tr></thead>
+        <tbody>${itens.map(it => `<tr>
+          <td style="padding:3px 4px; border-top:1px solid #ddd;">${escapeHtml(it.nome)}</td>
+          <td style="padding:3px 4px; border-top:1px solid #ddd; text-align:right;">${it.unidade ? `${fmtNum(it.qtdPrevista,2)} ${escapeHtml(it.unidade)}` : pcpFmtQtd(it.qtdPrevista)}</td>
+          <td style="padding:3px 4px; border-top:1px solid #ddd; text-align:right;">${it.qtdEnviada != null ? fmtNum(it.qtdEnviada,2) : "______"}</td>
+          <td style="padding:3px 4px; border-top:1px solid #ddd; text-align:center;">${it.cozinhaOk ? "✓" : "☐"}</td>
+          <td style="padding:3px 4px; border-top:1px solid #ddd; text-align:center;">${it.expedicaoOk ? "✓" : "☐"}</td>
+          <td style="padding:3px 4px; border-top:1px solid #ddd;">${escapeHtml(it.observacao||"")}</td>
+        </tr>`).join("")}</tbody>
+      </table>` : ""}
+      ${substituicoes.length ? `<div style="margin-top:8px; padding-top:6px; border-top:1px dashed #999;">
+        <div style="font-size:11px; font-weight:700; margin-bottom:3px;">Substituições</div>
+        ${substituicoes.map(s => `<div style="font-size:11.5px;">${escapeHtml(pcpServicoAbrev(s.servico))} · ${fmtNum(s.pessoas,0)}× ${escapeHtml(s.fichaNome)}</div>`).join("")}
+      </div>` : ""}
+    </div>`).join("");
+  const w = window.open("", "_blank");
+  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
+  const titulo = `Conferência da expedição · ${escapeHtml(unidadeLabel)} · ${escapeHtml(DIA_LABEL[dia])} ${escapeHtml(rotuloSemana(semana))}`;
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${titulo}</title>
+    <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()}</style></head><body>
+    ${printHeadHtml()}<h1>${titulo}</h1>
+    <p style="font-size:12px; color:#666; margin:0 0 14px;">${escapeHtml(diaSemanaExtenso(dia))} · ${escapeHtml(fmtDataCompleta(dataDoDia(semana, dia)))}</p>
+    ${corpo}
+    <div class="assinatura" style="margin-top:28px; display:flex; gap:40px;"><div style="flex:1; border-top:1px solid #333; padding-top:4px; font-size:12px;">Resp. cozinha</div><div style="flex:1; border-top:1px solid #333; padding-top:4px; font-size:12px;">Resp. expedição</div></div>
+    <script>window.onload = () => window.print();<\/script>
+    </body></html>`);
+  w.document.close();
 }
 
 function pcpAbrirConfigAcougue(){
@@ -13976,7 +14120,10 @@ async function renderPCP(){
   document.getElementById("topbar-actions").innerHTML = (ehAcougue || ehEstoque) ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-acg-config">Cortes e dias</button>
-    </div>` : (ehConferencia || ehCafe || ehSubst || ehPesos || ehAjustes || ehSalSob) ? "" : ehRomaneio ? `
+    </div>` : ehConferencia ? (pcpUnidadeSel !== "todos" ? `
+    <div style="display:flex; align-items:center; gap:8px;">
+      <button class="btn small primary" id="pcp-conf-imprimir">Imprimir conferência</button>
+    </div>` : "") : (ehCafe || ehSubst || ehPesos || ehAjustes || ehSalSob) ? "" : ehRomaneio ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-rotas-gerenciar">Gerenciar rotas</button>
     </div>` : `
@@ -14059,41 +14206,86 @@ async function renderPCP(){
       <div class="seg-toggle" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" data-pcpuni="${u.id}" class="${pcpUnidadeSel===u.id?"active":""}">${u.nome}${u.id !== "todos" ? ` <span style="opacity:.65; font-size:10.5px;">${pcpContagemUnidade(u.id)} clientes</span>` : ""}</button>`).join("")}</div>
       <select id="pcp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===pcpSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))}</option>`).join("")}</select>
       <div class="seg-toggle" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" data-pcpdia="${d}" class="${pcpDiaSel===d?"active":""}">${DIA_LABEL[d].slice(0,3)}</button>`).join("")}</div>
+      <span class="chip neutral" style="height:auto; padding:6px 12px; font-weight:600;" title="Dia de operação em que esta aba está trabalhando">${diaSemanaExtenso(pcpDiaSel)} · ${fmtDataCompleta(dataDoDia(pcpSemanaSel, pcpDiaSel))}</span>
       ${servicosAplicavel ? `<div id="pcp-serv-tabs" style="display:flex; gap:12px; align-items:center;">${PCP_TURNOS.filter(t=>t.id!=="todos").map(t => `<label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted); white-space:nowrap;"><input type="checkbox" data-pcp-serv="${t.id}" ${pcpServicosSel.has(t.id)?"checked":""}> ${t.nome}</label>`).join("")}</div>` : ""}
     </div>
     ${ehAcougue ? `
+      ${pcpPainelAreaHtml([
+        {label:"Kg de carne (cobertura)", valor: fmtNum(acougueCobertura.itensTotal.reduce((s,i)=>s+i.kg,0),1)},
+        {label:"Cortes/itens", valor: acougueCobertura.itensTotal.length},
+        {label:"Dias cobertos por esta separação", valor: acougueCobertura.diasCobertos.length}
+      ])}
       ${pcpMapaCarnesHtml(acougueCobertura)}
       ${pcpMapaSemanaHtml(mapaSemana, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial")}
       ${pcpEtiquetasCarnesHtml(acougueCobertura.mapaCarnes)}
       <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="calendar-range"></i>Semana inteira — por dia de uso</h3><span class="hint">Segunda→Domingo, já com retirada avulsa e Custo do dia · escolha os dias · imprimir não baixa estoque — use "Dar baixa" pra lançar no kardex de verdade (e "Desfazer" se for engano)</span></div>
       ${pcpReqSemanaSecaoHtml(acgSemana, pcpAcgDiasSel, pcpSemanaSel, unidadeFiltro, "acougue")}
     ` : ehEstoque ? (
-      !reqCobertura.diasCobertos.length ? pcpReqAvisoHtml(reqCobertura.diasCobertos) : `
+      pcpPainelAreaHtml([
+        {label:"Itens a requisitar", valor: reqCobertura.porDia.reduce((s,d)=>s+d.linhas.length,0)},
+        {label:"Dias cobertos por esta separação", valor: reqCobertura.diasCobertos.length}
+      ]) +
+      (!reqCobertura.diasCobertos.length ? pcpReqAvisoHtml(reqCobertura.diasCobertos) : `
         ${pcpReqAvisoHtml(reqCobertura.diasCobertos)}
         <div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:14px;">
           <button class="btn small ghost" id="pcp-req-imprimir">Imprimir separação de hoje</button>
         </div>
         ${reqCobertura.porDia.every(d => !d.linhas.length) ? `<div class="panel"><div class="empty-state">Nada a requisitar nesta separação.</div></div>` :
           reqCobertura.porDia.map(d => pcpReqDiaHtml(d, pcpSemanaSel)).join("")}
-      `
+      `)
     ) + `
       <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="calendar-range"></i>Semana inteira — por dia de uso</h3><span class="hint">Segunda→Domingo, já com retirada avulsa e Custo do dia · escolha os dias · imprimir não baixa estoque — use "Dar baixa" pra lançar no kardex de verdade (e "Desfazer" se for engano)</span></div>
       ${pcpReqSemanaSecaoHtml(reqSemana, pcpReqDiasSel, pcpSemanaSel, unidadeFiltro, "estoque")}
     ` : ehConferencia ? (
       !unidadeFiltro
         ? `<div class="empty-state">Selecione Matriz ou Filial acima — a conferência é por unidade real (é o que sai na doca de verdade), "Ambas" não se aplica aqui.</div>`
-        : `<p class="footnote" style="margin:0 0 14px;">Cozinha confirma que produziu/embalou, expedição confirma que carregou. Salva sozinho a cada campo alterado.</p><div id="pcp-conf-wrap">${pcpConferenciaHtml(confLinhas)}</div>`
+        : `${pcpConferenciaPainelHtml(confLinhas, pcpDiaSel, unidadeFiltro)}<p class="footnote" style="margin:0 0 14px;">Cozinha confirma que produziu/embalou, expedição confirma que carregou. Salva sozinho a cada campo alterado.</p><div id="pcp-conf-wrap">${pcpConferenciaHtml(confLinhas)}</div>`
     ) : ehRomaneio ? (
-      `<p class="footnote" style="margin:0 0 14px;">Atribuição cliente→rota é fixa (cadastrada no contrato) — pra mudar, edite o contrato do cliente. Sem ordem de entrega dentro da rota nesta versão.</p>${pcpRomaneioHtml(romaneioGrupos)}`
+      `${pcpRomaneioPainelHtml(romaneioGrupos)}<p class="footnote" style="margin:0 0 14px;">Atribuição cliente→rota é fixa (cadastrada no contrato) — pra mudar, edite o contrato do cliente. Sem ordem de entrega dentro da rota nesta versão.</p>${pcpRomaneioHtml(romaneioGrupos)}`
     ) : ehCafe ? (
+      pcpPainelAreaHtml((() => {
+        const cafeClientes = pcpCafeClientesUnidade(unidadeFiltro);
+        const cafeConfirmados = cafeClientes.filter(c => cafePadariaPedidoDiaCache.has(c.id)).length;
+        return [
+          {label:"Clientes com café cadastrado", valor: cafeClientes.length},
+          {label:"Pedido do dia confirmado", valor: `${cafeConfirmados}/${cafeClientes.length}`, ok: cafeClientes.length>0 && cafeConfirmados===cafeClientes.length}
+        ];
+      })()) +
       pcpCafeHtml(unidadeFiltro, pcpDataSel, pcpDiaLabelSel)
     ) : ehSubst ? (
+      pcpPainelAreaHtml((() => {
+        const unidadesSubst = pcpUnidadesDoFiltro(unidadeFiltro);
+        const substTotal = unidadesSubst.reduce((s,u) => s + pcpSubstituicoesContagemUnidade(pcpDiaSel, u), 0);
+        const substPendentes = pcpSubstituicoesPendentes(pcpDiaSel, unidadeFiltro);
+        return [
+          {label:"Substituições lançadas hoje", valor: substTotal},
+          {label:"Revisão pendente", valor: substPendentes.length ? substPendentes.map(u=>nomeUnidadeCompra(u)).join(" e ") : "Nenhuma", ok: !substPendentes.length}
+        ];
+      })()) +
       pcpSubstituicoesHtml(unidadeFiltro ? [res] : listaResSubst, unidadeFiltro)
     ) : ehPesos ? (
+      pcpPainelAreaHtml((() => {
+        const pesoCts = pesoExpClientes(unidadeFiltro);
+        const pesoComAjuste = pesoCts.filter(([,ct]) => temPesoExpedicao(ct)).length;
+        return [
+          {label:"Clientes com refeição transportada", valor: pesoCts.length},
+          {label:"Com peso próprio ajustado", valor: pesoComAjuste}
+        ];
+      })()) +
       pcpPesosHtml(unidadeFiltro, pcpSemanaSel)
     ) : ehAjustes ? (
+      pcpPainelAreaHtml([
+        {label:"Ajustes lançados hoje", valor: (pcpAjustesCache.get(pcpDiaSel) || new Map()).size}
+      ]) +
       pcpAjustesHtml(res)
     ) : ehSalSob ? (
+      pcpPainelAreaHtml((() => {
+        const salSobReceitas = res.receitas.filter(r => /^(SALADA|SOBREMESA)/.test((r.grupo||"").toUpperCase()));
+        return [
+          {label:"Pratos (salada+sobremesa)", valor: salSobReceitas.length},
+          {label:"Clientes atendidos", valor: res.clientes.length}
+        ];
+      })()) +
       pcpSalSobProducaoHtml(res, salSobTrocasAposImpressao) +
       pcpSalSobMapaSemanaHtml(salSobMapaSemana, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial") +
       pcpSalSobEtiquetasHtml(salSobEtqLinhas) +
@@ -14219,6 +14411,8 @@ async function renderPCP(){
     if(btnReq) btnReq.addEventListener("click", () => pcpImprimirReqSeparacao(reqCobertura, pcpSemanaSel, unidadeLabel));
     pcpReqSemanaSecaoBind(content, pcpSemanaSel, unidadeFiltro, unidadeLabel, "estoque", pcpReqDiasSel, servicosFiltro, margemPct);
   } else if(ehConferencia){
+    const btnConfImprimir = document.getElementById("pcp-conf-imprimir");
+    if(btnConfImprimir) btnConfImprimir.addEventListener("click", () => pcpImprimirConferencia(confLinhas, pcpSemanaSel, pcpDiaSel, nomeUnidadeCompra(unidadeFiltro)));
     const wrap = document.getElementById("pcp-conf-wrap");
     if(wrap) wrap.addEventListener("change", async e => {
       const tr = e.target.closest("tr[data-conf-chave]");
