@@ -12512,32 +12512,69 @@ const PCP_SALSOB_GRUPOS_CENTRAL = ["SALADA", "SOBREMESA"]; // mapa da semana + e
 function pcpSalSobLinhasDia(res, grupos){
   return res.receitas.filter(r => grupos.includes(r.grupo)).sort((a,b) => a.grupo.localeCompare(b.grupo,'pt-BR') || b.total - a.total);
 }
-// tabela de produção do dia — mesmo layout de pcpProducaoHtml (receita/quantidade/clientes/atende), sem as
-// colunas de turno/cuba (cuba é conceito de refeição transportada, não se aplica direto aqui). Inclui Suco
-// de propósito (ver nota acima).
-function pcpSalSobProducaoHtml(res){
-  const linhas = pcpSalSobLinhasDia(res, GRUPOS_PORCAO_NAO_PESO);
-  if(!linhas.length) return `<div class="panel" style="margin-bottom:14px;"><div class="panel-body"><div class="empty-state">Nenhuma salada, sobremesa ou suco prevista para este dia.</div></div></div>`;
+// MUDANÇA (19/10/2026, pedido do Marcelo): Suco sai de vez desta aba (produção, impressão por cliente) —
+// antes entrava só pra alimentar o planejamento de compra do insumo via cardápio; isso continua
+// acontecendo em outro lugar (Lista de compra lê o cardápio direto, não esta tela), então tirar Suco
+// daqui não perde nenhum dado de compra. Mapa da semana/Etiquetas já usavam só PCP_SALSOB_GRUPOS_CENTRAL
+// (sem Suco) desde 18/10 — agora a Produção do dia fica igual às outras duas peças.
+// "Quantidade" mostrada SEM "kg": desde 17/10/2026 (ver gramagemPorcaoParaKg) Salada/Sobremesa são
+// lançadas no cardápio por PORÇÃO (0,25 = 1/4 de porção, 0,5 = metade, 1 = porção inteira — a convenção
+// que o Marcelo usa pra dividir entre as opções do dia: 1 opção = 1, 2 opções = 0,5 cada, 4 opções = 0,25
+// cada), nunca peso de verdade — rotular como "kg" aqui enganava. O número values já vem pronto do mesmo
+// motor de Produção/Volume (pcpItemProducao → gramagemKgEfetiva → gramagemPorcaoParaKg), só sem o sufixo.
+function pcpFmtPorcao(q){
+  if(q === null || q === undefined || !isFinite(q)) return "—";
+  return fmtNum(q, 2);
+}
+// tabela de produção do dia — Cliente | Atende | Prato | Quantidade (pedido do Marcelo, 19/10/2026): uma
+// linha por cliente×prato, pra bater com o jeito que a bancada de Saladas/Sobremesas de fato trabalha
+// (separar por cliente, não por prato). O total por prato (que a cozinha usa pra saber quanto preparar no
+// total) fica numa segunda tabela, logo abaixo — informação que a tela antiga (agrupada por prato) dava e
+// que não devia sumir só porque a ordem das colunas mudou.
+function pcpSalSobLinhasPorClientePrato(res){
+  const linhas = [];
+  pcpSalSobLinhasDia(res, PCP_SALSOB_GRUPOS_CENTRAL).forEach(r => {
+    [...r.porCliente.values()].forEach(pc => {
+      if(!(pc.qtd > 0)) return;
+      linhas.push({ cliente: pc.nome, atende: pc.pessoas, prato: r.nome, grupo: r.grupo, qtd: pc.qtd, fichaId: r.fichaId });
+    });
+  });
+  return linhas.sort((a,b) => a.cliente.localeCompare(b.cliente,'pt-BR') || a.grupo.localeCompare(b.grupo,'pt-BR') || a.prato.localeCompare(b.prato,'pt-BR'));
+}
+function pcpSalSobProducaoHtml(res, trocasAposImpressao){
+  const linhasCliente = pcpSalSobLinhasPorClientePrato(res);
+  const alertaReimpressao = (trocasAposImpressao && trocasAposImpressao.length)
+    ? `<div class="chip critical" style="display:block; white-space:normal; height:auto; padding:8px 10px; margin-bottom:12px;">⚠ Cardápio alterado após a última impressão — ${trocasAposImpressao.length} troca${trocasAposImpressao.length===1?"":"s"} extraordinária${trocasAposImpressao.length===1?"":"s"} registrada${trocasAposImpressao.length===1?"":"s"} depois de imprimir. Reimprima antes de mandar pra bancada.</div>`
+    : "";
+  if(!linhasCliente.length) return `<div class="panel" style="margin-bottom:14px;"><div class="panel-body">${alertaReimpressao}<div class="empty-state">Nenhuma salada ou sobremesa prevista para este dia.</div></div></div>`;
+  const corpo = linhasCliente.map(l =>
+    `<tr><td class="name-cell">${escapeHtml(l.cliente)}</td><td class="num-cell">${fmtNum(l.atende,0)}</td><td>${escapeHtml(l.prato)} <span class="footnote" style="margin:0;">(${escapeHtml(l.grupo)})</span></td><td class="num-cell">${pcpFmtPorcao(l.qtd)}</td></tr>`
+  ).join("");
+  const totaisPorPrato = pcpSalSobLinhasDia(res, PCP_SALSOB_GRUPOS_CENTRAL);
   let grupoAtual = null;
-  const corpo = linhas.map(r => {
+  const corpoTotais = totaisPorPrato.map(r => {
     const novoGrupo = r.grupo !== grupoAtual; grupoAtual = r.grupo;
-    return (novoGrupo ? `<tr><th colspan="5" style="background:var(--surface-alt); font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted);">${escapeHtml(r.grupo)}</th></tr>` : "") +
-      `<tr><td class="name-cell">${escapeHtml(r.nome)}</td><td class="num-cell">${pcpFmtQtd(r.total)}</td><td class="num-cell">${r.porCliente.size}</td><td class="footnote" style="margin:0;">${[...new Set([...r.porCliente.values()].map(p=>p.nome))].join(", ")}</td><td class="num-cell">${r.fichaId ? `<button class="btn small ghost" data-pcp-imprimir-receita="${r.fichaId}" title="Imprimir esta receita">${iconeImprimir()}</button>` : "—"}</td></tr>`;
+    return (novoGrupo ? `<tr><th colspan="3" style="background:var(--surface-alt); font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted);">${escapeHtml(r.grupo)}</th></tr>` : "") +
+      `<tr><td class="name-cell">${escapeHtml(r.nome)}</td><td class="num-cell">${pcpFmtPorcao(r.total)}</td><td class="num-cell">${r.fichaId ? `<button class="btn small ghost" data-pcp-imprimir-receita="${r.fichaId}" title="Imprimir esta receita">${iconeImprimir()}</button>` : "—"}</td></tr>`;
   }).join("");
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3><i class="ico" data-lucide="salad"></i>Produção do dia</h3><span class="hint">Salada, Sobremesa e Suco — quantidade por prato, mesma régua de "Produção da cozinha"</span><button class="btn small ghost" id="pcp-salsob-producao-imprimir" style="margin-left:auto;">Imprimir por cliente</button></div>
-    <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Prato</th><th style="text-align:right;">Quantidade</th><th style="text-align:right;">Clientes</th><th>Atende</th><th></th></tr></thead><tbody>${corpo}</tbody></table></div>
-    <p class="footnote" style="margin-top:8px;">Suco entra só nesta tabela (planejamento de compra do insumo) — é preparado na unidade do cliente, por isso não aparece no mapa da semana nem nas etiquetas abaixo.</p>
+    <div class="panel-head"><h3><i class="ico" data-lucide="salad"></i>Produção do dia</h3><span class="hint">Salada e Sobremesa, por cliente — quantidade em porções (sem Suco)</span><button class="btn small ghost" id="pcp-salsob-producao-imprimir" style="margin-left:auto;">Imprimir por cliente</button></div>
+    <div class="panel-body">${alertaReimpressao}<div class="table-wrap"><table><thead><tr><th>Cliente</th><th style="text-align:right;">Atende</th><th>Prato</th><th style="text-align:right;">Quantidade</th></tr></thead><tbody>${corpo}</tbody></table></div>
     </div>
+  </div>
+  <div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head"><h3 style="font-size:14px;">Total a preparar</h3><span class="hint">Soma por prato — pra bancada saber quanto fazer no total</span></div>
+    <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Prato</th><th style="text-align:right;">Quantidade</th><th></th></tr></thead><tbody>${corpoTotais}</tbody></table></div></div>
   </div>`;
 }
 // 19/10/2026, pedido do Marcelo: a impressão da produção do dia precisa sair SEPARADA POR CLIENTE (não por
-// prato, que é como a tela mostra) — 1 ficha por cliente com todos os pratos de salada/sobremesa/suco que
-// ele recebe naquele dia, no mesmo estilo de "Fichas de corte" do Açougue (pcpImprimirFichasCorte: 1 cartão
-// por página, com campo de assinatura em branco). Inclui Suco também (mesmo escopo da tabela na tela).
+// prato, que é como a tela mostra) — 1 ficha por cliente com todos os pratos de salada/sobremesa que ele
+// recebe naquele dia, no mesmo estilo de "Fichas de corte" do Açougue (pcpImprimirFichasCorte: 1 cartão
+// por página, com campo de assinatura em branco). Suco removido do escopo (mesma mudança da tela, ver
+// pcpSalSobProducaoHtml) — continua de fora de propósito, não é esquecimento.
 function pcpSalSobProducaoPorCliente(res){
   const porCliente = new Map(); // contratoId -> {nome, linhas:[{prato,grupo,qtd}], total}
-  pcpSalSobLinhasDia(res, GRUPOS_PORCAO_NAO_PESO).forEach(r => {
+  pcpSalSobLinhasDia(res, PCP_SALSOB_GRUPOS_CENTRAL).forEach(r => {
     [...r.porCliente.values()].forEach(pc => {
       if(!(pc.qtd > 0)) return;
       const c = porCliente.get(pc.contratoId) || { nome: pc.nome, linhas: [], total: 0 };
@@ -12713,6 +12750,200 @@ function pcpAbrirEtiquetasSalSob(linhas, unidadeLabel){
     document.getElementById("salsobetq-pdf").addEventListener("click", () => pcpBaixarPdfEtiquetasSalSob(montarSaida(), pcpEtiquetaTam, unidadeLabel));
   };
   desenhar();
+}
+
+// ---------- Troca extraordinária de Salada/Sobremesa (19/10/2026, pedido do Marcelo) ----------
+// Quando o fornecedor não entrega o item planejado, a pessoa do PCP/supervisão troca o prato DE VERDADE
+// no cardápio daquele dia — não é uma camada visual só na produção. Decisões confirmadas com o Marcelo:
+// (1) o cardápio de Salada/Sobremesa é compartilhado por cardapio_num — trocar um troca pra TODOS os
+// clientes que usam aquele modelo nesse dia, por isso a tela sempre mostra quem vai ser afetado antes de
+// confirmar; (2) só fichas já cadastradas do mesmo grupo (Salada ou Sobremesa) podem ser escolhidas —
+// nunca texto livre, pra o custo novo ser sempre real; (3) pode ser feita na véspera ou no mesmo dia; (4)
+// quem pode trocar: pessoa do PCP e supervisão (sem trava extra de perfil nesta versão, mesmo acesso que
+// já existe pro resto do PCP); (5) fica um registro de auditoria (ficha original→nova, motivo, quem,
+// quando); (6) se a troca acontecer depois da ordem já impressa, a tela só avisa — não bloqueia nada.
+// Edita cardapios.itens (casa pela "categoria" da linha, ex. "Salada 2" — chave estável dentro de 1
+// cardápio×dia, ao contrário do ficha_id que pode já ter sido trocado por outra pessoa no meio do dia) e
+// recalcula cardapios.custo_planejado com a MESMA fórmula de sempre (custoLinhaCardapio somado), então o
+// histórico de uso de fichas e a Faturamento apurado/CMV do dia já saem certos sem nenhum código extra.
+const PCP_SALSOB_TROCA_MOTIVOS = ["Fornecedor não entregou", "Falta de insumo no estoque", "Problema de qualidade", "Outro"];
+// cardapio_num → {grupoCardapio:"refeicao"|"marmita"} pro mesmo item de catálogo que Produção já usa
+// (pcpResolveRowProducao) — aqui só precisamos do NÚMERO do cardápio, não da linha inteira.
+function pcpSalSobNumDoItem(cat, ct){
+  if(cat.tipo_custo === "cardapio_refeicao") return ct.cardapio_refeicao_num != null ? { num: ct.cardapio_refeicao_num, grupoCardapio: "refeicao" } : null;
+  if(cat.tipo_custo === "cardapio_marmita") return ct.cardapio_marmita_num != null ? { num: ct.cardapio_marmita_num, grupoCardapio: "marmita" } : null;
+  if(cat.tipo_custo === "cardapio_marmita_especial"){
+    if(ct.marmita_especial_ativo && ct.cardapio_marmita_especial_num) return { num: ct.cardapio_marmita_especial_num, grupoCardapio: "marmita" };
+    return ct.cardapio_marmita_num != null ? { num: ct.cardapio_marmita_num, grupoCardapio: "marmita" } : null;
+  }
+  return null;
+}
+// todos os cardápios (refeição/marmita) realmente em uso neste dia, com a lista de clientes que usa cada
+// um — é o que decide quais blocos aparecem no painel e quem avisar antes de confirmar uma troca.
+function pcpSalSobCardapiosUsados(semana, dia, unidadeFiltro){
+  const porNum = new Map(); // `${grupoCardapio}|${num}` -> {num, grupoCardapio, contratos:[{id,nome,unidade}]}
+  [...contratos.entries()]
+    .filter(([, ct]) => ct.ativo !== false)
+    .filter(([, ct]) => !unidadeFiltro || unidadeFiltro === "todos" || ct.unidade === unidadeFiltro)
+    .filter(([, ct]) => contratoVigenteNoDia(ct, semana, dia))
+    .forEach(([id, ct]) => {
+      const vistos = new Set();
+      itensDoContratoVenda(id).forEach(ci => {
+        const cat = catalogoPorProduto(ci.produto_id);
+        if(!cat || !PCP_TIPOS_PRODUCAO.has(cat.tipo_custo)) return;
+        const qtd = quantidadePrevista(id, ci.produto_id, dia, semana);
+        if(!(qtd > 0)) return;
+        const info = pcpSalSobNumDoItem(cat, ct);
+        if(!info) return;
+        const chave = `${info.grupoCardapio}|${info.num}`;
+        if(vistos.has(chave)) return;
+        vistos.add(chave);
+        const e = porNum.get(chave) || { num: info.num, grupoCardapio: info.grupoCardapio, contratos: [] };
+        e.contratos.push({ id, nome: ct.nome_cliente, unidade: ct.unidade });
+        porNum.set(chave, e);
+      });
+    });
+  return [...porNum.values()].sort((a,b) => a.grupoCardapio.localeCompare(b.grupoCardapio) || a.num - b.num);
+}
+// itens de Salada/Sobremesa do cardápio do dia, direto do banco (não do `res` calculado) — é o que a
+// troca lê e edita; linhas vazias (sem prato cadastrado naquele slot) ficam de fora.
+function pcpSalSobCardapioDiaItens(num, semana, dia){
+  const row = [...cardapiosAlmoco.values()].find(r => r.cardapio_num === num && r.semana === semana && r.dia === dia);
+  if(!row) return [];
+  return (row.itens || []).filter(it => { const b = categoriaBase(it.categoria); return b === "Salada" || b === "Sobremesa"; })
+    .filter(it => it.nome || it.ficha_id || it.insumo_id);
+}
+// log de trocas (19/10/2026): carregado por semana+dia (a navegação de dia já recarrega a tela toda) —
+// usado tanto pra mostrar "trocado: X → Y" embaixo de cada cardápio quanto pro alerta de reimpressão.
+let pcpSalSobTrocasCache = new Map(); // `${dia}|${num}` -> [troca,...] mais recente primeiro
+async function pcpCarregarTrocasSalSob(semana, dia){
+  pcpSalSobTrocasCache = new Map();
+  const { data, error } = await sb.from('pcp_trocas_salsob').select('*').eq('semana', semana).eq('dia', dia).order('criado_em', { ascending: false });
+  if(error){ showAlert("Erro ao carregar trocas extraordinárias: " + error.message); return; }
+  (data || []).forEach(row => {
+    const chave = `${row.dia}|${row.cardapio_num}`;
+    const arr = pcpSalSobTrocasCache.get(chave) || [];
+    arr.push(row);
+    pcpSalSobTrocasCache.set(chave, arr);
+  });
+}
+function pcpSalSobTrocasDoNum(dia, num){ return pcpSalSobTrocasCache.get(`${dia}|${num}`) || []; }
+// registro de quando a produção de Salada/Sobremesa foi impressa por último (semana+dia+unidade) — só
+// alimenta o alerta "cardápio alterado após impressão", nunca bloqueia nada.
+let pcpSalSobImpressaoCache = new Map(); // unidade ("matriz"|"filial"|"todos") -> row
+async function pcpCarregarImpressaoSalSob(semana, dia){
+  pcpSalSobImpressaoCache = new Map();
+  const { data, error } = await sb.from('pcp_impressoes_salsob').select('*').eq('semana', semana).eq('dia', dia);
+  if(error){ showAlert("Erro ao carregar registro de impressão: " + error.message); return; }
+  (data || []).forEach(row => pcpSalSobImpressaoCache.set(row.unidade, row));
+}
+async function pcpRegistrarImpressaoSalSob(semana, dia, unidade){
+  const row = { semana, dia, unidade: unidade || "todos", impresso_em: new Date().toISOString(), impresso_por: usuarioId || null };
+  const { error } = await sb.from('pcp_impressoes_salsob').upsert(row, { onConflict: "semana,dia,unidade" });
+  if(error){ showAlert("Erro ao registrar a impressão: " + error.message); return false; }
+  pcpSalSobImpressaoCache.set(row.unidade, row);
+  return true;
+}
+// trocas (de qualquer cardápio em uso neste dia) registradas DEPOIS da última impressão pra essa
+// unidade — lista vazia = nada a avisar (nunca imprimiu ainda, ou nenhuma troca depois do print).
+function pcpSalSobTrocasAposImpressao(dia, unidadeSel, numsDoDia){
+  const imp = pcpSalSobImpressaoCache.get(unidadeSel || "todos");
+  if(!imp || !imp.impresso_em) return [];
+  const t = new Date(imp.impresso_em).getTime();
+  const achadas = [];
+  numsDoDia.forEach(num => pcpSalSobTrocasDoNum(dia, num).forEach(tr => { if(new Date(tr.criado_em).getTime() > t) achadas.push(tr); }));
+  return achadas;
+}
+// painel "Cardápio do dia — Salada/Sobremesa": 1 bloco por cardápio em uso, com cada prato e o botão de
+// troca — é a "visão só salada/sobremesa do cardápio geral" que o Marcelo pediu, já com a troca embutida.
+function pcpSalSobCardapioDiaHtml(cardapiosUsados, semana, dia){
+  if(!cardapiosUsados.length){
+    return `<div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="refresh-cw"></i>Cardápio do dia — Salada/Sobremesa</h3></div>
+    <div class="panel"><div class="panel-body"><div class="empty-state">Nenhum cliente com cardápio de refeição/marmita configurado para este dia.</div></div></div>`;
+  }
+  const blocos = cardapiosUsados.map(c => {
+    const label = labelNumeroCardapio(c.grupoCardapio, c.num);
+    const itens = pcpSalSobCardapioDiaItens(c.num, semana, dia);
+    const trocas = pcpSalSobTrocasDoNum(dia, c.num);
+    const linhas = itens.length ? itens.map(it =>
+      `<tr><td class="footnote" style="margin:0; white-space:nowrap;">${escapeHtml(it.categoria)}</td><td class="name-cell">${escapeHtml(it.nome || "—")}</td><td style="text-align:right;"><button class="btn small ghost" data-salsob-trocar-num="${c.num}" data-salsob-trocar-grupo="${escapeHtml(c.grupoCardapio)}" data-salsob-trocar-cat="${escapeHtml(it.categoria)}">Trocar</button></td></tr>`
+    ).join("") : `<tr><td colspan="3" class="footnote" style="margin:0;">Sem salada/sobremesa cadastrada neste cardápio.</td></tr>`;
+    const trocasHtml = trocas.length ? `<p class="footnote" style="margin:8px 0 0;">${trocas.map(t =>
+      `Trocado: ${escapeHtml(t.ficha_original_nome || "—")} → <strong>${escapeHtml(t.ficha_nova_nome)}</strong> — ${escapeHtml(t.motivo)}${t.observacao ? " ("+escapeHtml(t.observacao)+")" : ""} · ${escapeHtml(t.criado_por || "—")}, ${new Date(t.criado_em).toLocaleString('pt-BR')}`
+    ).join("<br>")}</p>` : "";
+    return `<div class="panel" style="margin-bottom:10px;">
+      <div class="panel-head"><h3 style="font-size:14px;">${escapeHtml(label)}</h3><span class="hint">${c.contratos.length} cliente${c.contratos.length===1?"":"s"}: ${c.contratos.map(x=>escapeHtml(x.nome)).join(", ")}</span></div>
+      <div class="panel-body"><div class="table-wrap"><table><tbody>${linhas}</tbody></table></div>${trocasHtml}</div>
+    </div>`;
+  }).join("");
+  return `<div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="refresh-cw"></i>Cardápio do dia — Salada/Sobremesa</h3><span class="hint">Visão filtrada do cardápio geral · "Trocar" edita de verdade o cardápio deste dia — vale pra todos os clientes do mesmo modelo, listados abaixo de cada um</span></div>
+  ${blocos}`;
+}
+// modal de troca — escolhe a ficha substituta (só do mesmo grupo, Salada ou Sobremesa) e o motivo; mostra
+// antes quem vai ser afetado, porque o cardápio é compartilhado entre clientes.
+function pcpSalSobAbrirTroca(item, cardapioInfo, semana, dia){
+  const root = document.getElementById("modal-root");
+  const opcoes = [...fichas.entries()]
+    .filter(([id, f]) => f.grupo === item.grupo && id !== item.fichaId)
+    .sort((a,b) => a[1].nome.localeCompare(b[1].nome, 'pt-BR'));
+  root.innerHTML = `<div class="modal-overlay" id="salsobtroca-ov"><div class="modal" style="max-width:560px;">
+    <div class="modal-head"><h2>Troca extraordinária — ${escapeHtml(labelNumeroCardapio(cardapioInfo.grupoCardapio, cardapioInfo.num))}</h2><button class="close-x" id="salsobtroca-close">&times;</button></div>
+    <div class="modal-body">
+      <p class="footnote" style="margin:0 0 10px;">${escapeHtml(DIA_LABEL[dia]||dia)} · ${escapeHtml(rotuloSemana(semana))} · ${escapeHtml(item.categoria)} — hoje: <strong>${escapeHtml(item.fichaNome || "—")}</strong></p>
+      <div class="chip warn" style="display:block; white-space:normal; height:auto; padding:8px 10px; margin-bottom:12px;">Esse cardápio é usado por ${cardapioInfo.contratos.length} cliente${cardapioInfo.contratos.length===1?"":"s"} neste dia — a troca vale pra todos: ${cardapioInfo.contratos.map(c=>escapeHtml(c.nome)).join(", ")}.</div>
+      <div class="field"><label>Trocar por</label><select id="salsobtroca-ficha"><option value="">Selecione…</option>${opcoes.map(([id,f]) => `<option value="${id}">${escapeHtml(f.nome)}</option>`).join("")}</select></div>
+      <div class="field"><label>Motivo</label><select id="salsobtroca-motivo"><option value="">Selecione…</option>${PCP_SALSOB_TROCA_MOTIVOS.map(m=>`<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join("")}</select></div>
+      <div class="field"><label>Observação (opcional)</label><textarea id="salsobtroca-obs" rows="2"></textarea></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn small ghost" id="salsobtroca-cancelar" type="button">Cancelar</button>
+      <button class="btn small primary" id="salsobtroca-confirmar" type="button">Confirmar troca</button>
+    </div>
+  </div></div>`;
+  const close = () => { root.innerHTML = ""; };
+  document.getElementById("salsobtroca-close").addEventListener("click", close);
+  document.getElementById("salsobtroca-cancelar").addEventListener("click", close);
+  document.getElementById("salsobtroca-ov").addEventListener("click", e => { if(e.target.id==="salsobtroca-ov") close(); });
+  document.getElementById("salsobtroca-confirmar").addEventListener("click", async () => {
+    const novaFichaId = document.getElementById("salsobtroca-ficha").value;
+    const motivo = document.getElementById("salsobtroca-motivo").value;
+    const observacao = document.getElementById("salsobtroca-obs").value.trim();
+    if(!novaFichaId){ showAlert("Escolha a ficha substituta."); return; }
+    if(!motivo){ showAlert("Escolha o motivo da troca."); return; }
+    const btn = document.getElementById("salsobtroca-confirmar");
+    btn.disabled = true;
+    const ok = await pcpSalSobSalvarTroca(cardapioInfo, item, novaFichaId, motivo, observacao, semana, dia);
+    btn.disabled = false;
+    if(ok){ close(); renderPCP(); }
+  });
+}
+// salva a troca: edita cardapios.itens (casado por categoria, não por ficha_id — ver nota acima),
+// recalcula custo_planejado e grava o log de auditoria. Busca o cardápio FRESCO do banco antes de editar
+// (não confia no cache local `cardapiosAlmoco`), porque mais de uma pessoa (PCP e supervisão) pode estar
+// trocando no mesmo dia — evita uma troca sobrescrever a outra.
+async function pcpSalSobSalvarTroca(cardapioInfo, item, novaFichaId, motivo, observacao, semana, dia){
+  const { data: rowAtual, error: errBusca } = await sb.from('cardapios').select('*').eq('cardapio_num', cardapioInfo.num).eq('semana', semana).eq('dia', dia).maybeSingle();
+  if(errBusca || !rowAtual){ showAlert("Não consegui carregar o cardápio atual — não salvei a troca." + (errBusca ? " " + errBusca.message : "")); return false; }
+  const itens = (rowAtual.itens || []).map(it => ({...it}));
+  const idx = itens.findIndex(it => it.categoria === item.categoria);
+  if(idx === -1){ showAlert("Não achei esse item no cardápio — a tela pode estar desatualizada. Atualize e tente de novo."); return false; }
+  const novaFicha = fichas.get(novaFichaId);
+  if(!novaFicha){ showAlert("Ficha substituta não encontrada."); return false; }
+  const itemOriginal = itens[idx];
+  itens[idx] = { ...itemOriginal, ficha_id: novaFichaId, insumo_id: null, nome: novaFicha.nome };
+  const custoPlanejado = itens.reduce((s,l) => s + custoLinhaCardapio(l), 0);
+  const { error: errCard } = await sb.from('cardapios').update({ itens, custo_planejado: custoPlanejado, alterado_em: new Date().toISOString(), alterado_por: usuarioId || null }).eq('id', rowAtual.id);
+  if(errCard){ showAlert("Erro ao salvar a troca no cardápio: " + errCard.message); return false; }
+  const { error: errLog } = await sb.from('pcp_trocas_salsob').insert({
+    cardapio_num: cardapioInfo.num, cardapio_grupo: cardapioInfo.grupoCardapio, semana, dia,
+    categoria: item.categoria, grupo_prato: item.grupo,
+    ficha_original_id: itemOriginal.ficha_id || null, ficha_original_nome: itemOriginal.nome || null,
+    ficha_nova_id: novaFichaId, ficha_nova_nome: novaFicha.nome,
+    motivo, observacao: observacao || null, contratos_afetados: cardapioInfo.contratos, criado_por: usuarioId || null
+  });
+  if(errLog) showAlert("A troca foi salva no cardápio, mas o registro de auditoria falhou: " + errLog.message);
+  await loadCardapios(); // recarrega cardapiosAlmoco com o estado real do banco (pode ter outras edições concorrentes)
+  return true;
 }
 
 // ---------- Fase 3: Conferência de expedição ----------
@@ -13749,6 +13980,12 @@ async function renderPCP(){
   // dia selecionado, mesmo `res` que a Produção já calcula acima (só filtrado por grupo, ver pcpSalSobLinhasDia).
   const salSobMapaSemana = ehSalSob ? pcpSalSobMapaSemana(pcpSemanaSel, unidadeFiltro, servicosFiltro) : null;
   const salSobEtqLinhas = ehSalSob ? pcpSalSobEtiquetaLinhas(res, pcpDiaSel) : null;
+  // troca extraordinária (19/10/2026) — cardápios em uso neste dia (pra listar/trocar) + trocas já
+  // registradas + último print, pra montar o alerta de reimpressão. Carregado por semana+dia (dia muda =
+  // recarrega a tela toda de qualquer forma).
+  if(ehSalSob){ await pcpCarregarTrocasSalSob(pcpSemanaSel, pcpDiaSel); await pcpCarregarImpressaoSalSob(pcpSemanaSel, pcpDiaSel); }
+  const salSobCardapiosUsados = ehSalSob ? pcpSalSobCardapiosUsados(pcpSemanaSel, pcpDiaSel, unidadeFiltro) : null;
+  const salSobTrocasAposImpressao = ehSalSob ? pcpSalSobTrocasAposImpressao(pcpDiaSel, pcpUnidadeSel, salSobCardapiosUsados.map(c => c.num)) : null;
   let confLinhas = null;
   if(ehConferencia && unidadeFiltro){
     await pcpCarregarConferencia(pcpSemanaSel, pcpDiaSel, unidadeFiltro);
@@ -13809,9 +14046,10 @@ async function renderPCP(){
     ) : ehAjustes ? (
       pcpAjustesHtml(res)
     ) : ehSalSob ? (
-      pcpSalSobProducaoHtml(res) +
+      pcpSalSobProducaoHtml(res, salSobTrocasAposImpressao) +
       pcpSalSobMapaSemanaHtml(salSobMapaSemana, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial") +
-      pcpSalSobEtiquetasHtml(salSobEtqLinhas)
+      pcpSalSobEtiquetasHtml(salSobEtqLinhas) +
+      pcpSalSobCardapioDiaHtml(salSobCardapiosUsados, pcpSemanaSel, pcpDiaSel)
     ) : `
       <div class="es-kpis" style="margin-bottom:16px;">
         <div class="vn-card"><div class="vn-label">Pessoas previstas</div><div class="vn-value">${fmtNum(res.pessoasTot,0)}</div>${ehProducaoAmbas ? `<div class="vn-sub">Matriz ${fmtNum(listaRes[0].pessoasTot,0)} · Filial ${fmtNum(listaRes[1].pessoasTot,0)}</div>` : ""}</div>
@@ -13882,11 +14120,29 @@ async function renderPCP(){
     });
     const unidadeLabel = unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial";
     const btnProducao = document.getElementById("pcp-salsob-producao-imprimir");
-    if(btnProducao) btnProducao.addEventListener("click", () => pcpImprimirSalSobProducaoDia(pcpSalSobProducaoPorCliente(res), pcpSemanaSel, pcpDiaSel, unidadeLabel));
+    // registra o horário da impressão (19/10/2026) ANTES de abrir o print — é o que alimenta o alerta
+    // "cardápio alterado após impressão" numa próxima troca; sempre reimprime, mesmo se o registro falhar.
+    if(btnProducao) btnProducao.addEventListener("click", async () => {
+      await pcpRegistrarImpressaoSalSob(pcpSemanaSel, pcpDiaSel, pcpUnidadeSel);
+      pcpImprimirSalSobProducaoDia(pcpSalSobProducaoPorCliente(res), pcpSemanaSel, pcpDiaSel, unidadeLabel);
+      renderPCP();
+    });
     const btnMapaSem = document.getElementById("pcp-salsob-mapa-sem-imprimir");
     if(btnMapaSem) btnMapaSem.addEventListener("click", () => pcpImprimirSalSobMapaSemana(salSobMapaSemana, pcpSemanaSel, unidadeLabel));
     const btnEtiquetas = document.getElementById("pcp-salsob-etiquetas-abrir");
     if(btnEtiquetas) btnEtiquetas.addEventListener("click", () => pcpAbrirEtiquetasSalSob(salSobEtqLinhas, unidadeLabel));
+    // troca extraordinária: reconsulta os itens/clientes frescos do painel (não embala JSON em atributo
+    // HTML, evita escapar nome com aspas/acentos errado) e abre o modal de escolha da ficha substituta.
+    content.querySelectorAll("[data-salsob-trocar-cat]").forEach(btn => btn.addEventListener("click", () => {
+      const num = Number(btn.dataset.salsobTrocarNum);
+      const grupoCardapio = btn.dataset.salsobTrocarGrupo;
+      const categoria = btn.dataset.salsobTrocarCat;
+      const cardapioInfo = salSobCardapiosUsados.find(c => c.num === num && c.grupoCardapio === grupoCardapio);
+      const it = pcpSalSobCardapioDiaItens(num, pcpSemanaSel, pcpDiaSel).find(x => x.categoria === categoria);
+      if(!it || !cardapioInfo) return;
+      const grupoPrato = categoriaBase(it.categoria).toUpperCase(); // "SALADA" ou "SOBREMESA"
+      pcpSalSobAbrirTroca({ categoria: it.categoria, grupo: grupoPrato, fichaId: it.ficha_id, fichaNome: it.nome }, cardapioInfo, pcpSemanaSel, pcpDiaSel);
+    }));
   }
   // pcpConferirHtml fica embutido no preâmbulo de Produção E de Volume por cliente (15/10/2026) — wiring
   // genérico, fora do if/else acima, pra pegar os checkboxes nas duas telas.
