@@ -1094,28 +1094,33 @@ function mesAnteriorYMD(ymd){ // "2026-09" a partir de qualquer data desse mês
 }
 // preço médio ponderado (valor/quantidade) pago por um insumo no mês anterior ao da data informada, qualquer fornecedor.
 // null se não há nenhuma compra desse insumo no mês anterior (sem base de comparação, não é "sem alerta" = "preço ok").
+// P0-3: preço médio por unidade BASE (kg/L/un) — soma o valor gasto e divide pela quantidade já
+// convertida pra base (quantidade × fator_embalagem), não pela quantidade de embalagens. Itens antigos
+// sem fator_embalagem entram com fator 1, igual já era.
 function precoMedioMesAnterior(insumoId, dataRefYMD){
   const alvo = mesAnteriorYMD(dataRefYMD);
   if(!alvo) return null;
-  let somaValor = 0, somaQtd = 0;
+  let somaValor = 0, somaQtdBase = 0;
   pedidos.forEach(p => {
     if(!p.data_pedido || !p.data_pedido.startsWith(alvo)) return;
     (p.itens||[]).forEach(it => {
       if(it.insumo_id !== insumoId || !(it.quantidade > 0)) return;
       somaValor += it.quantidade * (it.preco_unitario||0);
-      somaQtd += it.quantidade;
+      somaQtdBase += qtdBaseItem(it);
     });
   });
-  return somaQtd > 0 ? somaValor/somaQtd : null;
+  return somaQtdBase > 0 ? somaValor/somaQtdBase : null;
 }
 // fornecedor que mais recentemente vendeu esse insumo (base pra sugestão de pedido) — null se nunca comprado.
+// preco_unitario = preço da embalagem como foi lançado naquele pedido (o que o fornecedor cobra); preco_base
+// = já convertido pra unidade base (kg/L/un), pra quem precisa comparar com o custo das fichas técnicas.
 function fornecedorSugeridoParaInsumo(insumoId){
-  let melhor = null; // {fornecedor_id, fornecedor, data_pedido, preco_unitario}
+  let melhor = null; // {fornecedor_id, fornecedor, data_pedido, preco_unitario, fator_embalagem, preco_base}
   pedidos.forEach(p => {
     if(!p.fornecedor_id || !p.data_pedido) return;
     (p.itens||[]).forEach(it => {
       if(it.insumo_id !== insumoId) return;
-      if(!melhor || p.data_pedido > melhor.data_pedido) melhor = {fornecedor_id: p.fornecedor_id, fornecedor: p.fornecedor, data_pedido: p.data_pedido, preco_unitario: it.preco_unitario};
+      if(!melhor || p.data_pedido > melhor.data_pedido) melhor = {fornecedor_id: p.fornecedor_id, fornecedor: p.fornecedor, data_pedido: p.data_pedido, preco_unitario: it.preco_unitario, fator_embalagem: fatorEmbalagemItem(it), preco_base: precoBaseItem(it)};
     });
   });
   return melhor;
@@ -1146,8 +1151,21 @@ function statusChip(st){ return `<span class="chip ${st.cls}"><span class="dot">
 function pedidoValorRecebido(p){
   return (p.itens||[]).reduce((s,it) => s + (it.quantidade_recebida != null ? it.quantidade_recebida : 0) * (it.preco_unitario||0), 0);
 }
-function novaLinhaPedido(){ return {insumo_id:null, nome:"", unidade:"", quantidade:null, preco_unitario:null}; }
+function novaLinhaPedido(){ return {insumo_id:null, nome:"", unidade:"", fator_embalagem:null, quantidade:null, preco_unitario:null}; }
 function valorTotalItensPedido(itens){ return (itens||[]).reduce((s,l) => s + (l.quantidade||0)*(l.preco_unitario||0), 0); }
+// P0-3 (19/10/2026): desde sempre, "quantidade" e "preco_unitario" do item do pedido eram tratados pelo
+// resto do sistema (atualização de custo de Insumos, alerta de preço, sugestão por fornecedor) como se já
+// fossem a quantidade/custo na unidade BASE do insumo (kg/L/un — a mesma das fichas técnicas). Na prática
+// quem lança compra pensa em embalagem ("5 sacos a R$235"), e isso é o que ficava gravado sem conversão —
+// gerando sugestões de compra e atualizações de custo com erro de 1 ou 2 ordens de grandeza (ver auditoria
+// de 19/10/2026 e a revisão manual dos pedidos existentes). `fator_embalagem` é o novo campo: quantas
+// unidades base cabem numa embalagem (pré-preenchido do `unidade_convertida` do insumo, editável — o
+// fornecedor pode vender embalagem diferente da "padrão" cadastrada). Itens antigos não têm esse campo;
+// tratamos a ausência como fator 1 (quantidade/preço continuam significando exatamente o que significavam
+// antes) — não reinterpretamos pedidos já gravados sozinhos, só os que forem reabertos e corrigidos à mão.
+function fatorEmbalagemItem(l){ return (l && l.fator_embalagem > 0) ? l.fator_embalagem : 1; }
+function qtdBaseItem(l){ return (l && l.quantidade > 0 ? l.quantidade : 0) * fatorEmbalagemItem(l); }
+function precoBaseItem(l){ return l && l.preco_unitario != null ? l.preco_unitario / fatorEmbalagemItem(l) : null; }
 
 /* ---- estoque (contagem pontual por semana/unidade/insumo — sem entrada/saída/movimentação) ---- */
 let estoqueContagem = new Map(); // "semana|unidade|insumo_id" -> {id, semana, unidade, insumo_id, quantidade_contada, data_contagem}
@@ -1246,9 +1264,15 @@ async function sincronizarEntradaPendenteDoPedido(pedidoId, unidade, itens){
   (itens||[]).forEach(it => {
     if(it.quantidade_recebida === null || it.quantidade_recebida === undefined) return;
     if(!it.insumo_id || decididos.has(it.insumo_id)) return; // já aprovado/rejeitado — não reabrir sozinho
+    // P0-3: quantidade_recebida e preco_unitario estão na mesma grandeza de "quantidade"/"preco_unitario" do
+    // item (embalagem, se fator_embalagem>1) — o kardex (estoque_movimentos) é sempre em unidade BASE, igual
+    // ao resto do estoque, então convertemos aqui antes de gravar.
+    const fator = fatorEmbalagemItem(it);
+    const qtdBase = (it.quantidade_recebida||0) * fator;
+    const custoBase = precoBaseItem(it);
     const existenteId = pendentesPorInsumo.get(it.insumo_id);
-    if(existenteId){ aAtualizar.push({id: existenteId, quantidade: it.quantidade_recebida, custo_unitario: it.preco_unitario}); }
-    else { aInserir.push({ unidade, insumo_id: it.insumo_id, tipo:"entrada_pedido", quantidade: it.quantidade_recebida, custo_unitario: it.preco_unitario, status:"pendente", data: hojeYMD(), pedido_id: pedidoId, criado_por: usuarioId||null }); }
+    if(existenteId){ aAtualizar.push({id: existenteId, quantidade: qtdBase, custo_unitario: custoBase}); }
+    else { aInserir.push({ unidade, insumo_id: it.insumo_id, tipo:"entrada_pedido", quantidade: qtdBase, custo_unitario: custoBase, status:"pendente", data: hojeYMD(), pedido_id: pedidoId, criado_por: usuarioId||null }); }
   });
   try{
     for(const a of aAtualizar){ const { error } = await sb.from('estoque_movimentos').update({quantidade:a.quantidade, custo_unitario:a.custo_unitario}).eq('id', a.id); if(error) throw error; }
@@ -7914,16 +7938,27 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale){
 // agrupa a demanda da lista de compra pelo fornecedor que mais recentemente vendeu cada insumo — rascunho em
 // memória (nada é gravado até a compradora abrir e salvar cada um). Insumo nunca comprado antes cai no grupo
 // "sem fornecedor sugerido".
+// P0-3 (19/10/2026): a necessidade (l.kg) está sempre em unidade BASE do insumo (kg/L/un — é o que a Lista
+// de compra calcula a partir das fichas). O erro original daqui: multiplicava l.kg direto pelo preço de
+// EMBALAGEM do último pedido (ex. R$235 o saco de 30kg), sem converter — gerava valores 10-700× maiores
+// que o real (ver auditoria e revisão de pedidos de 19/10/2026). Agora: converte a necessidade em nº de
+// embalagens (arredondando pra cima — não dá pra comprar meio saco) usando o fator de embalagem do último
+// pedido desse insumo (ou o unidade_convertida do cadastro, se nunca comprado), e o rascunho do pedido já
+// sai com fator_embalagem preenchido.
 function sugestoesPedidoPorFornecedor(linhas){
   const grupos = new Map(); // fornecedor_id (ou "" p/ sem sugestão) -> {fornecedorId, fornecedorNome, itens:[], totalCusto}
   linhas.filter(l => l.kg > 0).forEach(l => {
     const sug = fornecedorSugeridoParaInsumo(l.insumoId);
+    const ins = insumos.get(l.insumoId);
     const key = sug ? sug.fornecedor_id : "";
     if(!grupos.has(key)) grupos.set(key, { fornecedorId: sug ? sug.fornecedor_id : null, fornecedorNome: sug ? sug.fornecedor : null, itens: [], totalCusto: 0 });
     const g = grupos.get(key);
-    const precoRef = sug && sug.preco_unitario != null ? sug.preco_unitario : (insumos.get(l.insumoId)?.custo_unitario ?? null);
-    g.itens.push({ insumo_id: l.insumoId, nome: l.nome, unidade: l.unidade, quantidade: Math.round(l.kg*1000)/1000, preco_unitario: precoRef });
-    g.totalCusto += l.kg * (precoRef||0);
+    const fator = sug ? sug.fator_embalagem : (ins && ins.unidade_convertida > 0 ? ins.unidade_convertida : 1);
+    const precoEmbalagem = sug && sug.preco_unitario != null ? sug.preco_unitario : (ins ? ins.custo_unitario : null);
+    const embalagens = Math.ceil((l.kg / fator) * 1000) / 1000; // arredonda pra cima, 3 casas (fração de embalagem ainda editável no modal)
+    const rotuloEmb = fator > 1 ? (fmtNum(fator,3)+" "+l.unidade) : l.unidade;
+    g.itens.push({ insumo_id: l.insumoId, nome: l.nome, unidade: rotuloEmb, fator_embalagem: fator, quantidade: embalagens, preco_unitario: precoEmbalagem });
+    g.totalCusto += embalagens * (precoEmbalagem||0);
   });
   return [...grupos.values()].sort((a,b) => (b.fornecedorId?1:0) - (a.fornecedorId?1:0) || normalizeText(a.fornecedorNome||"zzz").localeCompare(normalizeText(b.fornecedorNome||"zzz")));
 }
@@ -8335,7 +8370,7 @@ function renderTabPedidos(){
 
 /* ---- modal: registrar/editar pedido ---- */
 function linhaDePedidoAnterior(it){
-  return { insumo_id: it.insumo_id||null, nome: it.nome||"", unidade: it.unidade||"", quantidade: it.quantidade!=null?it.quantidade:null, preco_unitario: it.preco_unitario!=null?it.preco_unitario:null };
+  return { insumo_id: it.insumo_id||null, nome: it.nome||"", unidade: it.unidade||"", fator_embalagem: it.fator_embalagem||null, quantidade: it.quantidade!=null?it.quantidade:null, preco_unitario: it.preco_unitario!=null?it.preco_unitario:null };
 }
 function destinoOpcoes(){
   const ativos = [...contratos.entries()].filter(([,c]) => c.ativo);
@@ -8357,10 +8392,11 @@ function itensComAlertaDePreco(itensValidos, dataPedido, limiar){
     if(!l.insumo_id || !(l.preco_unitario > 0)) return;
     const media = precoMedioMesAnterior(l.insumo_id, dataPedido);
     if(media == null) return;
-    const diffPct = ((l.preco_unitario - media) / media) * 100;
+    const precoBase = precoBaseItem(l);
+    const diffPct = ((precoBase - media) / media) * 100;
     if(diffPct <= limiar*100) return;
     const atual = vistos.get(l.insumo_id);
-    if(!atual || diffPct > atual.diffPct) vistos.set(l.insumo_id, { nome: l.nome, preco: l.preco_unitario, media, diffPct });
+    if(!atual || diffPct > atual.diffPct) vistos.set(l.insumo_id, { nome: l.nome, preco: precoBase, media, diffPct });
   });
   return [...vistos.values()].sort((a,b) => b.diffPct - a.diffPct);
 }
@@ -8410,7 +8446,7 @@ function itensComVariacaoDeCusto(itensValidos, limiar){
     if(!l.insumo_id || !(l.preco_unitario > 0)) return;
     const ins = insumos.get(l.insumo_id);
     if(!ins) return;
-    porInsumo.set(l.insumo_id, { insumo: ins, insumoId: l.insumo_id, novoKg: l.preco_unitario, antigoKg: ins.custo_kg_l_und });
+    porInsumo.set(l.insumo_id, { insumo: ins, insumoId: l.insumo_id, novoKg: precoBaseItem(l), antigoKg: ins.custo_kg_l_und });
   });
   const todas = [...porInsumo.values()].filter(v => v.antigoKg == null || Math.abs(v.novoKg - v.antigoKg) > 0.0001);
   const grandes = todas.filter(v => v.antigoKg > 0 && Math.abs(v.novoKg - v.antigoKg)/v.antigoKg > limiar);
@@ -8694,34 +8730,48 @@ function openPedidoModal(id, opts){
   refreshFornInfo();
 
   const wrap = document.getElementById("pd-lines");
+  // P0-3 (19/10/2026): a tela mostrava "Quantidade" + "Un." (travada no kg/L/un do insumo) + "Preço unit.",
+  // mas quem lança pensa em embalagem ("5 sacos a R$235") — e era isso que acabava gravado, sem conversão,
+  // estourando o custo em até 700× (ver auditoria e revisão manual dos pedidos existentes). Agora o operador
+  // lança a embalagem como ela é comprada de verdade: nº de embalagens + preço da embalagem + fator de
+  // conversão pra unidade base (pré-preenchido do cadastro do insumo, mas editável — o fornecedor pode vender
+  // embalagem diferente da "padrão"). Uma linha de prévia mostra o equivalente em base pra conferir de olho
+  // antes de salvar.
   function linhaHtml(l,i){
+    const fator = fatorEmbalagemItem(l);
+    const baseLabel = l.insumo_id ? unidadeCustoInsumo(insumos.get(l.insumo_id)) : "";
+    const previaBase = (l.quantidade > 0 && fator > 0) ? `≈ ${fmtNum(qtdBaseItem(l),3)} ${baseLabel}${l.preco_unitario>0 ? ` a ${fmtMoney(precoBaseItem(l))}/${baseLabel}` : ""}` : "";
     return `
       <div class="field-row pd-line" data-i="${i}" style="align-items:flex-start;">
         <div class="field" style="flex:2;"><label>Insumo</label><input type="text" class="pd-nome" list="pd-insumo-list" autocomplete="off" value="${escapeHtml(l.nome||"")}" placeholder="Buscar insumo…"><div class="footnote" style="margin-top:2px;">${l.insumo_id ? escapeHtml(blocoDoInsumo(l.insumo_id)) : (l.nome ? '<span style="color:var(--critical);">insumo não encontrado — escolha da lista</span>' : "")}</div><div class="footnote pd-ultimo" style="margin-top:2px;"></div></div>
-        <div class="field"><label>Quantidade</label><input type="number" step="0.001" min="0" class="pd-qtd" value="${l.quantidade!=null?l.quantidade:""}"></div>
-        <div class="field"><label>Un.</label><input type="text" class="pd-un" value="${escapeHtml(l.unidade||"")}" disabled></div>
-        <div class="field"><label>Preço unit. (R$)</label><input type="number" step="0.01" min="0" class="pd-preco" value="${l.preco_unitario!=null?l.preco_unitario:""}"><div class="footnote pd-alerta" style="margin-top:2px;"></div></div>
+        <div class="field"><label>Qtd. embalagens</label><input type="number" step="0.001" min="0" class="pd-qtd" value="${l.quantidade!=null?l.quantidade:""}"></div>
+        <div class="field" style="width:110px;"><label>Embalagem</label><input type="text" class="pd-un" value="${escapeHtml(l.unidade||"")}" placeholder="ex.: SC 30KG"></div>
+        <div class="field" style="width:90px;"><label>Fator → base</label><input type="number" step="0.0001" min="0.0001" class="pd-fator" value="${l.fator_embalagem!=null?l.fator_embalagem:""}" title="Quantas unidades base (kg/L/un) cabem numa embalagem"></div>
+        <div class="field"><label>Preço da embalagem (R$)</label><input type="number" step="0.01" min="0" class="pd-preco" value="${l.preco_unitario!=null?l.preco_unitario:""}"><div class="footnote pd-alerta" style="margin-top:2px;"></div></div>
         <div class="field"><label>Valor</label><div class="val small" style="padding:9px 0;">${fmtMoney((l.quantidade||0)*(l.preco_unitario||0))}</div></div>
         <div class="field"><label>&nbsp;</label><button type="button" class="btn small ghost pd-rm" style="color:var(--critical);">remover</button></div>
+        <div class="footnote pd-base-preview" style="flex-basis:100%; margin:-4px 0 0;">${previaBase}</div>
       </div>`;
   }
-  // mostra o último preço pago por esse insumo (qualquer fornecedor) assim que ele é escolhido — só na tela,
-  // nunca entra em impressão/PDF (a Lista de compra é o único fluxo impresso, e não usa esta função).
+  // mostra o último preço de embalagem pago por esse insumo (qualquer fornecedor) assim que ele é escolhido —
+  // só na tela, nunca entra em impressão/PDF.
   function ultimoPrecoHtml(l){
     if(!l.insumo_id) return "";
     const ult = fornecedorSugeridoParaInsumo(l.insumo_id);
     if(!ult || ult.preco_unitario == null) return `<span style="opacity:.6;">sem compra anterior desse insumo</span>`;
-    return `<span style="opacity:.75;">Último pago: <strong>${fmtMoney(ult.preco_unitario)}</strong> em ${escapeHtml(fmtDataYMD(ult.data_pedido))}${ult.fornecedor ? " · "+escapeHtml(ult.fornecedor) : ""}</span>`;
+    return `<span style="opacity:.75;">Último pago: <strong>${fmtMoney(ult.preco_unitario)}</strong>${ult.fator_embalagem>1?` (embalagem de ${fmtNum(ult.fator_embalagem,3)})`:""} em ${escapeHtml(fmtDataYMD(ult.data_pedido))}${ult.fornecedor ? " · "+escapeHtml(ult.fornecedor) : ""}</span>`;
   }
-  // compara o preço lançado com a média paga (qualquer fornecedor) no mês anterior ao da data do pedido
+  // compara o preço lançado — já convertido pra unidade base — com a média paga (qualquer fornecedor) no mês
+  // anterior ao da data do pedido.
   function alertaPrecoHtml(l){
     if(!l.insumo_id || !(l.preco_unitario > 0)) return "";
     const dataYMD = document.getElementById("pd-data").value;
     const media = precoMedioMesAnterior(l.insumo_id, dataYMD);
     if(media == null) return "";
-    const diff = (l.preco_unitario - media) / media;
-    if(diff > ALERTA_PRECO_LIMIAR) return `<span style="color:var(--critical);">▲ ${(diff*100).toFixed(0)}% acima da média do mês anterior (${fmtMoney(media)})</span>`;
-    return `<span style="opacity:.65;">média mês anterior: ${fmtMoney(media)}</span>`;
+    const precoBase = precoBaseItem(l);
+    const diff = (precoBase - media) / media;
+    if(diff > ALERTA_PRECO_LIMIAR) return `<span style="color:var(--critical);">▲ ${(diff*100).toFixed(0)}% acima da média do mês anterior (${fmtMoney(media)}/base)</span>`;
+    return `<span style="opacity:.65;">média mês anterior: ${fmtMoney(media)}/base</span>`;
   }
   function renderLines(){ wrap.innerHTML = draft.itens.map(linhaHtml).join(""); wireLines(); }
   function refreshTotal(){
@@ -8732,21 +8782,32 @@ function openPedidoModal(id, opts){
       const i = +row.dataset.i, l = draft.itens[i];
       const alertaEl = row.querySelector(".pd-alerta");
       const ultimoEl = row.querySelector(".pd-ultimo");
+      const baseEl = row.querySelector(".pd-base-preview");
       if(alertaEl) alertaEl.innerHTML = alertaPrecoHtml(l);
       if(ultimoEl) ultimoEl.innerHTML = ultimoPrecoHtml(l);
+      function refreshPreview(){
+        const fator = fatorEmbalagemItem(l);
+        const baseLabel = l.insumo_id ? unidadeCustoInsumo(insumos.get(l.insumo_id)) : "";
+        baseEl.textContent = (l.quantidade > 0 && fator > 0) ? `≈ ${fmtNum(qtdBaseItem(l),3)} ${baseLabel}${l.preco_unitario>0 ? ` a ${fmtMoney(precoBaseItem(l))}/${baseLabel}` : ""}` : "";
+      }
       row.querySelector(".pd-nome").addEventListener("change", e => {
         const texto = e.target.value;
         const match = insumosOrdenados.find(([,ins]) => normalizeText(ins.nome) === normalizeText(texto));
         l.nome = texto;
         if(match){
           l.insumo_id = match[0];
-          l.unidade = unidadeCustoInsumo(match[1]);
-          if(l.preco_unitario == null && match[1].custo_kg_l_und != null) l.preco_unitario = match[1].custo_kg_l_und;
-        } else { l.insumo_id = null; l.unidade = ""; }
+          const ins = match[1];
+          const fator = ins.unidade_convertida > 0 ? ins.unidade_convertida : 1;
+          l.fator_embalagem = fator;
+          l.unidade = fator > 1 ? `${fmtNum(fator,3)} ${unidadeCustoInsumo(ins)}` : unidadeCustoInsumo(ins);
+          if(l.preco_unitario == null && ins.custo_unitario != null) l.preco_unitario = ins.custo_unitario; // custo_unitario do cadastro já é o preço da embalagem (fator aplicado)
+        } else { l.insumo_id = null; l.unidade = ""; l.fator_embalagem = null; }
         renderLines(); refreshTotal();
       });
-      row.querySelector(".pd-qtd").addEventListener("input", e => { l.quantidade = e.target.value===""?null:parseFloat(e.target.value); row.querySelector(".val.small").textContent = fmtMoney((l.quantidade||0)*(l.preco_unitario||0)); refreshTotal(); });
-      row.querySelector(".pd-preco").addEventListener("input", e => { l.preco_unitario = e.target.value===""?null:parseFloat(e.target.value); row.querySelector(".val.small").textContent = fmtMoney((l.quantidade||0)*(l.preco_unitario||0)); if(alertaEl) alertaEl.innerHTML = alertaPrecoHtml(l); refreshTotal(); });
+      row.querySelector(".pd-qtd").addEventListener("input", e => { l.quantidade = e.target.value===""?null:parseFloat(e.target.value); row.querySelector(".val.small").textContent = fmtMoney((l.quantidade||0)*(l.preco_unitario||0)); refreshPreview(); refreshTotal(); });
+      row.querySelector(".pd-un").addEventListener("input", e => { l.unidade = e.target.value; });
+      row.querySelector(".pd-fator").addEventListener("input", e => { l.fator_embalagem = e.target.value===""?null:parseFloat(e.target.value); refreshPreview(); if(alertaEl) alertaEl.innerHTML = alertaPrecoHtml(l); });
+      row.querySelector(".pd-preco").addEventListener("input", e => { l.preco_unitario = e.target.value===""?null:parseFloat(e.target.value); row.querySelector(".val.small").textContent = fmtMoney((l.quantidade||0)*(l.preco_unitario||0)); if(alertaEl) alertaEl.innerHTML = alertaPrecoHtml(l); refreshPreview(); refreshTotal(); });
       row.querySelector(".pd-rm").addEventListener("click", () => { draft.itens.splice(i,1); if(!draft.itens.length) draft.itens.push(novaLinhaPedido()); renderLines(); refreshTotal(); });
     });
   }
@@ -8812,7 +8873,7 @@ function openPedidoModal(id, opts){
       destino_ids: dest.ids,
       semana: semanaDaData(data_pedido),
       semana_referencia: semrefVal === "" ? null : parseInt(semrefVal,10),
-      itens: itensValidos.map(l => ({ insumo_id:l.insumo_id, nome:l.nome, unidade:l.unidade, quantidade:l.quantidade, preco_unitario:l.preco_unitario||0,
+      itens: itensValidos.map(l => ({ insumo_id:l.insumo_id, nome:l.nome, unidade:l.unidade, fator_embalagem:fatorEmbalagemItem(l), quantidade:l.quantidade, preco_unitario:l.preco_unitario||0,
         ...(existing ? (() => { const orig=(existing.itens||[]).find(o=>o.insumo_id===l.insumo_id); return orig && orig.quantidade_recebida!=null ? {quantidade_recebida:orig.quantidade_recebida} : {}; })() : {}) })),
       valor_total: valorTotalItensPedido(itensValidos),
       observacoes: document.getElementById("pd-obs").value.trim() || null,
