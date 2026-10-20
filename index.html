@@ -10249,17 +10249,13 @@ async function loadPcpConfig(){
   if(error) return; // não trava o módulo por falta de config (margem fica em 0%)
   (data || []).forEach(row => pcpConfig.set(row.chave, row));
 }
-function pcpMargemPct(){
-  const c = pcpConfig.get("geral");
-  const v = c && Number(c.margem_pct);
-  return isFinite(v) && v > 0 ? v : 0;
-}
-async function pcpSalvarMargem(pct){
-  const row = { chave: "geral", margem_pct: (pct > 0 ? pct : null), alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
-  const { error } = await sb.from('pcp_config').upsert(row);
-  if(error){ showAlert("Erro ao salvar margem de produção: " + error.message); return; }
-  pcpConfig.set("geral", { ...(pcpConfig.get("geral")||{}), ...row });
-}
+// Ajuste de margem de produção REMOVIDO (20/10/2026, pedido do Marcelo — "não quero mais ter esse
+// ajuste"). Em vez de desmontar o parâmetro `margemPct` de ~15 funções de PCP/impressão (risco alto numa
+// sessão só), a função passou a retornar sempre 0 — todo `fator = 1 + (margemPct||0)/100` que ainda existe
+// no código vira sempre 1, ou seja, margem nunca mais é aplicada em lugar nenhum (Produção, Volume,
+// impressões, print em lote da Requisição/Açougue). Valor antigo gravado em pcp_config.margem_pct (se
+// houver) fica órfão no banco, sem efeito.
+function pcpMargemPct(){ return 0; }
 
 // ---------- Fase 2: Açougue — não existe hoje campo estruturado no cadastro de insumos pra dizer se uma
 // proteína chega em natura (passa pelo açougue) ou já pronta (vai direto pra cozinha) — confirmado com o
@@ -10389,6 +10385,17 @@ function pcpSetorDoGrupo(grupo){
   if(grupo === "SOBREMESA") return "sobremesas";
   return "cozinha";
 }
+// ---------- Itens fora do PAPEL (20/10/2026, pedido do Marcelo) ----------
+// Suco, kit talher e embalagem de marmita continuam na TELA (cozinha/produção ainda precisa saber que
+// existem), mas saem da IMPRESSÃO — Ordem de produção, Receitas da produção e Volume por cliente. Suco sai
+// pelo grupo da receita (SUCO SIMPLES/SUCO NATURAL, mesmo prefixo de pcpSetorDoGrupo acima). Talher e
+// embalagem de marmita são itens diretos (sem ficha, grupo EXTRA — ex. "KIT TALHER", "MARMITA MÉDIA C/
+// TAMPA UNI", "MARMITA DIVISÓRIAS C/TAMPA UNI", confirmado no banco) e não têm um grupo próprio hoje pra
+// filtrar por grupo, então o filtro é pelo nome do item. Se amanhã entrar um insumo novo com "marmita" ou
+// "talher" no nome que NÃO seja embalagem/talher (pouco provável), vai sumir do papel também — ponto cego
+// aceito, mais simples que criar um campo novo só pra isso agora.
+function pcpReceitaEntraImpressao(r){ return !/^SUCO/.test(r.grupo || ""); }
+function pcpDiretoEntraImpressao(d){ return !/TALHER|MARMITA/i.test(d.nome || ""); }
 // CORREÇÃO (mesma sessão, antes de ir pra Fase 2): cheguei a tratar Salada/Sobremesa/Suco como "porção"
 // e ficha "servida por unidade" como "un.", copiando uma distinção que existia no protótipo antigo
 // (artifact). Não existe aqui — confirmei no código real: `gramagem_kg` é tratado como kg de verdade em
@@ -11400,11 +11407,7 @@ function pcpProducaoHtml(res, margemPct){
   return `
     <div class="panel">
       <div class="panel-head">
-        <h3><i class="ico" data-lucide="chef-hat"></i>Receitas a produzir</h3>
-        <div style="display:flex; gap:8px; align-items:center;">
-          <span class="hint">${margemPct ? `com margem de ${fmtNum(margemPct,1)}% incluída` : "sem margem"}</span>
-          <button class="btn small ghost" id="pcp-imprimir-receitas-producao">Imprimir receitas desta produção</button>
-        </div>
+        <h3><i class="ico" data-lucide="chef-hat"></i>Volume do dia</h3>
       </div>
       <div class="panel-body">
         <div class="table-wrap"><table><thead>${theadReceita}</thead><tbody>${linhasReceita || `<tr><td colspan="${nCols}" class="empty-state">—</td></tr>`}</tbody></table></div>
@@ -11479,8 +11482,7 @@ function pcpProducaoAmbasHtml(listaRes, margemPct){
   return `
     <div class="panel">
       <div class="panel-head">
-        <h3><i class="ico" data-lucide="chef-hat"></i>Receitas a produzir — Matriz e Filial lado a lado</h3>
-        <span class="hint">${margemPct ? `com margem de ${fmtNum(margemPct,1)}% incluída` : "sem margem"}</span>
+        <h3><i class="ico" data-lucide="chef-hat"></i>Volume do dia — Matriz e Filial lado a lado</h3>
       </div>
       <div class="panel-body">
         <div class="table-wrap"><table><thead>${thead}</thead><tbody>${linhas}</tbody></table></div>
@@ -11674,7 +11676,7 @@ function pcpImprimirReceitaUnica(res, margemPct, fichaId){
 // (Fase 4), que entram ANTES das receitas principais (pra cozinha preparar a base primeiro).
 function pcpImprimirReceitasProducao(res, margemPct){
   const fator = 1 + (margemPct || 0) / 100;
-  const comFicha = res.receitas.filter(r => r.fichaId);
+  const comFicha = res.receitas.filter(r => r.fichaId && pcpReceitaEntraImpressao(r));
   const subs = res.subs || [];
   if(!comFicha.length && !subs.length){ showAlert("Nenhuma receita com ficha técnica nesta produção."); return; }
   const corpoSubs = subs.map(s => pcpReceitaBlocoHtml(s.fichaId, s.nome + " (sub-receita)", s.total * fator)).join("");
@@ -11687,7 +11689,7 @@ function pcpImprimirReceitasProducao(res, margemPct){
 function pcpImprimirOrdemProducao(res, margemPct, setorFiltro){
   const fator = 1 + (margemPct || 0) / 100;
   const nomesSetor = {todos:"Todos os setores", cozinha:"Composição principal", saladas:"Saladas", sobremesas:"Sobremesas"};
-  const lista = res.receitas.filter(r => setorFiltro === "todos" || pcpSetorDoGrupo(r.grupo) === setorFiltro);
+  const lista = res.receitas.filter(r => (setorFiltro === "todos" || pcpSetorDoGrupo(r.grupo) === setorFiltro) && pcpReceitaEntraImpressao(r));
   if(!lista.length){ showAlert(`Nenhuma receita no setor "${nomesSetor[setorFiltro]}" nesta produção.`); return; }
   let grupoAtual = null;
   const linhas = lista.map(r => {
@@ -11794,8 +11796,8 @@ function pcpImprimirVolumePorCliente(res, margemPct){
   const fator = 1 + (margemPct || 0) / 100;
   const blocosClientes = res.clientes.map(cli => {
     const linhas = [];
-    res.receitas.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: r.nome, qtd: p.qtd, fichaId: r.fichaId}); });
-    res.diretos.forEach(d => { const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: d.nome, qtd: p.qtd, unidade: d.unidade}); });
+    res.receitas.filter(pcpReceitaEntraImpressao).forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: r.nome, qtd: p.qtd, fichaId: r.fichaId}); });
+    res.diretos.filter(pcpDiretoEntraImpressao).forEach(d => { const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: d.nome, qtd: p.qtd, unidade: d.unidade}); });
     if(!linhas.length) return "";
     const substCli = pcpListaSubstituicoes(res.dia, cli.id);
     const avisoSubst = substCli.length ? `<div style="background:#fff3cd; border:1px solid #e0a800; border-radius:4px; padding:6px 10px; margin-bottom:6px; font-size:12.5px;">
@@ -11810,13 +11812,13 @@ function pcpImprimirVolumePorCliente(res, margemPct){
     </div>`;
   }).join("");
   let grupoAtual = null;
-  const linhasTotais = res.receitas.map(r => {
+  const linhasTotais = res.receitas.filter(pcpReceitaEntraImpressao).map(r => {
     const novo = r.grupo !== grupoAtual; grupoAtual = r.grupo;
     const kg = r.total * fator;
     return (novo ? `<tr><th colspan="3" style="background:#f0f0f0;">${escapeHtml(r.grupo)}</th></tr>` : "") +
       `<tr><td>${escapeHtml(r.nome)}</td><td class="peso destaque">${pcpFmtQtd(kg)}</td><td class="peso">${pcpCubaTxt(r.fichaId, kg)}</td></tr>`;
   }).join("");
-  const linhasDiretos = res.diretos.map(d => `<tr><td>${escapeHtml(d.nome)}</td><td class="peso destaque">${fmtNum(d.total*fator,2)} ${escapeHtml(d.unidade||"")}</td><td class="peso">—</td></tr>`).join("");
+  const linhasDiretos = res.diretos.filter(pcpDiretoEntraImpressao).map(d => `<tr><td>${escapeHtml(d.nome)}</td><td class="peso destaque">${fmtNum(d.total*fator,2)} ${escapeHtml(d.unidade||"")}</td><td class="peso">—</td></tr>`).join("");
   const corpo = `
     <h2>Volume por cliente (líquido, sem margem — pra encher a cuba)</h2>
     ${blocosClientes || "<p>Nada a produzir neste dia.</p>"}
@@ -14128,11 +14130,7 @@ async function renderPCP(){
       <button class="btn small ghost" id="pcp-rotas-gerenciar">Gerenciar rotas</button>
     </div>` : `
     <div style="display:flex; align-items:center; gap:8px;">
-      <label style="margin:0; font-size:12px; color:var(--text-muted);">Margem de produção</label>
-      <input type="number" id="pcp-margem" step="0.1" min="0" value="${margemPct || ""}" placeholder="0" style="width:70px;">
-      <span style="font-size:12px; color:var(--text-muted);">%</span>
-      <button class="btn small ghost" id="pcp-margem-salvar">Salvar</button>
-      <button class="btn small primary" id="pcp-imprimir-volume" style="margin-left:6px;">Volume total</button>
+      <button class="btn small primary" id="pcp-imprimir-volume">Volume total</button>
       <button class="btn small primary" id="pcp-imprimir-etiquetas">Imprimir etiquetas</button>
     </div>`;
 
@@ -14293,29 +14291,28 @@ async function renderPCP(){
     ) : `
       <div class="es-kpis" style="margin-bottom:16px;">
         <div class="vn-card"><div class="vn-label">Pessoas previstas</div><div class="vn-value">${fmtNum(res.pessoasTot,0)}</div>${ehProducaoAmbas ? `<div class="vn-sub">Matriz ${fmtNum(listaRes[0].pessoasTot,0)} · Filial ${fmtNum(listaRes[1].pessoasTot,0)}</div>` : ""}</div>
-        <div class="vn-card"><div class="vn-label">Kg a produzir (sem margem)</div><div class="vn-value">${fmtNum(res.kgTotal,1)}</div>${ehProducaoAmbas ? `<div class="vn-sub">Matriz ${fmtNum(listaRes[0].kgTotal,1)} · Filial ${fmtNum(listaRes[1].kgTotal,1)}</div>` : ""}</div>
-        <div class="vn-card${margemPct ? " ok" : ""}"><div class="vn-label">Kg com margem (${fmtNum(margemPct||0,1)}%)</div><div class="vn-value">${fmtNum(res.kgTotal*(1+(margemPct||0)/100),1)}</div></div>
+        <div class="vn-card"><div class="vn-label">Kg a produzir</div><div class="vn-value">${fmtNum(res.kgTotal,1)}</div>${ehProducaoAmbas ? `<div class="vn-sub">Matriz ${fmtNum(listaRes[0].kgTotal,1)} · Filial ${fmtNum(listaRes[1].kgTotal,1)}</div>` : ""}</div>
         <div class="vn-card"><div class="vn-label">Receitas</div><div class="vn-value">${res.receitas.length}</div>${ehProducaoAmbas ? `<div class="vn-sub">Matriz ${listaRes[0].receitas.length} · Filial ${listaRes[1].receitas.length}</div>` : ""}</div>
         <div class="vn-card"><div class="vn-label">Clientes</div><div class="vn-value">${res.clientes.length}</div>${ehProducaoAmbas ? `<div class="vn-sub">Matriz ${listaRes[0].clientes.length} · Filial ${listaRes[1].clientes.length}</div>` : ""}</div>
       </div>
       ${res.servicos.length > 1 ? `<div class="es-kpis inner" style="margin-bottom:16px;">
         ${res.servicos.map(id => `<div class="vn-card"><div class="vn-label">${PCP_TURNOS.find(t=>t.id===id).nome}</div><div class="vn-value">${fmtNum(res.receitas.reduce((s,r)=>pcpGrupoForaDoPeso(r.grupo)?s:s+(r.porTurno[id]||0),0),1)} kg</div></div>`).join("")}
       </div>` : ""}
-      ${pcpConferirHtml(res)}
       ${!ehProducaoAmbas ? `<div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px;">
-        <span class="footnote" style="margin:0;">Imprimir ordem de produção:</span>
+        <span class="footnote" style="margin:0;">Imprimir:</span>
         <button class="btn small ghost" data-pcp-ordem="todos">Todos os setores</button>
         <button class="btn small ghost" data-pcp-ordem="cozinha">Composição principal</button>
         <button class="btn small ghost" data-pcp-ordem="saladas">Saladas</button>
         <button class="btn small ghost" data-pcp-ordem="sobremesas">Sobremesas</button>
-        <span style="flex:1 1 auto;"></span>
-        <button class="btn small ghost" id="pcp-imprimir-cardapios-dia">Imprimir cardápios do dia</button>
-      </div>` : `<p class="footnote" style="margin:0 0 14px;">Pra imprimir a ordem de produção ou as receitas do dia inteiras, escolha Matriz ou Filial acima — impressão por cozinha, nunca as duas juntas numa folha só. <button class="btn small ghost" id="pcp-imprimir-cardapios-dia" style="margin-left:6px;">Imprimir cardápios do dia</button></p>`}
+        <button class="btn small ghost" id="pcp-imprimir-receitas-producao">Receitas do dia</button>
+        <button class="btn small ghost" id="pcp-imprimir-cardapios-dia">Cardápios do dia</button>
+      </div>` : `<p class="footnote" style="margin:0 0 14px;">Pra imprimir a ordem de produção ou as receitas do dia inteiras, escolha Matriz ou Filial acima — impressão por cozinha, nunca as duas juntas numa folha só. <button class="btn small ghost" id="pcp-imprimir-cardapios-dia" style="margin-left:6px;">Cardápios do dia</button></p>`}
       ${ehProducaoAmbas ? pcpProducaoAmbasHtml(listaRes, margemPct) : pcpProducaoHtml(res, margemPct)}
       <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="scale"></i>Volume por cliente</h3><span class="hint">volume líquido por cliente, sem margem — o que vai pra etiqueta da cuba</span></div>
       ${ehProducaoAmbas
         ? `<p class="footnote" style="margin:0 0 10px; font-weight:600;">Matriz</p>${pcpVolumeHtml(listaRes[0])}<p class="footnote" style="margin:16px 0 10px; font-weight:600;">Filial</p>${pcpVolumeHtml(listaRes[1])}`
         : pcpVolumeHtml(res)}
+      ${pcpConferirHtml(res)}
     `}
   `;
 
@@ -14466,11 +14463,6 @@ async function renderPCP(){
   } else if(ehPesos){
     pcpPesosBind(content);
   } else {
-    document.getElementById("pcp-margem-salvar").addEventListener("click", async () => {
-      const v = parseFloat(document.getElementById("pcp-margem").value);
-      await pcpSalvarMargem(isFinite(v) ? v : null);
-      renderPCP();
-    });
     document.getElementById("pcp-imprimir-volume").addEventListener("click", async () => {
       if(!(await pcpConfirmarSubstituicoesRevisadas(res.dia, unidadeFiltro))) return;
       pcpImprimirVolumePorCliente(res, margemPct);
