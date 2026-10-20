@@ -12764,7 +12764,7 @@ function pcpSalSobProducaoPorCliente(res){
 }
 function pcpImprimirSalSobProducaoDia(porCliente, semana, dia, unidadeLabel){
   const paginas = porCliente.map(c => `<div style="page-break-after:always; break-inside:avoid; border:1px solid #333; border-radius:8px; padding:20px; max-width:480px;">
-    <div style="font-size:11px; color:#666; margin-bottom:4px;">${escapeHtml(rotuloSemana(semana))} · ${escapeHtml(DIA_LABEL[dia]||dia)} · ${escapeHtml(unidadeLabel)}</div>
+    <div style="font-size:11px; color:#666; margin-bottom:4px;">${escapeHtml(rotuloSemana(semana))} · ${escapeHtml(DIA_LABEL[dia]||dia)} · ${escapeHtml(fmtDataCompleta(dataDoDia(semana, dia)))} · ${escapeHtml(unidadeLabel)}</div>
     <div style="font-size:20px; font-weight:700; margin-bottom:10px;">${escapeHtml(c.nome)}</div>
     <table style="width:100%; border-collapse:collapse; font-size:13px;">${c.linhas.map(l => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(l.prato)} <span class="footnote" style="margin:0;">(${escapeHtml(l.grupo)})</span></td><td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(l.qtd,2)}</td></tr>`).join("")}</table>
     <div style="margin-top:14px; font-size:13px; font-weight:700; display:flex; justify-content:space-between; border-top:1px solid #333; padding-top:6px;"><span>Total</span><span>${fmtNum(c.total,2)}</span></div>
