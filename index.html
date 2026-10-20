@@ -14103,7 +14103,7 @@ function pcpPesosBind(content){
 
 async function renderPCP(){
   document.getElementById("page-title").textContent = "PCP";
-  document.getElementById("page-desc").textContent = "Planejamento da produção do dia: cardápio × previsão de atendimento (mesmo motor da Lista de compra) = quanto produzir de cada receita, o volume líquido por cliente pra etiqueta da cuba, café/padaria terceirizado, substituições, pesos de expedição, açougue, requisição do estoque e expedição.";
+  document.getElementById("page-desc").textContent = "";
   const opcoesSemana = pcpOpcoesSemana();
   if(pcpSemanaSel === null || !opcoesSemana.includes(pcpSemanaSel)) pcpSemanaSel = opcoesSemana[opcoesSemana.length - 1];
   const margemPct = pcpMargemPct();
