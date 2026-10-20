@@ -13794,17 +13794,20 @@ function pcpSubstGradeBlocoHtml(res, itens){
   const cab2 = `<tr>${servs.map(() => itens.map(it => `<th style="text-align:center; font-size:10.5px;" title="${escapeHtml(it.nome)}">${escapeHtml(it.nome.split(/[ /]/)[0])}</th>`).join("")).join("")}</tr>`;
   const linhas = clis.map(c => {
     const totalCli = servs.reduce((s, sv) => s + itens.reduce((s2, it) => s2 + (Number(valor(c.id, sv.id, it.fichaId)) || 0), 0), 0);
-    return `<tr><td class="name-cell">${escapeHtml(c.nome)}<div class="footnote" style="margin:1px 0 0;">${servs.filter(sv => c.porServico[sv.id] > 0).map(sv => `${sv.nome.slice(0,3)} ${fmtNum(c.porServico[sv.id],0)}`).join(" · ")}</div></td>
-      ${servs.map(sv => itens.map(it => c.porServico[sv.id] > 0
-        ? `<td class="num-cell"><input type="number" min="0" step="1" class="subst-grid-cel" data-cli="${c.id}" data-serv="${sv.id}" data-ficha="${it.fichaId}" data-max="${c.porServico[sv.id]}" value="${valor(c.id, sv.id, it.fichaId)}" style="width:62px; text-align:right; padding:4px 6px;"></td>`
-        : `<td class="num-cell footnote">—</td>`).join("")).join("")}
-      <td class="num-cell destaque">${totalCli ? fmtNum(totalCli,0) : "—"}</td></tr>`;
+    const celulas = servs.map(sv => itens.map(it => {
+      if(!(c.porServico[sv.id] > 0)) return `<td class="num-cell footnote">—</td>`;
+      const v = valor(c.id, sv.id, it.fichaId);
+      return `<td class="num-cell"><input type="number" min="0" step="1" class="subst-grid-cel" data-cli="${c.id}" data-serv="${sv.id}" data-ficha="${it.fichaId}" data-max="${c.porServico[sv.id]}" data-orig="${v}" value="${v}" style="width:62px; text-align:right; padding:4px 6px;"></td>`;
+    }).join("")).join("");
+    return `<tr data-subst-linha-cli="${c.id}"><td class="name-cell">${escapeHtml(c.nome)}<div class="footnote" style="margin:1px 0 0;">${servs.filter(sv => c.porServico[sv.id] > 0).map(sv => `${sv.nome.slice(0,3)} ${fmtNum(c.porServico[sv.id],0)}`).join(" · ")}</div></td>
+      ${celulas}
+      <td class="num-cell destaque" data-subst-total-cli="${c.id}">${totalCli ? fmtNum(totalCli,0) : "—"}</td></tr>`;
   }).join("");
   const totalColuna = (servId, fichaId) => clis.reduce((s, c) => s + (Number(valor(c.id, servId, fichaId)) || 0), 0);
   const totalGeral = servs.reduce((s, sv) => s + itens.reduce((s2, it) => s2 + totalColuna(sv.id, it.fichaId), 0), 0);
-  const rodape = `<tr style="font-weight:600; background:var(--surface-alt);"><td>Total</td>${servs.map(sv => itens.map(it => { const t = totalColuna(sv.id, it.fichaId); return `<td class="num-cell">${t ? fmtNum(t,0) : "—"}</td>`; }).join("")).join("")}<td class="num-cell">${totalGeral ? fmtNum(totalGeral,0) : "—"}</td></tr>`;
+  const rodape = `<tr style="font-weight:600; background:var(--surface-alt);"><td>Total</td>${servs.map(sv => itens.map(it => { const t = totalColuna(sv.id, it.fichaId); return `<td class="num-cell" data-subst-total-col="${sv.id}|${it.fichaId}">${t ? fmtNum(t,0) : "—"}</td>`; }).join("")).join("")}<td class="num-cell" data-subst-total-geral="1">${totalGeral ? fmtNum(totalGeral,0) : "—"}</td></tr>`;
   return `<div class="panel-head" style="border:none; padding-left:0;"><h3 style="font-size:14px;">${escapeHtml(nomeUnidadeCompra(res.unidade))}</h3><span class="hint">${clis.length} cliente(s) atendido(s)</span></div>
-    <div class="table-wrap"><table><thead>${cab1}${cab2}</thead><tbody>${linhas}</tbody><tfoot>${rodape}</tfoot></table></div>`;
+    <div class="table-wrap" data-subst-tabela="${res.unidade}"><table><thead>${cab1}${cab2}</thead><tbody>${linhas}</tbody><tfoot>${rodape}</tfoot></table></div>`;
 }
 function pcpSubstituicoesHtml(listaRes, unidadeFiltro){
   const itens = pcpItensSubstitutos;
@@ -13825,10 +13828,77 @@ function pcpSubstituicoesHtml(listaRes, unidadeFiltro){
       </div></div>`;
   const blocos = listaRes.map(res => pcpSubstGradeBlocoHtml(res, itens)).join(`<div style="height:22px;"></div>`);
   return gerenciar + banner +
-    `<div class="panel" style="margin-bottom:14px;"><div class="panel-body"><p class="footnote" style="margin:0;">Um pra um: cada pessoa trocada tira 1 porção da proteína do cardápio naquele serviço e soma 1 unidade do item escolhido — digite direto na grade, salva sozinho a cada célula alterada. O mesmo lançamento aparece na Conferência de expedição, na produção e nas etiquetas.</p></div></div>
+    `<div class="panel" style="margin-bottom:14px;"><div class="panel-body" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+      <p class="footnote" style="margin:0;">Um pra um: cada pessoa trocada tira 1 porção da proteína do cardápio naquele serviço e soma 1 unidade do item escolhido — digite direto na grade e clique em Salvar. O lançamento salvo aparece na Conferência de expedição, na produção e nas etiquetas.</p>
+      <button type="button" class="btn small primary" id="pcp-subst-salvar" data-subst-salvar="1">Salvar substituições</button>
+    </div></div>
     <div class="panel"><div class="panel-body">${blocos}</div></div>`;
 }
+// 20/10/2026, pedido do Marcelo ("quero ter um botão para salvar"): a grade deixou de salvar sozinha a cada
+// célula (autosave on blur). Agora digitar só recalcula os totais NA TELA (sem gravar nada, sem renderPCP por
+// tecla — mesmo padrão "fica ao vivo" da aba Peso por prato/pcpPesosBind) e um botão único "Salvar
+// substituições" grava no banco só as células que o usuário de fato alterou (comparando com data-orig) e só
+// então chama renderPCP() uma vez pra atualizar tudo a partir do banco.
+function pcpSubstRecalcularTabela(tabela){
+  const porLinha = {}, porColuna = {};
+  let total = 0;
+  tabela.querySelectorAll("input.subst-grid-cel").forEach(inp => {
+    const v = Number(inp.value) || 0;
+    const { cli, serv, ficha } = inp.dataset;
+    porLinha[cli] = (porLinha[cli] || 0) + v;
+    const key = `${serv}|${ficha}`;
+    porColuna[key] = (porColuna[key] || 0) + v;
+    total += v;
+  });
+  tabela.querySelectorAll("[data-subst-total-cli]").forEach(td => {
+    const t = porLinha[td.dataset.substTotalCli] || 0;
+    td.textContent = t ? fmtNum(t,0) : "—";
+  });
+  tabela.querySelectorAll("[data-subst-total-col]").forEach(td => {
+    const t = porColuna[td.dataset.substTotalCol] || 0;
+    td.textContent = t ? fmtNum(t,0) : "—";
+  });
+  const tdGeral = tabela.querySelector("[data-subst-total-geral]");
+  if(tdGeral) tdGeral.textContent = total ? fmtNum(total,0) : "—";
+}
+function pcpSubstMarcarSuja(inp){
+  const suja = inp.value.trim() !== (inp.dataset.orig || "");
+  inp.style.background = suja ? "var(--warn-soft)" : "";
+  inp.style.fontWeight = suja ? "600" : "";
+}
 function pcpSubstituicoesBind(content, semana, dia, unidade, listaRes){
+  content.addEventListener("input", e => {
+    const inp = e.target.closest("input.subst-grid-cel");
+    if(!inp) return;
+    const tabela = inp.closest("[data-subst-tabela]");
+    if(tabela) pcpSubstRecalcularTabela(tabela);
+    pcpSubstMarcarSuja(inp);
+  });
+  content.addEventListener("change", e => {
+    const inp = e.target.closest("input.subst-grid-cel");
+    if(!inp) return;
+    const tabela = inp.closest("[data-subst-tabela]");
+    const { cli: contratoId, serv: servico } = inp.dataset;
+    const max = Number(inp.dataset.max);
+    const raw = inp.value.trim();
+    const reverter = () => { inp.value = inp.dataset.orig || ""; if(tabela) pcpSubstRecalcularTabela(tabela); pcpSubstMarcarSuja(inp); };
+    if(raw !== "" && (!(Number(raw) >= 0) || Math.round(Number(raw)) !== Number(raw))){
+      showAlert("Use números inteiros (pessoas)."); reverter(); return;
+    }
+    const pessoas = raw === "" ? 0 : Number(raw);
+    // soma com os OUTROS itens do mesmo cliente/serviço JÁ NA TELA (ainda não salvos) — não pode passar do
+    // efetivo daquele serviço. Lê do DOM, não do banco, porque com o Salvar em lote o banco só é atualizado
+    // depois de clicar em Salvar.
+    const outros = tabela ? Array.from(tabela.querySelectorAll(`input.subst-grid-cel[data-cli="${contratoId}"][data-serv="${servico}"]`))
+      .filter(x => x !== inp).reduce((s,x) => s + (Number(x.value) || 0), 0) : 0;
+    if(outros + pessoas > max){
+      showAlert(`Passa do efetivo deste serviço: ${fmtNum(outros,0)} já lançado(s) em outro(s) item(ns) + ${fmtNum(pessoas,0)} > ${fmtNum(max,0)} pessoas.`);
+      reverter(); return;
+    }
+    inp.value = raw === "" ? "" : String(pessoas);
+    if(tabela) pcpSubstRecalcularTabela(tabela);
+    pcpSubstMarcarSuja(inp);
+  });
   content.addEventListener("click", async e => {
     const btnImprimirLista = e.target.closest("button[data-subst-imprimir-lista]");
     if(btnImprimirLista){ pcpImprimirListaSubstituicoes(listaRes); return; }
@@ -13845,35 +13915,29 @@ function pcpSubstituicoesBind(content, semana, dia, unidade, listaRes){
     if(btnItemDel){
       const ok = await confirmDialog("Remover este item da lista de colunas da grade? Substituições já lançadas com ele continuam valendo na produção, só saem da tela de lançamento.");
       if(ok && await pcpRemoverItemSubstituto(btnItemDel.dataset.substItemRemover)) renderPCP();
+      return;
     }
-  });
-  content.addEventListener("change", async e => {
-    const inp = e.target.closest("input.subst-grid-cel");
-    if(!inp) return;
-    const { cli: contratoId, serv: servico, ficha: fichaId } = inp.dataset;
-    const max = Number(inp.dataset.max);
-    const raw = inp.value.trim();
-    if(raw !== "" && (!(Number(raw) >= 0) || Math.round(Number(raw)) !== Number(raw))){
-      showAlert("Use números inteiros (pessoas)."); renderPCP(); return;
+    const btnSalvar = e.target.closest("button[data-subst-salvar]");
+    if(btnSalvar){
+      const sujas = Array.from(content.querySelectorAll("input.subst-grid-cel")).filter(inp => inp.value.trim() !== (inp.dataset.orig || ""));
+      if(!sujas.length){ showAlert("Nenhuma alteração pra salvar."); return; }
+      btnSalvar.disabled = true; btnSalvar.textContent = "Salvando...";
+      for(const inp of sujas){
+        const { cli: contratoId, serv: servico, ficha: fichaId } = inp.dataset;
+        const raw = inp.value.trim();
+        const pessoas = raw === "" ? 0 : Number(raw);
+        const existente = pcpListaSubstituicoes(dia, contratoId).find(s => s.servico === servico && s.fichaId === fichaId);
+        if(pessoas <= 0){
+          if(existente) await pcpRemoverSubstituicao(existente.id);
+        } else {
+          // unidade REAL do contrato, não o filtro da tela — ver nota em pcpAjustesBind/16/10/2026.
+          const ct = contratos.get(contratoId);
+          if(!ct || !ct.unidade){ showAlert(`Não achei a unidade do contrato de ${inp.closest("tr")?.querySelector(".name-cell")?.textContent || contratoId} — esse lançamento não foi salvo, os outros sim.`); continue; }
+          await pcpSalvarSubstituicao(semana, dia, ct.unidade, contratoId, fichaId, pessoas, servico);
+        }
+      }
+      renderPCP();
     }
-    const pessoas = raw === "" ? 0 : Number(raw);
-    // soma com os OUTROS itens do mesmo cliente/serviço (não só esta célula) — não pode passar do efetivo
-    // daquele serviço, mesma validação que o protótipo antigo fazia antes de salvar.
-    const outros = pcpListaSubstituicoes(dia, contratoId).filter(s => s.servico === servico && s.fichaId !== fichaId).reduce((s,x) => s + x.pessoas, 0);
-    if(outros + pessoas > max){
-      showAlert(`Passa do efetivo deste serviço: ${fmtNum(outros,0)} já lançado(s) em outro(s) item(ns) + ${fmtNum(pessoas,0)} > ${fmtNum(max,0)} pessoas.`);
-      renderPCP(); return;
-    }
-    const existente = pcpListaSubstituicoes(dia, contratoId).find(s => s.servico === servico && s.fichaId === fichaId);
-    if(pessoas <= 0){
-      if(existente) await pcpRemoverSubstituicao(existente.id);
-    } else {
-      // unidade REAL do contrato, não o filtro da tela — ver nota em pcpAjustesBind/16/10/2026.
-      const ct = contratos.get(contratoId);
-      if(!ct || !ct.unidade){ showAlert("Não achei a unidade deste contrato — não salvei a substituição."); renderPCP(); return; }
-      await pcpSalvarSubstituicao(semana, dia, ct.unidade, contratoId, fichaId, pessoas, servico);
-    }
-    renderPCP();
   });
 }
 
