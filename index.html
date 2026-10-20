@@ -12463,7 +12463,7 @@ function pcpMapaSemanaHtml(mapaSemana, unidadeLabel){
   if(!mapaSemana.cortes.length) return `<div class="panel" style="margin-bottom:14px;"><div class="panel-head"><h3>Mapa da semana</h3></div><div class="panel-body"><div class="empty-state">Sem cortes na semana.</div></div></div>`;
   const cab = mapaSemana.porDia.map(pd => `<th style="text-align:right;">${DIA_LABEL[pd.dia].slice(0,3)}<div class="footnote" style="margin:2px 0 0;">prep. ${DIA_LABEL[pd.prep].slice(0,3)}</div></th>`).join("");
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3>Mapa da semana</h3><span class="hint">${escapeHtml(unidadeLabel)} — kg por dia de produção; "prep." é quando o açougue corta pra cobrir aquele dia</span><button class="btn small primary" id="pcp-mapa-sem-imprimir" style="margin-left:auto;">Imprimir semana</button></div>
+    <div class="panel-head"><h3>Mapa da semana</h3><button class="btn small primary" id="pcp-mapa-sem-imprimir" style="margin-left:auto;">Imprimir semana</button></div>
     <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Corte</th>${cab}<th style="text-align:right;">Total</th></tr></thead><tbody>
       ${mapaSemana.cortes.map(c => `<tr><td class="name-cell">${escapeHtml(c.nome)}</td>${c.porDia.map(q => `<td class="num-cell">${q ? fmtNum(q,2) : "—"}</td>`).join("")}<td class="num-cell"><strong>${fmtNum(c.total,2)} ${escapeHtml(c.unidade)}</strong></td></tr>`).join("")}
     </tbody></table></div>
@@ -14451,7 +14451,7 @@ async function renderPCP(){
       ${pcpMapaSemanaHtml(mapaSemana, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial")}
       ${pcpAcgPreparoSemanaHtml(acgPreparoSemana, pcpAcgPreparoDiasSel)}
       ${pcpEtiquetasCarnesHtml(acgMapaCarnesSemana)}
-      <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="calendar-range"></i>Semana inteira — por dia de uso</h3><span class="hint">Segunda→Domingo, já com retirada avulsa e Custo do dia · escolha os dias · imprimir não baixa estoque — use "Dar baixa" pra lançar no kardex de verdade (e "Desfazer" se for engano)</span></div>
+      <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="calendar-range"></i>Semana inteira — por dia de uso</h3></div>
       ${pcpReqSemanaSecaoHtml(acgSemana, pcpAcgDiasSel, pcpSemanaSel, unidadeFiltro, "acougue")}
     ` : ehEstoque ? (
       pcpPainelAreaHtml([
@@ -14467,7 +14467,7 @@ async function renderPCP(){
           reqCobertura.porDia.map(d => pcpReqDiaHtml(d, pcpSemanaSel)).join("")}
       `)
     ) + `
-      <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="calendar-range"></i>Semana inteira — por dia de uso</h3><span class="hint">Segunda→Domingo, já com retirada avulsa e Custo do dia · escolha os dias · imprimir não baixa estoque — use "Dar baixa" pra lançar no kardex de verdade (e "Desfazer" se for engano)</span></div>
+      <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="calendar-range"></i>Semana inteira — por dia de uso</h3></div>
       ${pcpReqSemanaSecaoHtml(reqSemana, pcpReqDiasSel, pcpSemanaSel, unidadeFiltro, "estoque")}
     ` : ehConferencia ? (
       !unidadeFiltro
