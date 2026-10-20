@@ -13530,6 +13530,23 @@ async function pcpCafeRemoverCliente(contratoId){
   for(const it of itens){ await pcpCafeRemoverItem(it.id); }
   return true;
 }
+// 20/10/2026, pedido do Marcelo: "cada cliente deve ter a opção de escolha da padaria que atende" — hoje o
+// fornecedor fica gravado por ITEM (cafe_padaria_itens.fornecedor_id), escolhido só no momento de cadastrar
+// cada produto; não existia um lugar único "esta é a padaria deste cliente". Esta função unifica: 1 UPDATE
+// que grava o mesmo fornecedor_id em TODOS os itens ativos do cliente de uma vez (não precisa criar coluna
+// nova em contratos — o dado já é por item, só a TELA não deixava ver/trocar de forma unificada).
+async function pcpCafeSalvarFornecedorCliente(contratoId, fornecedorId){
+  const { error } = await sb.from('cafe_padaria_itens').update({fornecedor_id: fornecedorId || null, alterado_em: new Date().toISOString(), alterado_por: usuarioId || null}).eq('contrato_id', contratoId).eq('ativo', true);
+  if(error){ showAlert("Erro ao salvar a padaria do cliente: " + error.message); return false; }
+  return true;
+}
+// fornecedor "representante" do cliente (o do 1º item) + aviso se os itens estiverem com padarias
+// diferentes entre si (resquício de cadastro item a item, antes de existir esta escolha única).
+function pcpCafeFornecedorClienteInfo(contratoId){
+  const itens = cafePadariaItens.get(contratoId) || [];
+  const ids = new Set(itens.map(i => i.fornecedor_id).filter(Boolean));
+  return { fornecedorId: itens[0] ? itens[0].fornecedor_id : null, misto: ids.size > 1 };
+}
 function pcpCafeGrupoLabel(g){ return {fixo:"Fixo", variavel:"Variável", per_capita:"Per cápita", servico:"Serviço"}[g] || g; }
 function pcpCafeHtml(unidadeFiltro, ymd, diaLabel){
   const fornecedoresPad = pcpCafeFornecedores();
@@ -13551,7 +13568,8 @@ function pcpCafeHtml(unidadeFiltro, ymd, diaLabel){
     const itens = (cafePadariaItens.get(cli.id) || []).slice().sort((a,b) => a.ordem - b.ordem);
     const pedidoRow = cafePadariaPedidoDiaCache.get(cli.id);
     const temPerCapita = itens.some(i => i.grupo === "per_capita");
-    const fornecedorIdPadrao = itens[0] ? itens[0].fornecedor_id : (fornecedoresPad[0] ? fornecedoresPad[0].id : "");
+    const fiCliente = pcpCafeFornecedorClienteInfo(cli.id);
+    const fornecedorIdPadrao = fiCliente.fornecedorId || (fornecedoresPad[0] ? fornecedoresPad[0].id : "");
     const linhas = itens.map(it => {
       const ef = pcpCafeValorEfetivo(it, ymd, pedidoRow, pedidoRow ? pedidoRow.hospedes_previstos : null);
       const badge = it.grupo === "servico" ? `<span class="chip neutral">Serviço</span>`
@@ -13573,6 +13591,10 @@ function pcpCafeHtml(unidadeFiltro, ymd, diaLabel){
         <button type="button" class="btn small ghost" data-cafe-excluir-cliente="${cli.id}">Remover cliente</button></div>
       <div class="panel-body" style="padding:10px 14px;">
         <div style="display:flex; gap:14px; flex-wrap:wrap; margin-bottom:10px;">
+          <div class="field" style="max-width:170px; margin:0;"><label style="font-size:11px;">Padaria que atende</label>
+            <select class="cafe-fornecedor-cliente" data-cafe-fornecedor-cliente="${cli.id}">${fornecedoresPad.map(f => `<option value="${f.id}" ${f.id === fiCliente.fornecedorId ? "selected" : ""}>${escapeHtml(f.nome)}</option>`).join("")}</select>
+            ${fiCliente.misto ? `<div class="footnote" style="color:var(--critical); margin:2px 0 0;">produtos deste cliente estão com padarias diferentes entre si — escolher aqui unifica todos</div>` : ""}
+          </div>
           ${temPerCapita ? `<div class="field" style="max-width:240px; margin:0;"><label style="font-size:11px;">Hóspedes previstos (${escapeHtml(diaLabel)})</label><input type="number" min="0" step="1" class="cafe-hospedes" data-cafe-hosp="${cli.id}" value="${pedidoRow && pedidoRow.hospedes_previstos != null ? pedidoRow.hospedes_previstos : ""}" placeholder="informar à tarde"></div>` : ""}
           <div class="field" style="max-width:160px; margin:0;"><label style="font-size:11px;">Horário de entrega</label><input type="text" class="cafe-horario" data-cafe-horario="${cli.id}" value="${escapeHtml(contratos.get(cli.id)?.cafe_horario_entrega || "")}" placeholder="ex.: 7h00"></div>
         </div>
@@ -13595,7 +13617,10 @@ function pcpCafeHtml(unidadeFiltro, ymd, diaLabel){
 
   return `
     ${dlProdutos}
-    <div class="panel" style="margin-bottom:14px;"><div class="panel-body"><div class="footnote" style="margin:0;">Pedido de <b>${escapeHtml(diaLabel)}, ${escapeHtml(fmtDataYMD(ymd))}</b>. O valor cobrado do cliente não muda aqui — só o que é pedido à padaria.</div></div></div>
+    <div class="panel" style="margin-bottom:14px;"><div class="panel-body" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+      <div class="footnote" style="margin:0;">Pedido de <b>${escapeHtml(diaLabel)}, ${escapeHtml(fmtDataYMD(ymd))}</b>. O valor cobrado do cliente não muda aqui — só o que é pedido à padaria. "Salvar pedido do dia" confirma quem falta confirmar (pula quem depende de hóspedes previstos ainda sem número) e já gera o pedido de compra de cada padaria — que já abate do orçamento, sem passo extra.</div>
+      <button type="button" class="btn small primary" id="cafe-salvar-pedido-dia">Salvar pedido do dia</button>
+    </div></div>
     ${blocoNovo}
     <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(320px,1fr)); gap:14px; margin-bottom:16px;">${cards}</div>
     <div class="panel"><div class="panel-body">
@@ -13684,6 +13709,36 @@ async function pcpCafeGerarPedido(fornecedorId, ymd, semana){
   }
   return grupos;
 }
+// 20/10/2026, pedido do Marcelo: "deve ter um botão salvar pedido do dia. acionando ele deve ser feito os
+// pedidos de compras e já abater no orçamento." Antes disso era 2 passos manuais (confirmar cada cliente 1
+// por 1 e depois clicar "Gerar pedido" de cada padaria) — continuam existindo pra quem quiser controle fino,
+// mas este botão único faz tudo de uma vez: confirma quem ainda não tinha confirmado hoje (pulando quem
+// depende de hóspedes previstos ainda não informados — não dá pra confirmar um per_capita sem o número) e
+// gera/atualiza o pedido de compra de TODAS as padarias envolvidas. Gerar pedido já grava em `pedidos`, que
+// é a mesma tabela que o Orçamento usa pra "Comprado" (recalculado ao vivo) — não existe um passo separado
+// de "abater", então salvar o pedido do dia já abate sozinho, sem código extra aqui.
+// Ignora o filtro Matriz/Filial da tela de propósito (mesmo princípio já aplicado em "Gerar pedido" na v111
+// — o pedido real nunca pode depender do que está sendo visualizado no momento).
+async function pcpCafeSalvarPedidoDoDiaGlobal(ymd, semana){
+  const todosClientes = pcpCafeClientesUnidade(null);
+  const pulados = [];
+  for(const cli of todosClientes){
+    const pedidoRow = cafePadariaPedidoDiaCache.get(cli.id);
+    if(pedidoRow && pedidoRow.confirmado) continue; // já confirmado — não reabre sozinho
+    const itens = cafePadariaItens.get(cli.id) || [];
+    const semHospedes = itens.some(it => pcpCafeValorEfetivo(it, ymd, pedidoRow, pedidoRow ? pedidoRow.hospedes_previstos : null).origem === "sem_hospedes");
+    if(semHospedes){ pulados.push(cli.nome_cliente); continue; }
+    await pcpCafeSalvarPedidoDia(cli.id, ymd, {confirmado: true});
+  }
+  const fornecedoresEnvolvidos = pcpCafeFornecedores().filter(f => todosClientes.some(c => (cafePadariaItens.get(c.id) || []).some(i => i.fornecedor_id === f.id)));
+  const resumo = [];
+  for(const f of fornecedoresEnvolvidos){
+    if(!pcpCafeMontarPedidosDia(f.id, ymd).length) continue; // nada confirmado pra essa padaria — nem chama Gerar (evita alerta de "nenhum confirmado" sem sentido aqui)
+    const grupos = await pcpCafeGerarPedido(f.id, ymd, semana);
+    if(grupos) grupos.forEach(g => resumo.push(`${f.nome} · ${nomeUnidadeCompra(g.unidade)}: ${fmtMoney(g.valor_total)}`));
+  }
+  return { resumo, pulados };
+}
 function pcpCafeBind(content, unidadeFiltro, ymd, diaLabel, semana){
   content.querySelectorAll(".cafe-valor").forEach(inp => inp.addEventListener("change", async () => {
     const tr = inp.closest("tr[data-cafe-item]");
@@ -13715,6 +13770,19 @@ function pcpCafeBind(content, unidadeFiltro, ymd, diaLabel, semana){
   content.querySelectorAll("[data-cafe-excluir-cliente]").forEach(b => b.addEventListener("click", async () => {
     if(await pcpCafeRemoverCliente(b.dataset.cafeExcluirCliente)) renderPCP();
   }));
+  content.querySelectorAll(".cafe-fornecedor-cliente").forEach(sel => sel.addEventListener("change", async () => {
+    if(await pcpCafeSalvarFornecedorCliente(sel.dataset.cafeFornecedorCliente, sel.value)) renderPCP();
+  }));
+  const btnSalvarDia = content.querySelector("#cafe-salvar-pedido-dia");
+  if(btnSalvarDia) btnSalvarDia.addEventListener("click", async () => {
+    btnSalvarDia.disabled = true; btnSalvarDia.textContent = "Salvando...";
+    const { resumo, pulados } = await pcpCafeSalvarPedidoDoDiaGlobal(ymd, semana);
+    const partes = [];
+    partes.push(resumo.length ? `Pedido de compra gravado (já abate do orçamento): ${resumo.join(", ")}.` : "Nenhum pedido de compra gerado — confira se há cliente/produto confirmável hoje.");
+    if(pulados.length) partes.push(`Não confirmado automaticamente, falta informar hóspedes previstos: ${pulados.join(", ")}.`);
+    showAlert(partes.join(" "));
+    renderPCP();
+  });
   content.querySelectorAll("[data-cafe-confirmar]").forEach(b => b.addEventListener("click", async () => {
     const atual = cafePadariaPedidoDiaCache.get(b.dataset.cafeConfirmar);
     await pcpCafeSalvarPedidoDia(b.dataset.cafeConfirmar, ymd, {confirmado: !(atual && atual.confirmado)});
