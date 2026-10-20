@@ -12703,73 +12703,85 @@ function pcpFmtPorcao(q){
   if(q === null || q === undefined || !isFinite(q)) return "—";
   return fmtNum(q, 2);
 }
-// tabela de produção do dia — Cliente | Atende | Prato | Quantidade (pedido do Marcelo, 19/10/2026): uma
-// linha por cliente×prato, pra bater com o jeito que a bancada de Saladas/Sobremesas de fato trabalha
-// (separar por cliente, não por prato). O total por prato (que a cozinha usa pra saber quanto preparar no
-// total) fica numa segunda tabela, logo abaixo — informação que a tela antiga (agrupada por prato) dava e
-// que não devia sumir só porque a ordem das colunas mudou.
-function pcpSalSobLinhasPorClientePrato(res){
-  const linhas = [];
-  pcpSalSobLinhasDia(res, PCP_SALSOB_GRUPOS_CENTRAL).forEach(r => {
-    [...r.porCliente.values()].forEach(pc => {
-      if(!(pc.qtd > 0)) return;
-      linhas.push({ cliente: pc.nome, atende: pc.pessoas, prato: r.nome, grupo: r.grupo, qtd: pc.qtd, fichaId: r.fichaId });
-    });
-  });
-  return linhas.sort((a,b) => a.cliente.localeCompare(b.cliente,'pt-BR') || a.grupo.localeCompare(b.grupo,'pt-BR') || a.prato.localeCompare(b.prato,'pt-BR'));
-}
-function pcpSalSobProducaoHtml(res, trocasAposImpressao){
-  const linhasCliente = pcpSalSobLinhasPorClientePrato(res);
-  const alertaReimpressao = (trocasAposImpressao && trocasAposImpressao.length)
-    ? `<div class="chip critical" style="display:block; white-space:normal; height:auto; padding:8px 10px; margin-bottom:12px;">⚠ Cardápio alterado após a última impressão — ${trocasAposImpressao.length} troca${trocasAposImpressao.length===1?"":"s"} extraordinária${trocasAposImpressao.length===1?"":"s"} registrada${trocasAposImpressao.length===1?"":"s"} depois de imprimir. Reimprima antes de mandar pra bancada.</div>`
-    : "";
-  if(!linhasCliente.length) return `<div class="panel" style="margin-bottom:14px;"><div class="panel-body">${alertaReimpressao}<div class="empty-state">Nenhuma salada ou sobremesa prevista para este dia.</div></div></div>`;
-  const corpo = linhasCliente.map(l =>
-    `<tr><td class="name-cell">${escapeHtml(l.cliente)}</td><td class="num-cell">${fmtNum(l.atende,0)}</td><td>${escapeHtml(l.prato)} <span class="footnote" style="margin:0;">(${escapeHtml(l.grupo)})</span></td><td class="num-cell">${pcpFmtPorcao(l.qtd)}</td></tr>`
-  ).join("");
-  const totaisPorPrato = pcpSalSobLinhasDia(res, PCP_SALSOB_GRUPOS_CENTRAL);
-  let grupoAtual = null;
-  const corpoTotais = totaisPorPrato.map(r => {
-    const novoGrupo = r.grupo !== grupoAtual; grupoAtual = r.grupo;
-    return (novoGrupo ? `<tr><th colspan="3" style="background:var(--surface-alt); font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted);">${escapeHtml(r.grupo)}</th></tr>` : "") +
-      `<tr><td class="name-cell">${escapeHtml(r.nome)}</td><td class="num-cell">${pcpFmtPorcao(r.total)}</td><td class="num-cell">${r.fichaId ? `<button class="btn small primary" data-pcp-imprimir-receita="${r.fichaId}" title="Imprimir esta receita">${iconeImprimir()}</button>` : "—"}</td></tr>`;
-  }).join("");
-  return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3><i class="ico" data-lucide="salad"></i>Produção do dia</h3><span class="hint">Cliente, opção e quantidade — Salada e Sobremesa (sem Suco)</span><button class="btn small primary" id="pcp-salsob-producao-imprimir" style="margin-left:auto;">Imprimir por cliente</button></div>
-    <div class="panel-body">${alertaReimpressao}<div class="table-wrap"><table><thead><tr><th>Cliente</th><th style="text-align:right;">Atende</th><th>Opção</th><th style="text-align:right;">Quantidade</th></tr></thead><tbody>${corpo}</tbody></table></div>
-    </div>
-  </div>
-  <div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3 style="font-size:14px;">Total a preparar</h3><span class="hint">Soma por opção — pra bancada saber quanto fazer no total</span></div>
-    <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Opção</th><th style="text-align:right;">Quantidade</th><th></th></tr></thead><tbody>${corpoTotais}</tbody></table></div></div>
-  </div>`;
-}
-// 19/10/2026, pedido do Marcelo: a impressão da produção do dia precisa sair SEPARADA POR CLIENTE (não por
-// prato, que é como a tela mostra) — 1 ficha por cliente com todos os pratos de salada/sobremesa que ele
-// recebe naquele dia, no mesmo estilo de "Fichas de corte" do Açougue (pcpImprimirFichasCorte: 1 cartão
-// por página, com campo de assinatura em branco). Suco removido do escopo (mesma mudança da tela, ver
-// pcpSalSobProducaoHtml) — continua de fora de propósito, não é esquecimento.
+// 20/10/2026, pedido do Marcelo: as duas tabelas (Produção do dia por cliente + Total a preparar) viram
+// UMA SÓ, Total primeiro e depois cliente a cliente — e cada cliente pode ser desmarcado pra sair do total
+// E da impressão (ex.: cidade atendida em feriado naquele dia). A exclusão é só de tela/sessão (não grava
+// no banco), por dia (pcpSalSobExcluidos: dia -> Set(contratoId)) — decisão operacional do dia, não um
+// cadastro permanente; se recarregar a página, volta tudo marcado.
+let pcpSalSobExcluidos = new Map();
+function pcpSalSobExcluidosDoDia(dia){ return pcpSalSobExcluidos.get(dia) || new Set(); }
+// 19/10/2026, pedido do Marcelo: 1 bloco por cliente com todos os pratos de salada/sobremesa que ele
+// recebe naquele dia, no mesmo estilo de "Fichas de corte" do Açougue. Suco fica de fora de propósito.
 function pcpSalSobProducaoPorCliente(res){
-  const porCliente = new Map(); // contratoId -> {nome, linhas:[{prato,grupo,qtd}], total}
+  const porCliente = new Map(); // contratoId -> {id, nome, pessoas, linhas:[{prato,grupo,qtd,fichaId}], total}
   pcpSalSobLinhasDia(res, PCP_SALSOB_GRUPOS_CENTRAL).forEach(r => {
     [...r.porCliente.values()].forEach(pc => {
       if(!(pc.qtd > 0)) return;
-      const c = porCliente.get(pc.contratoId) || { nome: pc.nome, linhas: [], total: 0 };
-      c.linhas.push({ prato: r.nome, grupo: r.grupo, qtd: pc.qtd });
+      const c = porCliente.get(pc.contratoId) || { id: pc.contratoId, nome: pc.nome, pessoas: pc.pessoas, linhas: [], total: 0 };
+      c.linhas.push({ prato: r.nome, grupo: r.grupo, qtd: pc.qtd, fichaId: r.fichaId });
       c.total += pc.qtd;
       porCliente.set(pc.contratoId, c);
     });
   });
   return [...porCliente.values()].sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR'));
 }
-function pcpImprimirSalSobProducaoDia(porCliente, semana, dia, unidadeLabel){
-  const paginas = porCliente.map(c => `<div style="page-break-after:always; break-inside:avoid; border:1px solid #333; border-radius:8px; padding:20px; max-width:480px;">
+// total a preparar SÓ dos clientes incluídos (não desmarcados) — mesma soma por opção que a tela antiga
+// tirava direto de res.receitas, mas agora precisa respeitar a exclusão, então soma a partir das linhas por
+// cliente já filtradas.
+function pcpSalSobTotalPreparar(porClienteIncluidos){
+  const porOpcao = new Map(); // "grupo|prato" -> {nome, grupo, qtd, fichaId}
+  porClienteIncluidos.forEach(c => c.linhas.forEach(l => {
+    const chave = `${l.grupo}|${l.prato}`;
+    const cur = porOpcao.get(chave) || { nome: l.prato, grupo: l.grupo, qtd: 0, fichaId: l.fichaId };
+    cur.qtd += l.qtd;
+    porOpcao.set(chave, cur);
+  }));
+  return [...porOpcao.values()].sort((a,b) => a.grupo.localeCompare(b.grupo,'pt-BR') || b.qtd - a.qtd);
+}
+function pcpSalSobProducaoHtml(res, trocasAposImpressao, dia){
+  const porClienteTudo = pcpSalSobProducaoPorCliente(res);
+  const alertaReimpressao = (trocasAposImpressao && trocasAposImpressao.length)
+    ? `<div class="chip critical" style="display:block; white-space:normal; height:auto; padding:8px 10px; margin-bottom:12px;">⚠ Cardápio alterado após a última impressão — ${trocasAposImpressao.length} troca${trocasAposImpressao.length===1?"":"s"} extraordinária${trocasAposImpressao.length===1?"":"s"} registrada${trocasAposImpressao.length===1?"":"s"} depois de imprimir. Reimprima antes de mandar pra bancada.</div>`
+    : "";
+  if(!porClienteTudo.length) return `<div class="panel" style="margin-bottom:14px;"><div class="panel-body">${alertaReimpressao}<div class="empty-state">Nenhuma salada ou sobremesa prevista para este dia.</div></div></div>`;
+  const excluidos = pcpSalSobExcluidosDoDia(dia);
+  const incluidos = porClienteTudo.filter(c => !excluidos.has(c.id));
+  const totalPreparar = pcpSalSobTotalPreparar(incluidos);
+  let grupoAtual = null;
+  const linhasTotal = totalPreparar.map(o => {
+    const novoGrupo = o.grupo !== grupoAtual; grupoAtual = o.grupo;
+    return (novoGrupo ? `<tr><th colspan="3" style="background:var(--surface-alt); font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted);">${escapeHtml(o.grupo)}</th></tr>` : "") +
+      `<tr><td class="name-cell">${escapeHtml(o.nome)}</td><td class="num-cell">${pcpFmtPorcao(o.qtd)}</td><td class="num-cell">${o.fichaId ? `<button class="btn small primary" data-pcp-imprimir-receita="${o.fichaId}" title="Imprimir esta receita">${iconeImprimir()}</button>` : "—"}</td></tr>`;
+  }).join("");
+  const blocosCliente = porClienteTudo.map(c => {
+    const excluido = excluidos.has(c.id);
+    const linhasC = c.linhas.map(l => `<tr style="${excluido ? "opacity:.45;" : ""}"><td class="name-cell" style="padding-left:28px;">${escapeHtml(l.prato)} <span class="footnote" style="margin:0;">(${escapeHtml(l.grupo)})</span></td><td class="num-cell">${pcpFmtPorcao(l.qtd)}</td><td></td></tr>`).join("");
+    return `<tr style="background:var(--surface-alt);"><td colspan="3"><label style="display:flex; align-items:center; gap:8px; font-weight:600; cursor:pointer; margin:0;"><input type="checkbox" class="salsob-cli-incluir" data-salsob-cli="${escapeHtml(c.id)}" ${excluido ? "" : "checked"}> ${escapeHtml(c.nome)} <span class="footnote" style="margin:0; font-weight:400;">atende ${fmtNum(c.pessoas,0)} · ${excluido ? "fora do total e da impressão" : `total ${pcpFmtPorcao(c.total)}`}</span></label></td></tr>${linhasC}`;
+  }).join("");
+  return `<div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head"><h3><i class="ico" data-lucide="salad"></i>Produção do dia</h3><span class="hint">Total a preparar primeiro, depois cliente a cliente — desmarque um cliente pra tirar do total e da impressão (ex.: cidade em feriado)</span><button class="btn small primary" id="pcp-salsob-producao-imprimir" style="margin-left:auto;">Imprimir</button></div>
+    <div class="panel-body">${alertaReimpressao}<div class="table-wrap"><table><thead><tr><th>Opção / Cliente</th><th style="text-align:right;">Quantidade</th><th></th></tr></thead><tbody>
+      <tr><th colspan="3" style="background:var(--surface-alt); text-transform:uppercase; letter-spacing:.04em; font-size:11.5px;">Total a preparar${excluidos.size ? ` <span class="footnote" style="text-transform:none; font-weight:400; margin:0;">(sem ${excluidos.size} cliente${excluidos.size===1?"":"s"} desmarcado${excluidos.size===1?"":"s"})</span>` : ""}</th></tr>
+      ${linhasTotal || `<tr><td colspan="3" class="footnote" style="margin:0;">Nenhum cliente incluído no total.</td></tr>`}
+      ${blocosCliente}
+    </tbody></table></div>
+    </div>
+  </div>`;
+}
+function pcpImprimirSalSobProducaoDia(porClienteIncluidos, totalPreparar, semana, dia, unidadeLabel){
+  const paginaTotal = `<div style="page-break-after:always; break-inside:avoid; border:1px solid #333; border-radius:8px; padding:20px; max-width:480px;">
+    <div style="font-size:11px; color:#666; margin-bottom:4px;">${escapeHtml(rotuloSemana(semana))} · ${escapeHtml(DIA_LABEL[dia]||dia)} · ${escapeHtml(fmtDataCompleta(dataDoDia(semana, dia)))} · ${escapeHtml(unidadeLabel)}</div>
+    <div style="font-size:20px; font-weight:700; margin-bottom:10px;">Total a preparar</div>
+    <table style="width:100%; border-collapse:collapse; font-size:13px;">${totalPreparar.map(o => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(o.nome)} <span class="footnote" style="margin:0;">(${escapeHtml(o.grupo)})</span></td><td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(o.qtd,2)}</td></tr>`).join("") || `<tr><td>Nenhum cliente incluído.</td></tr>`}</table>
+  </div>`;
+  const paginasCliente = porClienteIncluidos.map(c => `<div style="page-break-after:always; break-inside:avoid; border:1px solid #333; border-radius:8px; padding:20px; max-width:480px;">
     <div style="font-size:11px; color:#666; margin-bottom:4px;">${escapeHtml(rotuloSemana(semana))} · ${escapeHtml(DIA_LABEL[dia]||dia)} · ${escapeHtml(fmtDataCompleta(dataDoDia(semana, dia)))} · ${escapeHtml(unidadeLabel)}</div>
     <div style="font-size:20px; font-weight:700; margin-bottom:10px;">${escapeHtml(c.nome)}</div>
     <table style="width:100%; border-collapse:collapse; font-size:13px;">${c.linhas.map(l => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(l.prato)} <span class="footnote" style="margin:0;">(${escapeHtml(l.grupo)})</span></td><td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(l.qtd,2)}</td></tr>`).join("")}</table>
     <div style="margin-top:14px; font-size:13px; font-weight:700; display:flex; justify-content:space-between; border-top:1px solid #333; padding-top:6px;"><span>Total</span><span>${fmtNum(c.total,2)}</span></div>
     <div style="margin-top:30px; border-top:1px dashed #999; padding-top:8px; font-size:11px; color:#666;">Separado por: ______________________________</div>
   </div>`).join("");
+  const paginas = paginaTotal + paginasCliente;
   const w = window.open("", "_blank");
   if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Produção do dia — Saladas/Sobremesas</title>
@@ -14519,7 +14531,7 @@ async function renderPCP(){
       // escondido no fim da tela como "Cardápio do dia" — ver nota grande acima de pcpSalSobCardapioDiaHtml),
       // etiqueta por último (é ação de impressão, não parte do fluxo de planejamento do dia).
       pcpSalSobMapaSemanaHtml(salSobMapaSemana, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial") +
-      pcpSalSobProducaoHtml(res, salSobTrocasAposImpressao) +
+      pcpSalSobProducaoHtml(res, salSobTrocasAposImpressao, pcpDiaSel) +
       pcpSalSobCardapioDiaHtml(salSobCardapiosUsados, pcpSemanaSel, pcpDiaSel) +
       pcpSalSobEtiquetasHtml(salSobEtqLinhas)
     ) : `
@@ -14594,10 +14606,18 @@ async function renderPCP(){
     // registra o horário da impressão (19/10/2026) ANTES de abrir o print — é o que alimenta o alerta
     // "cardápio alterado após impressão" numa próxima troca; sempre reimprime, mesmo se o registro falhar.
     if(btnProducao) btnProducao.addEventListener("click", async () => {
+      const excluidos = pcpSalSobExcluidosDoDia(pcpDiaSel);
+      const incluidos = pcpSalSobProducaoPorCliente(res).filter(c => !excluidos.has(c.id));
       await pcpRegistrarImpressaoSalSob(pcpSemanaSel, pcpDiaSel, pcpUnidadeSel);
-      pcpImprimirSalSobProducaoDia(pcpSalSobProducaoPorCliente(res), pcpSemanaSel, pcpDiaSel, unidadeLabel);
+      pcpImprimirSalSobProducaoDia(incluidos, pcpSalSobTotalPreparar(incluidos), pcpSemanaSel, pcpDiaSel, unidadeLabel);
       renderPCP();
     });
+    content.querySelectorAll(".salsob-cli-incluir").forEach(chk => chk.addEventListener("change", () => {
+      const set = pcpSalSobExcluidos.get(pcpDiaSel) || new Set();
+      if(chk.checked) set.delete(chk.dataset.salsobCli); else set.add(chk.dataset.salsobCli);
+      pcpSalSobExcluidos.set(pcpDiaSel, set);
+      renderPCP();
+    }));
     const btnMapaSem = document.getElementById("pcp-salsob-mapa-sem-imprimir");
     if(btnMapaSem) btnMapaSem.addEventListener("click", () => pcpImprimirSalSobMapaSemana(salSobMapaSemana, pcpSemanaSel, unidadeLabel));
     const btnEtiquetas = document.getElementById("pcp-salsob-etiquetas-abrir");
