@@ -12735,13 +12735,13 @@ function pcpSalSobProducaoHtml(res, trocasAposImpressao){
       `<tr><td class="name-cell">${escapeHtml(r.nome)}</td><td class="num-cell">${pcpFmtPorcao(r.total)}</td><td class="num-cell">${r.fichaId ? `<button class="btn small primary" data-pcp-imprimir-receita="${r.fichaId}" title="Imprimir esta receita">${iconeImprimir()}</button>` : "—"}</td></tr>`;
   }).join("");
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3><i class="ico" data-lucide="salad"></i>Produção do dia</h3><span class="hint">Salada e Sobremesa, por cliente — quantidade em porções (sem Suco)</span><button class="btn small primary" id="pcp-salsob-producao-imprimir" style="margin-left:auto;">Imprimir por cliente</button></div>
-    <div class="panel-body">${alertaReimpressao}<div class="table-wrap"><table><thead><tr><th>Cliente</th><th style="text-align:right;">Atende</th><th>Prato</th><th style="text-align:right;">Quantidade</th></tr></thead><tbody>${corpo}</tbody></table></div>
+    <div class="panel-head"><h3><i class="ico" data-lucide="salad"></i>Produção do dia</h3><span class="hint">Cliente, opção e quantidade — Salada e Sobremesa (sem Suco)</span><button class="btn small primary" id="pcp-salsob-producao-imprimir" style="margin-left:auto;">Imprimir por cliente</button></div>
+    <div class="panel-body">${alertaReimpressao}<div class="table-wrap"><table><thead><tr><th>Cliente</th><th style="text-align:right;">Atende</th><th>Opção</th><th style="text-align:right;">Quantidade</th></tr></thead><tbody>${corpo}</tbody></table></div>
     </div>
   </div>
   <div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3 style="font-size:14px;">Total a preparar</h3><span class="hint">Soma por prato — pra bancada saber quanto fazer no total</span></div>
-    <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Prato</th><th style="text-align:right;">Quantidade</th><th></th></tr></thead><tbody>${corpoTotais}</tbody></table></div></div>
+    <div class="panel-head"><h3 style="font-size:14px;">Total a preparar</h3><span class="hint">Soma por opção — pra bancada saber quanto fazer no total</span></div>
+    <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Opção</th><th style="text-align:right;">Quantidade</th><th></th></tr></thead><tbody>${corpoTotais}</tbody></table></div></div>
   </div>`;
 }
 // 19/10/2026, pedido do Marcelo: a impressão da produção do dia precisa sair SEPARADA POR CLIENTE (não por
@@ -13035,7 +13035,7 @@ function pcpSalSobTrocasAposImpressao(dia, unidadeSel, numsDoDia){
 // troca — é a "visão só salada/sobremesa do cardápio geral" que o Marcelo pediu, já com a troca embutida.
 function pcpSalSobCardapioDiaHtml(cardapiosUsados, semana, dia){
   if(!cardapiosUsados.length){
-    return `<div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="refresh-cw"></i>Cardápio do dia — Salada/Sobremesa</h3></div>
+    return `<div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="refresh-cw"></i>Ajuste do dia — troca de opção (fornecedor não entregou etc.)</h3></div>
     <div class="panel"><div class="panel-body"><div class="empty-state">Nenhum cliente com cardápio de refeição/marmita configurado para este dia.</div></div></div>`;
   }
   const blocos = cardapiosUsados.map(c => {
@@ -13053,7 +13053,7 @@ function pcpSalSobCardapioDiaHtml(cardapiosUsados, semana, dia){
       <div class="panel-body"><div class="table-wrap"><table><tbody>${linhas}</tbody></table></div>${trocasHtml}</div>
     </div>`;
   }).join("");
-  return `<div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="refresh-cw"></i>Cardápio do dia — Salada/Sobremesa</h3><span class="hint">Visão filtrada do cardápio geral · "Trocar" edita de verdade o cardápio deste dia — vale pra todos os clientes do mesmo modelo, listados abaixo de cada um</span></div>
+  return `<div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="refresh-cw"></i>Ajuste do dia — troca de opção (fornecedor não entregou etc.)</h3><span class="hint">Visão filtrada do cardápio geral, só Salada/Sobremesa · "Trocar" edita de verdade o cardápio deste dia — vale pra todos os clientes do mesmo modelo, listados abaixo de cada um</span></div>
   ${blocos}`;
 }
 // modal de troca — escolhe a ficha substituta (só do mesmo grupo, Salada ou Sobremesa) e o motivo; mostra
@@ -14513,10 +14513,15 @@ async function renderPCP(){
           {label:"Clientes atendidos", valor: res.clientes.length}
         ];
       })()) +
-      pcpSalSobProducaoHtml(res, salSobTrocasAposImpressao) +
+      // 20/10/2026, pedido do Marcelo ("área confusa"): ordem reorganizada pra bater com o jeito que ele
+      // descreveu a área — visão da semana primeiro (mesmo estilo do Mapa da semana do Açougue), depois a
+      // produção do dia (cliente/opção/quantidade), depois o ajuste/troca esporádica (já existia, só estava
+      // escondido no fim da tela como "Cardápio do dia" — ver nota grande acima de pcpSalSobCardapioDiaHtml),
+      // etiqueta por último (é ação de impressão, não parte do fluxo de planejamento do dia).
       pcpSalSobMapaSemanaHtml(salSobMapaSemana, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial") +
-      pcpSalSobEtiquetasHtml(salSobEtqLinhas) +
-      pcpSalSobCardapioDiaHtml(salSobCardapiosUsados, pcpSemanaSel, pcpDiaSel)
+      pcpSalSobProducaoHtml(res, salSobTrocasAposImpressao) +
+      pcpSalSobCardapioDiaHtml(salSobCardapiosUsados, pcpSemanaSel, pcpDiaSel) +
+      pcpSalSobEtiquetasHtml(salSobEtqLinhas)
     ) : `
       <div class="es-kpis" style="margin-bottom:16px;">
         <div class="vn-card"><div class="vn-label">Pessoas previstas</div><div class="vn-value">${fmtNum(res.pessoasTot,0)}</div>${ehProducaoAmbas ? `<div class="vn-sub">Matriz ${fmtNum(listaRes[0].pessoasTot,0)} · Filial ${fmtNum(listaRes[1].pessoasTot,0)}</div>` : ""}</div>
