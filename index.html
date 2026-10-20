@@ -14036,9 +14036,12 @@ function pcpSubstituicoesBind(content, semana, dia, unidade, listaRes){
 // corresponde a 1 único serviço, porque produtoId determina o serviço 1:1 (pcpTurnoDoProduto), então não
 // precisa de nenhuma quebra adicional por turno aqui. `pc.produtoId == null` é a chave injetada por
 // substituição de proteína (ver pcpAplicarSubstituicoesReceitas) — essa não é ajustável nesta tela.
+// 20/10/2026, pedido do Marcelo: ajuste manual não se aplica a Suco nem Sobremesa (também tirado de Peso
+// por prato, mais abaixo) — só prato principal/guarnição/salada.
+function pcpAjustesGrupoEntra(grupo){ return !/^(SUCO|SOBREMESA)/.test((grupo || "").toUpperCase()); }
 function pcpAjustesLinhas(res){
   const porCliente = new Map();
-  res.receitas.forEach(r => {
+  res.receitas.filter(r => pcpAjustesGrupoEntra(r.grupo)).forEach(r => {
     r.porCliente.forEach(pc => {
       if(!pc.produtoId) return;
       const servico = pcpTurnoDoProduto(pc.produtoId);
@@ -14068,7 +14071,7 @@ function pcpAjustesHtml(res){
         </tr>`).join("")}</tbody>
       </table></div></div>
     </div>`).join("");
-  return `<div class="panel" style="margin-bottom:14px;"><div class="panel-body"><p class="footnote" style="margin:0;">Ajuste manual do valor efetivo de uma receita pra um cliente, num serviço específico — ex.: cliente pediu mais, sobra da véspera. O valor digitado SUBSTITUI o calculado só nesta produção deste dia (não muda custo nem compra) e some se você remover o ajuste. Motivo é obrigatório, observação é livre — os dois ficam guardados pra consulta depois.</p></div></div>
+  return `<div class="panel" style="margin-bottom:14px;"><div class="panel-body"><p class="footnote" style="margin:0;">Ajuste manual do valor efetivo de uma receita pra um cliente, num serviço específico — ex.: cliente pediu mais, sobra da véspera. O valor digitado SUBSTITUI o calculado só nesta produção deste dia (não muda custo nem compra) e some se você remover o ajuste. Motivo é obrigatório, observação é livre — os dois ficam guardados pra consulta depois. Use o filtro Almoço/Jantar/Ceia no topo pra ver só o(s) serviço(s) que te interessa; suco e sobremesa não entram aqui (nem em Peso por prato, abaixo).</p></div></div>
     ${cards}`;
 }
 function pcpAjustesBind(content, semana, dia){
@@ -14128,6 +14131,9 @@ function pesoExpSemanaCliente(contratoId, ct, semana){
         if(!it.ficha_id || it.gramagem_kg === null || it.gramagem_kg === undefined) return;
         const f = fichas.get(it.ficha_id);
         if(!f) return;
+        // 20/10/2026, pedido do Marcelo: Peso por prato não se aplica a Suco nem Sobremesa (mesmo filtro de
+        // pcpAjustesGrupoEntra, área agora fundida com Ajustes do dia).
+        if(!pcpAjustesGrupoEntra(pcpGrupoFicha(f))) return;
         const ef = gramagemKgEfetiva(it, ct);
         const baseKg = gramagemPorcaoParaKg(it.gramagem_kg, f);
         const x = itens.get(it.ficha_id) || { fichaId: it.ficha_id, nome: f.nome, categoria: it.categoria, grupo: pcpGrupoFicha(f), bases: new Set(), dias: [], pessoas: 0, kgBase: 0, kgExp: 0, custoKg: null };
@@ -14261,13 +14267,15 @@ async function renderPCP(){
   const opcoesSemana = pcpOpcoesSemana();
   if(pcpSemanaSel === null || !opcoesSemana.includes(pcpSemanaSel)) pcpSemanaSel = opcoesSemana[opcoesSemana.length - 1];
   const margemPct = pcpMargemPct();
+  // 20/10/2026: "Peso por prato" deixou de ser aba própria, fundiu em "Ajustes do dia" — se o estado em
+  // memória ainda apontar pra ela (sessão antiga), cai em ajustes em vez de ficar numa aba que não existe.
+  if(pcpSubView === "pesos") pcpSubView = "ajustes";
   const ehAcougue = pcpSubView === "acougue";
   const ehEstoque = pcpSubView === "estoque";
   const ehConferencia = pcpSubView === "conferencia";
   const ehRomaneio = pcpSubView === "romaneio";
   const ehCafe = pcpSubView === "cafe";
   const ehSubst = pcpSubView === "substituicoes";
-  const ehPesos = pcpSubView === "pesos";
   const ehAjustes = pcpSubView === "ajustes";
   const ehProducao = pcpSubView === "producao";
   const ehSalSob = pcpSubView === "saladas";
@@ -14279,7 +14287,7 @@ async function renderPCP(){
     </div>` : ehConferencia ? (pcpUnidadeSel !== "todos" ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small primary" id="pcp-conf-imprimir">Imprimir conferência</button>
-    </div>` : "") : (ehCafe || ehSubst || ehPesos || ehAjustes || ehSalSob) ? "" : ehRomaneio ? `
+    </div>` : "") : (ehCafe || ehSubst || ehAjustes || ehSalSob) ? "" : ehRomaneio ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-rotas-gerenciar">Gerenciar rotas</button>
     </div>` : `
@@ -14292,7 +14300,7 @@ async function renderPCP(){
   // serviços (Almoço/Jantar/Ceia, multi-seleção) se aplica em Produção, Volume por cliente, Açougue (desde
   // 17/10/2026) e, desde 18/10/2026 (pedido do Marcelo), também Requisição do estoque — antes ficava sempre
   // nos 3 serviços somados. Substituições/Pesos/Romaneio continuam como sempre foram.
-  const servicosAplicavel = ehProducao || ehAcougue || ehEstoque || ehSalSob;
+  const servicosAplicavel = ehProducao || ehAcougue || ehEstoque || ehSalSob || ehAjustes;
   const servicosFiltro = servicosAplicavel ? pcpServicosSel : null;
   // precisa carregar a semana INTEIRA (não só o dia selecionado) porque a cobertura do açougue chama a
   // Requisição de outros dias internamente — ver comentário em pcpSubstituicoesCache.
@@ -14347,7 +14355,6 @@ async function renderPCP(){
       <button type="button" data-pcpsub="substituicoes" class="${pcpSubView==="substituicoes"?"active":""}">Substituições</button>
       <button type="button" data-pcpsub="ajustes" class="${pcpSubView==="ajustes"?"active":""}">Ajustes do dia</button>
       <button type="button" data-pcpsub="cafe" class="${pcpSubView==="cafe"?"active":""}">Café / Padaria</button>
-      <button type="button" data-pcpsub="pesos" class="${pcpSubView==="pesos"?"active":""}">Peso por prato (por cliente)</button>
       <button type="button" data-pcpsub="saladas" class="${pcpSubView==="saladas"?"active":""}">Saladas / Sobremesas</button>
       <button type="button" data-pcpsub="acougue" class="${pcpSubView==="acougue"?"active":""}">Açougue</button>
       <button type="button" data-pcpsub="estoque" class="${pcpSubView==="estoque"?"active":""}">Requisição do estoque</button>
@@ -14415,7 +14422,12 @@ async function renderPCP(){
         ];
       })()) +
       pcpSubstituicoesHtml(unidadeFiltro ? [res] : listaResSubst, unidadeFiltro)
-    ) : ehPesos ? (
+    ) : ehAjustes ? (
+      pcpPainelAreaHtml([
+        {label:"Ajustes lançados hoje", valor: (pcpAjustesCache.get(pcpDiaSel) || new Map()).size}
+      ]) +
+      pcpAjustesHtml(res) +
+      `<div class="panel-head" style="margin:24px 0 10px; border:none;"><h3><i class="ico" data-lucide="scale"></i>Peso por prato (por cliente)</h3><span class="hint">peso de expedição — só refeição transportada</span></div>` +
       pcpPainelAreaHtml((() => {
         const pesoCts = pesoExpClientes(unidadeFiltro);
         const pesoComAjuste = pesoCts.filter(([,ct]) => temPesoExpedicao(ct)).length;
@@ -14425,11 +14437,6 @@ async function renderPCP(){
         ];
       })()) +
       pcpPesosHtml(unidadeFiltro, pcpSemanaSel)
-    ) : ehAjustes ? (
-      pcpPainelAreaHtml([
-        {label:"Ajustes lançados hoje", valor: (pcpAjustesCache.get(pcpDiaSel) || new Map()).size}
-      ]) +
-      pcpAjustesHtml(res)
     ) : ehSalSob ? (
       pcpPainelAreaHtml((() => {
         const salSobReceitas = res.receitas.filter(r => /^(SALADA|SOBREMESA)/.test((r.grupo||"").toUpperCase()));
@@ -14614,7 +14621,6 @@ async function renderPCP(){
     pcpSubstituicoesBind(content, pcpSemanaSel, pcpDiaSel, unidadeFiltro, unidadeFiltro ? [res] : listaResSubst);
   } else if(ehAjustes){
     pcpAjustesBind(content, pcpSemanaSel, pcpDiaSel);
-  } else if(ehPesos){
     pcpPesosBind(content);
   } else {
     document.getElementById("pcp-imprimir-volume").addEventListener("click", async () => {
