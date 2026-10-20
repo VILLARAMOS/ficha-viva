@@ -599,7 +599,7 @@ async function showApp(user){
   await carregarMeusAcessos();
   aplicarMenuPorPerfil();
   if(!possoVerView(currentView)) currentView = primeiraViewPermitida() || currentView;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadRotas(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadFornecedores(), loadConjuntosCompra(), loadAjusteSeguranca(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas(), loadPcpConfig()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadRotas(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadFornecedores(), loadConjuntosCompra(), loadAjusteSeguranca(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas(), loadPcpConfig(), loadPcpSubstituicoesTudo()]);
   goToView(currentView);
 }
 
@@ -983,6 +983,51 @@ async function loadVendas(){
   vendas = new Map();
   if (error){ showAlert('Erro ao carregar vendas: ' + error.message); return; }
   (data || []).forEach(row => vendas.set(`${row.contrato_id}|${row.semana}|${row.dia}`, row));
+}
+
+/* ---- pcp_substituicoes — TODAS (não só a semana aberta na tela de PCP, que usa pcpSubstituicoesCache,
+   um cache separado). Carregada 1x no boot junto com vendas/contratos, pra alimentar o custo real de
+   substituição (frango no lugar da proteína do cardápio etc.) dentro do CMV real — 20/10/2026, pedido do
+   Marcelo ("pode somar dentro do CMV"). Reload manual depois de salvar substituições (pcpSubstituicoesBind),
+   senão o CMV só reflete o lançamento depois de recarregar a página. ---- */
+let pcpSubstituicoesPorContrato = new Map(); // contratoId -> [{id, semana, dia, unidade, contratoId, fichaId, servico, pessoas}]
+async function loadPcpSubstituicoesTudo(){
+  const { data, error } = await sb.from('pcp_substituicoes').select('*');
+  pcpSubstituicoesPorContrato = new Map();
+  if(error){ showAlert('Erro ao carregar substituições (custo real): ' + error.message); return; }
+  (data || []).forEach(row => {
+    const item = { id: row.id, semana: row.semana, dia: row.dia, unidade: row.unidade, contratoId: row.contrato_id, fichaId: row.ficha_id, servico: row.servico || 'almoco', pessoas: row.quantidade_pessoas };
+    const lst = pcpSubstituicoesPorContrato.get(item.contratoId) || [];
+    lst.push(item);
+    pcpSubstituicoesPorContrato.set(item.contratoId, lst);
+  });
+}
+// custo real de 1 lançamento de substituição: pessoas trocadas × gramagem (kg/pessoa) da ficha substituta
+// (mesma conta de pcpGramagemSubstituicao) × custo/kg da ficha substituta (computeFicha). SEM abater o
+// custo da proteína original do cardápio — é a opção mais simples que o Marcelo escolheu (soma o extra,
+// não tenta recalcular o prato inteiro); então o CMV real sobe pelo valor cheio do substituto, não só pela
+// diferença entre os dois. Sem ficha ou sem rendimento/custo cadastrado, conta como 0 (não trava o CMV).
+function custoSubstituicao(item){
+  const f = fichas.get(item.fichaId);
+  if(!f) return 0;
+  const g = pcpGramagemSubstituicao(f);
+  if(g == null) return 0;
+  const cc = computeFicha(f, item.fichaId);
+  if(cc.custoKg == null) return 0;
+  return (item.pessoas || 0) * g * cc.custoKg;
+}
+// soma do custo de substituição de um contrato dentro de um mês — mesmo filtro "já aconteceu" que as
+// vendas usam em apurarContrato, pra não contar substituição de dia futuro que ainda nem rolou.
+function custoSubstituicoesContratoMes(contratoId, mesId, semanasMes){
+  let custo = 0, pessoas = 0;
+  (pcpSubstituicoesPorContrato.get(contratoId) || []).forEach(s => {
+    if(!semanasMes.includes(s.semana)) return;
+    if(mesDoDia(s.semana, s.dia) !== mesId) return;
+    if(!diaJaAconteceu(s.semana, s.dia)) return;
+    custo += custoSubstituicao(s);
+    pessoas += s.pessoas || 0;
+  });
+  return { custo, pessoas };
 }
 
 /* ---- ajuste de mínimo (por contrato/semana — entra só na receita apurada, sem custo/compra/PCP) ---- */
@@ -3005,6 +3050,9 @@ function realCmvCardapio(grupo, num, mesId){
       const cat = catalogoPorProduto(produtoId);
       if(cat && tiposAlvo.includes(cat.tipo_custo)){ custo += acc.custo; receita += acc.receita; registros += acc.quantidade; }
     });
+    // 20/10/2026: custo de substituição não é um produto_id vendido, então não aparece em porProduto —
+    // soma aqui direto (nunca pro grupo "cafe", PCP não lança substituição nos serviços de café).
+    if(grupo !== "cafe") custo += ap.custoSubstituicoes;
   });
   return { custo, receita, registros, cmv: receita>0 ? custo/receita : null, contratos: nomesContratos.sort((a,b)=>normalizeText(a).localeCompare(normalizeText(b))) };
 }
@@ -6780,8 +6828,17 @@ function apurarContrato(id, ct, mesId, almocoIdx, cafeIdx){
     receita = receitaItemizada;
   }
 
+  // 20/10/2026, pedido do Marcelo: custo real de substituição (ex. frango no lugar da proteína do
+  // cardápio) soma DENTRO do custoTotal do contrato — muda o CMV real que já aparece em Cardápio e Visão
+  // do Negócio, inclusive em meses passados (decisão explícita dele, avisado do efeito antes de somar).
+  const subst = custoSubstituicoesContratoMes(id, mesId, semanasMes);
+  custoTotal += subst.custo;
+  // PCP nunca lança substituição nos serviços de café (ver PCP_TURNOS), então cai sempre em "refeicao" —
+  // mantém porCategoria batendo com custoTotal (Visão do Negócio soma por categoria separado do total).
+  porCategoria.refeicao.custo += subst.custo;
+
   const cmv = receita > 0 ? custoTotal / receita : null;
-  return { custoTotal, custoTransferido, receita, receitaItemizada, receitaAjusteMinimo, quantidadeAjusteMinimo, cmv, itensSemCusto, itensSemPreco, registros, porProduto, porCategoria, franquia: franquiaInfo };
+  return { custoTotal, custoTransferido, receita, receitaItemizada, receitaAjusteMinimo, quantidadeAjusteMinimo, cmv, itensSemCusto, itensSemPreco, registros, porProduto, porCategoria, franquia: franquiaInfo, custoSubstituicoes: subst.custo, pessoasSubstituidas: subst.pessoas };
 }
 
 function apurarEventosDoMes(mesId){
@@ -13827,12 +13884,42 @@ function pcpSubstituicoesHtml(listaRes, unidadeFiltro){
         <button type="button" class="btn small primary" data-subst-imprimir-lista="1">Imprimir lista de substituições</button>
       </div></div>`;
   const blocos = listaRes.map(res => pcpSubstGradeBlocoHtml(res, itens)).join(`<div style="height:22px;"></div>`);
-  return gerenciar + banner +
+  const resumoSemana = pcpSubstCustoSemana(listaRes);
+  const resumoHtml = resumoSemana.pessoas ? `<div class="panel" style="margin-bottom:14px;"><div class="panel-body">
+      <div class="panel-head" style="border:none; padding:0 0 8px;"><h3 style="font-size:14px;">Custo de substituição — fechamento da semana</h3><span class="hint">já soma dentro do CMV real do mês, por contrato</span></div>
+      <div style="display:flex; gap:24px; flex-wrap:wrap; margin-bottom:10px;">
+        <div class="stat-block"><div class="label">Pessoas trocadas na semana</div><div class="val">${fmtNum(resumoSemana.pessoas,0)}</div></div>
+        <div class="stat-block"><div class="label">Custo extra da semana</div><div class="val">${fmtMoney(resumoSemana.custo)}</div></div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Item substituto</th><th style="text-align:right;">Pessoas</th><th style="text-align:right;">Custo</th></tr></thead><tbody>
+        ${[...resumoSemana.porFicha.entries()].map(([fid,v]) => `<tr><td>${escapeHtml(fichas.get(fid)?.nome || fid)}</td><td class="num-cell">${fmtNum(v.pessoas,0)}</td><td class="num-cell">${fmtMoney(v.custo)}</td></tr>`).join("")}
+      </tbody></table></div>
+    </div></div>` : "";
+  return gerenciar + banner + resumoHtml +
     `<div class="panel" style="margin-bottom:14px;"><div class="panel-body" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-      <p class="footnote" style="margin:0;">Um pra um: cada pessoa trocada tira 1 porção da proteína do cardápio naquele serviço e soma 1 unidade do item escolhido — digite direto na grade e clique em Salvar. O lançamento salvo aparece na Conferência de expedição, na produção e nas etiquetas.</p>
+      <p class="footnote" style="margin:0;">Um pra um: cada pessoa trocada tira 1 porção da proteína do cardápio naquele serviço e soma 1 unidade do item escolhido — digite direto na grade e clique em Salvar. O lançamento salvo aparece na Conferência de expedição, na produção e nas etiquetas, e o custo entra no CMV real do mês (painel acima, "fechamento da semana").</p>
       <button type="button" class="btn small primary" id="pcp-subst-salvar" data-subst-salvar="1">Salvar substituições</button>
     </div></div>
     <div class="panel"><div class="panel-body">${blocos}</div></div>`;
+}
+// Resumo de custo de substituição da semana aberta na tela (todas as unidades/dias visíveis em listaRes) —
+// 20/10/2026, pedido do Marcelo ("pode somar no fechamento da semana"). Lê do cache GLOBAL
+// (pcpSubstituicoesPorContrato, carregado 1x no boot e recarregado após salvar), não do cache de PCP por
+// dia — assim soma a semana inteira, não só o dia selecionado na tela.
+function pcpSubstCustoSemana(listaRes){
+  const semana = listaRes[0].semana;
+  const unidades = new Set(listaRes.map(r => r.unidade));
+  const porFicha = new Map(); // fichaId -> {pessoas, custo}
+  let custo = 0, pessoas = 0;
+  pcpSubstituicoesPorContrato.forEach(lst => lst.forEach(s => {
+    if(s.semana !== semana || !unidades.has(s.unidade)) return;
+    const c = custoSubstituicao(s);
+    custo += c; pessoas += s.pessoas || 0;
+    const f = porFicha.get(s.fichaId) || { pessoas: 0, custo: 0 };
+    f.pessoas += s.pessoas || 0; f.custo += c;
+    porFicha.set(s.fichaId, f);
+  }));
+  return { custo, pessoas, porFicha };
 }
 // 20/10/2026, pedido do Marcelo ("quero ter um botão para salvar"): a grade deixou de salvar sozinha a cada
 // célula (autosave on blur). Agora digitar só recalcula os totais NA TELA (sem gravar nada, sem renderPCP por
@@ -13936,6 +14023,9 @@ function pcpSubstituicoesBind(content, semana, dia, unidade, listaRes){
           await pcpSalvarSubstituicao(semana, dia, ct.unidade, contratoId, fichaId, pessoas, servico);
         }
       }
+      // recarrega o cache GLOBAL de substituições (pcpSubstituicoesPorContrato) além do cache da tela de
+      // PCP (que o renderPCP já recarrega) — senão o CMV real só pegaria este lançamento depois de um F5.
+      await loadPcpSubstituicoesTudo();
       renderPCP();
     }
   });
@@ -14503,13 +14593,13 @@ async function renderPCP(){
         const ct = contratos.get(btnAdd.dataset.substAdd);
         if(!ct || !ct.unidade){ showAlert("Não achei a unidade deste contrato — não salvei a substituição."); return; }
         const ok = await pcpSalvarSubstituicao(pcpSemanaSel, pcpDiaSel, ct.unidade, btnAdd.dataset.substAdd, fichaId, pessoas, servico);
-        if(ok) renderPCP();
+        if(ok){ await loadPcpSubstituicoesTudo(); renderPCP(); }
         return;
       }
       const btnDel = e.target.closest("button[data-subst-remover]");
       if(btnDel){
         const ok = await pcpRemoverSubstituicao(btnDel.dataset.substRemover);
-        if(ok) renderPCP();
+        if(ok){ await loadPcpSubstituicoesTudo(); renderPCP(); }
       }
     });
   } else if(ehRomaneio){
