@@ -11399,7 +11399,7 @@ function pcpProducaoHtml(res, margemPct){
     const substUnidades = [...r.porCliente.values()].filter(p => !p.produtoId).reduce((s,p) => s + (p.pessoas||0), 0);
     const qtdTxt = pcpFmtQtd(qtdComMargem) + (substUnidades > 0 ? ` <span class="footnote" style="margin:0;">(${fmtNum(substUnidades,0)} un. substituída${substUnidades>1?"s":""})</span>` : "");
     return (novoGrupo ? `<tr><th colspan="${nCols}" style="background:var(--surface-alt); font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted);">${escapeHtml(r.grupo)}</th></tr>` : "") +
-      `<tr><td class="name-cell">${escapeHtml(r.nome)}</td><td>${escapeHtml(r.grupo)}</td>${colsTurno}<td class="num-cell">${qtdTxt}</td><td class="num-cell">${pcpCubaTxt(r.fichaId, qtdComMargem)}</td><td class="num-cell">${r.porCliente.size}</td><td class="footnote" style="margin:0;">${[...new Set([...r.porCliente.values()].map(p => p.nome))].join(", ")}</td><td class="num-cell">${r.fichaId ? `<button class="btn small ghost" data-pcp-imprimir-receita="${r.fichaId}" title="Imprimir esta receita">${iconeImprimir()}</button>` : "—"}</td></tr>`;
+      `<tr><td class="name-cell">${escapeHtml(r.nome)}</td><td>${escapeHtml(r.grupo)}</td>${colsTurno}<td class="num-cell">${qtdTxt}</td><td class="num-cell">${pcpCubaTxt(r.fichaId, qtdComMargem)}</td><td class="num-cell">${r.porCliente.size}</td><td class="footnote" style="margin:0;">${[...new Set([...r.porCliente.values()].map(p => p.nome))].join(", ")}</td><td class="num-cell">${r.fichaId ? `<button class="btn small primary" data-pcp-imprimir-receita="${r.fichaId}" title="Imprimir esta receita">${iconeImprimir()}</button>` : "—"}</td></tr>`;
   }).join("");
   const theadReceita = mostrarBreakdown
     ? `<tr><th>Receita</th><th>Grupo</th>${servAtivos.map(t => `<th style="text-align:right;">${t.nome}</th>`).join("")}<th style="text-align:right;">Total</th><th style="text-align:right;">Cubas</th><th style="text-align:right;">Clientes</th><th>Atende</th><th></th></tr>`
@@ -11436,7 +11436,7 @@ function pcpSubsPanelHtml(subs, margemPct, unidade){
     const kg = S.total * fator;
     const usadaEmTxt = [...S.usadaEm.entries()].map(([nome, kgUso]) => `${escapeHtml(nome)} (${pcpFmtQtd(kgUso * fator)})`).join(", ");
     const attrBtn = unidade ? `data-pcp-imprimir-receita-uni="${S.fichaId}|${unidade}"` : `data-pcp-imprimir-receita="${S.fichaId}"`;
-    return `<tr><td class="name-cell">${escapeHtml(S.nome)}</td><td class="num-cell">${pcpFmtQtd(kg)}</td><td class="footnote" style="margin:0;">${usadaEmTxt}</td><td class="num-cell"><button class="btn small ghost" ${attrBtn} title="Imprimir esta sub-receita">${iconeImprimir()}</button></td></tr>`;
+    return `<tr><td class="name-cell">${escapeHtml(S.nome)}</td><td class="num-cell">${pcpFmtQtd(kg)}</td><td class="footnote" style="margin:0;">${usadaEmTxt}</td><td class="num-cell"><button class="btn small primary" ${attrBtn} title="Imprimir esta sub-receita">${iconeImprimir()}</button></td></tr>`;
   }).join("");
   return `<div class="panel">
       <div class="panel-head"><h3><i class="ico" data-lucide="layers"></i>Sub-receitas (preparar antes)</h3><span class="hint">fichas usadas como ingrediente de outra receita do dia — preparar antes de montar o prato final</span></div>
@@ -11473,7 +11473,7 @@ function pcpProducaoAmbasHtml(listaRes, margemPct){
       const r = x.porUnidade[res.unidade];
       if(!r) return `<td class="num-cell footnote">—</td><td class="num-cell footnote">—</td>`;
       const qtd = r.total * fator;
-      return `<td class="num-cell">${pcpFmtQtd(qtd)}</td><td class="num-cell">${pcpCubaTxt(fichaId, qtd)} <button class="btn small ghost" data-pcp-imprimir-receita-uni="${fichaId}|${res.unidade}" title="Imprimir a receita (${nomeUnidadeCompra(res.unidade)})">${iconeImprimir()}</button></td>`;
+      return `<td class="num-cell">${pcpFmtQtd(qtd)}</td><td class="num-cell">${pcpCubaTxt(fichaId, qtd)} <button class="btn small primary" data-pcp-imprimir-receita-uni="${fichaId}|${res.unidade}" title="Imprimir a receita (${nomeUnidadeCompra(res.unidade)})">${iconeImprimir()}</button></td>`;
     }).join("");
     return (novoGrupo ? `<tr><th colspan="${nCols}" style="background:var(--surface-alt); font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted);">${escapeHtml(x.grupo)}</th></tr>` : "") +
       `<tr><td class="name-cell">${escapeHtml(x.nome)}</td>${cols}</tr>`;
@@ -11942,7 +11942,7 @@ function pcpRomaneioHtml(grupos){
       <div class="panel-head">
         <h3>${semRota ? "Sem rota cadastrada" : escapeHtml(g.rota?.nome || "Rota")}</h3>
         <span class="hint">${g.rota?.motorista_nome ? escapeHtml(g.rota.motorista_nome)+(g.rota.veiculo?" · "+escapeHtml(g.rota.veiculo):"")+" · " : ""}${g.clientes.length} cliente${g.clientes.length===1?"":"s"} · ${fmtNum(totPessoas,0)} pessoas</span>
-        ${!semRota ? `<button class="btn small ghost" data-romaneio-imprimir="${g.rotaId}" style="margin-left:auto;">Imprimir romaneio</button>` : ""}
+        ${!semRota ? `<button class="btn small primary" data-romaneio-imprimir="${g.rotaId}" style="margin-left:auto;">Imprimir romaneio</button>` : ""}
       </div>
       <div class="panel-body">
         ${semRota ? `<p class="footnote" style="margin:0 0 10px;">Esses clientes não têm rota de entrega cadastrada — edite o contrato pra atribuir uma.</p>` : ""}
@@ -12266,8 +12266,8 @@ function pcpReqSemanaSecaoHtml(dias, diasSelState, semana, unidadeFiltro, area){
       <div class="panel-body" style="display:flex; flex-wrap:wrap; gap:14px; align-items:center;">
         ${dias.map(d => `<label style="display:flex; align-items:center; gap:6px; font-size:13px;"><input type="checkbox" data-pcp-reqdia-sel="${d.dia}" ${diasSelState.has(d.dia)?"checked":""}> ${escapeHtml(PCP_DIA_LABEL_FEIRA[d.dia]||d.dia)}</label>`).join("")}
         <span style="flex:1 1 auto;"></span>
-        <button class="btn small ghost" data-pcp-reqdia-fichas="1">Imprimir fichas técnicas (dias marcados)</button>
-        <button class="btn small ghost" data-pcp-reqdia-imprimir="1">Imprimir dias marcados</button>
+        <button class="btn small primary" data-pcp-reqdia-fichas="1">Imprimir fichas técnicas (dias marcados)</button>
+        <button class="btn small primary" data-pcp-reqdia-imprimir="1">Imprimir dias marcados</button>
         <button class="btn small ghost" data-pcp-reqdia-desfazer="1" style="color:var(--danger,#c0392b); border-color:var(--danger,#c0392b);">Desfazer baixa (dias marcados)</button>
         <button class="btn small primary" data-pcp-reqdia-baixar="1">Dar baixa no estoque (dias marcados)</button>
       </div>
@@ -12343,7 +12343,7 @@ function pcpMapaCarnesHtml(cobertura){
   }
   const rotulo = cobertura.diasCobertos.map(d => DIA_LABEL[d]).join(" + ");
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3>Mapa de carnes</h3><span class="hint">corte de hoje — cobre ${escapeHtml(rotulo)}</span>${cobertura.mapaCarnes.length ? `<button class="btn small ghost" id="pcp-mapa-imprimir" style="margin-left:auto;">Imprimir mapa</button>` : ""}</div>
+    <div class="panel-head"><h3>Mapa de carnes</h3><span class="hint">corte de hoje — cobre ${escapeHtml(rotulo)}</span>${cobertura.mapaCarnes.length ? `<button class="btn small primary" id="pcp-mapa-imprimir" style="margin-left:auto;">Imprimir mapa</button>` : ""}</div>
     <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Corte</th><th style="text-align:right;">Kg</th><th>Receita</th><th>Dia de uso</th></tr></thead><tbody>
       ${cobertura.mapaCarnes.length ? cobertura.mapaCarnes.map(l => `<tr><td class="name-cell">${escapeHtml(l.corte)}</td><td class="num-cell">${fmtNum(l.kg,3)} ${escapeHtml(l.unidade)}</td><td>${escapeHtml(l.receita)}</td><td>${escapeHtml(DIA_LABEL[l.dia]||l.dia)}</td></tr>`).join("") : `<tr><td colspan="4" class="footnote">Nada a cortar neste dia.</td></tr>`}
     </tbody></table></div>
@@ -12373,7 +12373,7 @@ function pcpMapaSemanaHtml(mapaSemana, unidadeLabel){
   if(!mapaSemana.cortes.length) return `<div class="panel" style="margin-bottom:14px;"><div class="panel-head"><h3>Mapa da semana</h3></div><div class="panel-body"><div class="empty-state">Sem cortes na semana.</div></div></div>`;
   const cab = mapaSemana.porDia.map(pd => `<th style="text-align:right;">${DIA_LABEL[pd.dia].slice(0,3)}<div class="footnote" style="margin:2px 0 0;">prep. ${DIA_LABEL[pd.prep].slice(0,3)}</div></th>`).join("");
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3>Mapa da semana</h3><span class="hint">${escapeHtml(unidadeLabel)} — kg por dia de produção; "prep." é quando o açougue corta pra cobrir aquele dia</span><button class="btn small ghost" id="pcp-mapa-sem-imprimir" style="margin-left:auto;">Imprimir semana</button></div>
+    <div class="panel-head"><h3>Mapa da semana</h3><span class="hint">${escapeHtml(unidadeLabel)} — kg por dia de produção; "prep." é quando o açougue corta pra cobrir aquele dia</span><button class="btn small primary" id="pcp-mapa-sem-imprimir" style="margin-left:auto;">Imprimir semana</button></div>
     <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Corte</th>${cab}<th style="text-align:right;">Total</th></tr></thead><tbody>
       ${mapaSemana.cortes.map(c => `<tr><td class="name-cell">${escapeHtml(c.nome)}</td>${c.porDia.map(q => `<td class="num-cell">${q ? fmtNum(q,2) : "—"}</td>`).join("")}<td class="num-cell"><strong>${fmtNum(c.total,2)} ${escapeHtml(c.unidade)}</strong></td></tr>`).join("")}
     </tbody></table></div>
@@ -12412,7 +12412,7 @@ function pcpFichasCorteAgrupadas(mapaCarnes){
 function pcpFichasCorteHtml(fichasAgrupadas){
   if(!fichasAgrupadas.length) return "";
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3>Fichas de corte</h3><span class="hint">${fichasAgrupadas.length} ficha${fichasAgrupadas.length===1?"":"s"} — 1 por corte/dia, acompanha o produto até a entrega</span><button class="btn small ghost" id="pcp-fichas-imprimir" style="margin-left:auto;">Imprimir fichas</button></div>
+    <div class="panel-head"><h3>Fichas de corte</h3><span class="hint">${fichasAgrupadas.length} ficha${fichasAgrupadas.length===1?"":"s"} — 1 por corte/dia, acompanha o produto até a entrega</span><button class="btn small primary" id="pcp-fichas-imprimir" style="margin-left:auto;">Imprimir fichas</button></div>
     <div class="panel-body" style="display:flex; flex-wrap:wrap; gap:12px;">
       ${fichasAgrupadas.map(f => `<div style="border:1px solid var(--border); border-radius:8px; padding:10px 12px; min-width:220px;">
         <div style="font-weight:700;">${escapeHtml(f.corte)}</div>
@@ -12532,7 +12532,7 @@ function pcpAbrirEtiquetasAcougue(cobertura, semana, diaSel, unidadeLabel){
         <p class="footnote" style="margin-top:8px;">${total} etiqueta${total===1?"":"s"} no total.</p>
       </div>
       <div class="modal-foot">
-        <button class="btn small ghost" id="etqa-imprimir" type="button">Imprimir</button>
+        <button class="btn small primary" id="etqa-imprimir" type="button">Imprimir</button>
         <button class="btn small primary" id="etqa-pdf" type="button">Baixar PDF (${total})</button>
       </div>
     </div></div>`;
@@ -12675,10 +12675,10 @@ function pcpSalSobProducaoHtml(res, trocasAposImpressao){
   const corpoTotais = totaisPorPrato.map(r => {
     const novoGrupo = r.grupo !== grupoAtual; grupoAtual = r.grupo;
     return (novoGrupo ? `<tr><th colspan="3" style="background:var(--surface-alt); font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted);">${escapeHtml(r.grupo)}</th></tr>` : "") +
-      `<tr><td class="name-cell">${escapeHtml(r.nome)}</td><td class="num-cell">${pcpFmtPorcao(r.total)}</td><td class="num-cell">${r.fichaId ? `<button class="btn small ghost" data-pcp-imprimir-receita="${r.fichaId}" title="Imprimir esta receita">${iconeImprimir()}</button>` : "—"}</td></tr>`;
+      `<tr><td class="name-cell">${escapeHtml(r.nome)}</td><td class="num-cell">${pcpFmtPorcao(r.total)}</td><td class="num-cell">${r.fichaId ? `<button class="btn small primary" data-pcp-imprimir-receita="${r.fichaId}" title="Imprimir esta receita">${iconeImprimir()}</button>` : "—"}</td></tr>`;
   }).join("");
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3><i class="ico" data-lucide="salad"></i>Produção do dia</h3><span class="hint">Salada e Sobremesa, por cliente — quantidade em porções (sem Suco)</span><button class="btn small ghost" id="pcp-salsob-producao-imprimir" style="margin-left:auto;">Imprimir por cliente</button></div>
+    <div class="panel-head"><h3><i class="ico" data-lucide="salad"></i>Produção do dia</h3><span class="hint">Salada e Sobremesa, por cliente — quantidade em porções (sem Suco)</span><button class="btn small primary" id="pcp-salsob-producao-imprimir" style="margin-left:auto;">Imprimir por cliente</button></div>
     <div class="panel-body">${alertaReimpressao}<div class="table-wrap"><table><thead><tr><th>Cliente</th><th style="text-align:right;">Atende</th><th>Prato</th><th style="text-align:right;">Quantidade</th></tr></thead><tbody>${corpo}</tbody></table></div>
     </div>
   </div>
@@ -12742,7 +12742,7 @@ function pcpSalSobMapaSemanaHtml(mapaSemana, unidadeLabel){
   if(!mapaSemana.pratos.length) return `<div class="panel" style="margin-bottom:14px;"><div class="panel-head"><h3>Mapa da semana</h3></div><div class="panel-body"><div class="empty-state">Sem salada/sobremesa na semana.</div></div></div>`;
   const cab = mapaSemana.porDia.map(pd => `<th style="text-align:right;">${DIA_LABEL[pd.dia].slice(0,3)}</th>`).join("");
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3>Mapa da semana</h3><span class="hint">${escapeHtml(unidadeLabel)} — quantidade por dia, Salada e Sobremesa (Suco fica fora, ver nota acima)</span><button class="btn small ghost" id="pcp-salsob-mapa-sem-imprimir" style="margin-left:auto;">Imprimir semana</button></div>
+    <div class="panel-head"><h3>Mapa da semana</h3><span class="hint">${escapeHtml(unidadeLabel)} — quantidade por dia, Salada e Sobremesa (Suco fica fora, ver nota acima)</span><button class="btn small primary" id="pcp-salsob-mapa-sem-imprimir" style="margin-left:auto;">Imprimir semana</button></div>
     <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Prato</th>${cab}<th style="text-align:right;">Total</th></tr></thead><tbody>
       ${mapaSemana.pratos.map(p => `<tr><td class="name-cell">${escapeHtml(p.nome)}</td>${p.porDia.map(q => `<td class="num-cell">${q ? fmtNum(q,2) : "—"}</td>`).join("")}<td class="num-cell"><strong>${fmtNum(p.total,2)}</strong></td></tr>`).join("")}
     </tbody></table></div>
@@ -12845,7 +12845,7 @@ function pcpAbrirEtiquetasSalSob(linhas, unidadeLabel){
         <p class="footnote" style="margin-top:8px;">${total} etiqueta${total===1?"":"s"} no total.</p>
       </div>
       <div class="modal-foot">
-        <button class="btn small ghost" id="salsobetq-imprimir" type="button">Imprimir (prévia)</button>
+        <button class="btn small primary" id="salsobetq-imprimir" type="button">Imprimir (prévia)</button>
         <button class="btn small primary" id="salsobetq-pdf" type="button">Baixar PDF (${total})</button>
       </div>
     </div></div>`;
@@ -13817,11 +13817,11 @@ function pcpSubstituicoesHtml(listaRes, unidadeFiltro){
   const banner = pendentes.length
     ? `<div class="panel" style="margin-bottom:14px; border-color:#e0a800;"><div class="panel-body" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
         <p class="footnote" style="margin:0;">Substituição pendente de revisão em <strong>${pendentes.map(u => escapeHtml(nomeUnidadeCompra(u))).join(" e ")}</strong> — confira os lançamentos abaixo antes de imprimir.</p>
-        <div style="display:flex; gap:8px;"><button type="button" class="btn small ghost" data-subst-imprimir-lista="1">Imprimir lista de substituições</button><button type="button" class="btn small primary" data-subst-marcar-revisado="1">Marcar substituições como revisadas</button></div>
+        <div style="display:flex; gap:8px;"><button type="button" class="btn small primary" data-subst-imprimir-lista="1">Imprimir lista de substituições</button><button type="button" class="btn small primary" data-subst-marcar-revisado="1">Marcar substituições como revisadas</button></div>
       </div></div>`
     : `<div class="panel" style="margin-bottom:14px; border-color:#2e7d32;"><div class="panel-body" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
         <p class="footnote" style="margin:0; color:#2e7d32;">✓ Substituições revisadas — nenhuma pendência para este dia.</p>
-        <button type="button" class="btn small ghost" data-subst-imprimir-lista="1">Imprimir lista de substituições</button>
+        <button type="button" class="btn small primary" data-subst-imprimir-lista="1">Imprimir lista de substituições</button>
       </div></div>`;
   const blocos = listaRes.map(res => pcpSubstGradeBlocoHtml(res, itens)).join(`<div style="height:22px;"></div>`);
   return gerenciar + banner +
@@ -14226,7 +14226,7 @@ async function renderPCP(){
       (!reqCobertura.diasCobertos.length ? pcpReqAvisoHtml(reqCobertura.diasCobertos) : `
         ${pcpReqAvisoHtml(reqCobertura.diasCobertos)}
         <div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:14px;">
-          <button class="btn small ghost" id="pcp-req-imprimir">Imprimir separação de hoje</button>
+          <button class="btn small primary" id="pcp-req-imprimir">Imprimir separação de hoje</button>
         </div>
         ${reqCobertura.porDia.every(d => !d.linhas.length) ? `<div class="panel"><div class="empty-state">Nada a requisitar nesta separação.</div></div>` :
           reqCobertura.porDia.map(d => pcpReqDiaHtml(d, pcpSemanaSel)).join("")}
@@ -14300,13 +14300,13 @@ async function renderPCP(){
       </div>` : ""}
       ${!ehProducaoAmbas ? `<div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px;">
         <span class="footnote" style="margin:0;">Imprimir:</span>
-        <button class="btn small ghost" data-pcp-ordem="todos">Todos os setores</button>
-        <button class="btn small ghost" data-pcp-ordem="cozinha">Composição principal</button>
-        <button class="btn small ghost" data-pcp-ordem="saladas">Saladas</button>
-        <button class="btn small ghost" data-pcp-ordem="sobremesas">Sobremesas</button>
-        <button class="btn small ghost" id="pcp-imprimir-receitas-producao">Receitas do dia</button>
-        <button class="btn small ghost" id="pcp-imprimir-cardapios-dia">Cardápios do dia</button>
-      </div>` : `<p class="footnote" style="margin:0 0 14px;">Pra imprimir a ordem de produção ou as receitas do dia inteiras, escolha Matriz ou Filial acima — impressão por cozinha, nunca as duas juntas numa folha só. <button class="btn small ghost" id="pcp-imprimir-cardapios-dia" style="margin-left:6px;">Cardápios do dia</button></p>`}
+        <button class="btn small primary" data-pcp-ordem="todos">Todos os setores</button>
+        <button class="btn small primary" data-pcp-ordem="cozinha">Composição principal</button>
+        <button class="btn small primary" data-pcp-ordem="saladas">Saladas</button>
+        <button class="btn small primary" data-pcp-ordem="sobremesas">Sobremesas</button>
+        <button class="btn small primary" id="pcp-imprimir-receitas-producao">Receitas do dia</button>
+        <button class="btn small primary" id="pcp-imprimir-cardapios-dia">Cardápios do dia</button>
+      </div>` : `<p class="footnote" style="margin:0 0 14px;">Pra imprimir a ordem de produção ou as receitas do dia inteiras, escolha Matriz ou Filial acima — impressão por cozinha, nunca as duas juntas numa folha só. <button class="btn small primary" id="pcp-imprimir-cardapios-dia" style="margin-left:6px;">Cardápios do dia</button></p>`}
       ${ehProducaoAmbas ? pcpProducaoAmbasHtml(listaRes, margemPct) : pcpProducaoHtml(res, margemPct)}
       <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="scale"></i>Volume por cliente</h3><span class="hint">volume líquido por cliente, sem margem — o que vai pra etiqueta da cuba</span></div>
       ${ehProducaoAmbas
