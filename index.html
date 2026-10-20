@@ -13334,44 +13334,48 @@ function pcpConferenciaHtml(linhas){
 // no protótipo antigo, v89). Espelha a tela de propósito (mesma função pcpConferenciaLinhas alimenta as
 // duas): o que a cozinha/expedição vê na tela é exatamente o que sai no papel, substituições incluídas —
 // nunca duas fontes de verdade. 1 bloco por cliente, evita quebrar no meio (break-inside:avoid).
+// 20/10/2026 (pedido do Marcelo): tabelas lado a lado em vez de empilhadas — é pra conferência da SAÍDA
+// dos itens na expedição (quem confere na doca), então ganhar clientes por folha (2 colunas, CSS
+// multi-coluna do navegador distribui sozinho e nunca corta um cliente no meio) importa mais que cada
+// tabela ocupar a largura toda da página.
 function pcpImprimirConferencia(linhas, semana, dia, unidadeLabel){
   if(!linhas || !linhas.length){ showAlert("Nenhum cliente com produção prevista para este dia/unidade."); return; }
-  const corpo = linhas.map(({cliente, itens, substituicoes}) => `<div style="break-inside:avoid; page-break-inside:avoid; border:1px solid #333; border-radius:6px; padding:12px 14px; margin-bottom:14px;">
+  const corpo = linhas.map(({cliente, itens, substituicoes}) => `<div style="break-inside:avoid; page-break-inside:avoid; border:1px solid #333; border-radius:6px; padding:10px 12px; margin-bottom:12px;">
       <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px;">
-        <div style="font-weight:700; font-size:14px;">${escapeHtml(cliente.nome)}</div>
-        <div style="font-size:11px; color:#666;">${fmtNum(cliente.pessoas,0)} pessoas</div>
+        <div style="font-weight:700; font-size:13px;">${escapeHtml(cliente.nome)}</div>
+        <div style="font-size:10px; color:#666;">${fmtNum(cliente.pessoas,0)} pessoas</div>
       </div>
-      ${itens.length ? `<table style="width:100%; border-collapse:collapse; font-size:11.5px;">
+      ${itens.length ? `<table style="width:100%; border-collapse:collapse; font-size:10px;">
         <thead><tr>
-          <th style="text-align:left; border-bottom:1px solid #999; padding:3px 4px;">Item</th>
-          <th style="text-align:right; border-bottom:1px solid #999; padding:3px 4px;">Previsto</th>
-          <th style="text-align:right; border-bottom:1px solid #999; padding:3px 4px;">Enviado</th>
-          <th style="text-align:center; border-bottom:1px solid #999; padding:3px 4px;">Cozinha</th>
-          <th style="text-align:center; border-bottom:1px solid #999; padding:3px 4px;">Expedição</th>
-          <th style="text-align:left; border-bottom:1px solid #999; padding:3px 4px;">Observação</th>
+          <th style="text-align:left; border-bottom:1px solid #999; padding:2px 3px;">Item</th>
+          <th style="text-align:right; border-bottom:1px solid #999; padding:2px 3px;">Previsto</th>
+          <th style="text-align:right; border-bottom:1px solid #999; padding:2px 3px;">Enviado</th>
+          <th style="text-align:center; border-bottom:1px solid #999; padding:2px 3px;">Cozinha</th>
+          <th style="text-align:center; border-bottom:1px solid #999; padding:2px 3px;">Exped.</th>
+          <th style="text-align:left; border-bottom:1px solid #999; padding:2px 3px;">Obs.</th>
         </tr></thead>
         <tbody>${itens.map(it => `<tr>
-          <td style="padding:3px 4px; border-top:1px solid #ddd;">${escapeHtml(it.nome)}</td>
-          <td style="padding:3px 4px; border-top:1px solid #ddd; text-align:right;">${it.unidade ? `${fmtNum(it.qtdPrevista,2)} ${escapeHtml(it.unidade)}` : pcpFmtQtd(it.qtdPrevista)}</td>
-          <td style="padding:3px 4px; border-top:1px solid #ddd; text-align:right;">${it.qtdEnviada != null ? fmtNum(it.qtdEnviada,2) : "______"}</td>
-          <td style="padding:3px 4px; border-top:1px solid #ddd; text-align:center;">${it.cozinhaOk ? "✓" : "☐"}</td>
-          <td style="padding:3px 4px; border-top:1px solid #ddd; text-align:center;">${it.expedicaoOk ? "✓" : "☐"}</td>
-          <td style="padding:3px 4px; border-top:1px solid #ddd;">${escapeHtml(it.observacao||"")}</td>
+          <td style="padding:2px 3px; border-top:1px solid #ddd;">${escapeHtml(it.nome)}</td>
+          <td style="padding:2px 3px; border-top:1px solid #ddd; text-align:right;">${it.unidade ? `${fmtNum(it.qtdPrevista,2)} ${escapeHtml(it.unidade)}` : pcpFmtQtd(it.qtdPrevista)}</td>
+          <td style="padding:2px 3px; border-top:1px solid #ddd; text-align:right;">${it.qtdEnviada != null ? fmtNum(it.qtdEnviada,2) : "______"}</td>
+          <td style="padding:2px 3px; border-top:1px solid #ddd; text-align:center;">${it.cozinhaOk ? "✓" : "☐"}</td>
+          <td style="padding:2px 3px; border-top:1px solid #ddd; text-align:center;">${it.expedicaoOk ? "✓" : "☐"}</td>
+          <td style="padding:2px 3px; border-top:1px solid #ddd;">${escapeHtml(it.observacao||"")}</td>
         </tr>`).join("")}</tbody>
       </table>` : ""}
-      ${substituicoes.length ? `<div style="margin-top:8px; padding-top:6px; border-top:1px dashed #999;">
-        <div style="font-size:11px; font-weight:700; margin-bottom:3px;">Substituições</div>
-        ${substituicoes.map(s => `<div style="font-size:11.5px;">${escapeHtml(pcpServicoAbrev(s.servico))} · ${fmtNum(s.pessoas,0)}× ${escapeHtml(s.fichaNome)}</div>`).join("")}
+      ${substituicoes.length ? `<div style="margin-top:6px; padding-top:5px; border-top:1px dashed #999;">
+        <div style="font-size:10px; font-weight:700; margin-bottom:3px;">Substituições</div>
+        ${substituicoes.map(s => `<div style="font-size:10px;">${escapeHtml(pcpServicoAbrev(s.servico))} · ${fmtNum(s.pessoas,0)}× ${escapeHtml(s.fichaNome)}</div>`).join("")}
       </div>` : ""}
     </div>`).join("");
   const w = window.open("", "_blank");
   if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
   const titulo = `Conferência da expedição · ${escapeHtml(unidadeLabel)} · ${escapeHtml(DIA_LABEL[dia])} ${escapeHtml(rotuloSemana(semana))}`;
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${titulo}</title>
-    <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()}</style></head><body>
+    <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()} .pcp-conf-colunas{column-count:2; column-gap:16px;}</style></head><body>
     ${printHeadHtml()}<h1>${titulo}</h1>
     <p style="font-size:12px; color:#666; margin:0 0 14px;">${escapeHtml(diaSemanaExtenso(dia))} · ${escapeHtml(fmtDataCompleta(dataDoDia(semana, dia)))}</p>
-    ${corpo}
+    <div class="pcp-conf-colunas">${corpo}</div>
     <div class="assinatura" style="margin-top:28px; display:flex; gap:40px;"><div style="flex:1; border-top:1px solid #333; padding-top:4px; font-size:12px;">Resp. cozinha</div><div style="flex:1; border-top:1px solid #333; padding-top:4px; font-size:12px;">Resp. expedição</div></div>
     <script>window.onload = () => window.print();<\/script>
     </body></html>`);
