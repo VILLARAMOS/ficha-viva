@@ -1038,7 +1038,9 @@ function custoSubstituicao(item){
   if(g == null) return 0;
   const cc = computeFicha(f, item.fichaId);
   if(cc.custoKg == null) return 0;
-  return (item.pessoas || 0) * g * cc.custoKg;
+  // 21/10/2026, pedido do Marcelo: pessoas × multiplicador do item + 1 de amostra (pcpUnidadesSubstituicao),
+  // não mais pessoas cru — ver nota na função.
+  return pcpUnidadesSubstituicao(item) * g * cc.custoKg;
 }
 // soma do custo de substituição de um contrato dentro de um mês — mesmo filtro "já aconteceu" que as
 // vendas usam em apurarContrato, pra não contar substituição de dia futuro que ainda nem rolou.
@@ -10948,11 +10950,20 @@ function pcpItemProducao(it, numPessoas, ct){
 // aba. O motor de cálculo (pcpAplicarSubstituicoesReceitas) NÃO depende dessa lista — ela é só pra limitar
 // as colunas da grade a um conjunto pequeno e deliberado (sem isso, cada substituição livre de qualquer
 // ficha PROTEÍNA/EXTRA viraria uma coluna nova, e a tabela ficaria larga demais pra usar).
-let pcpItensSubstitutos = []; // [{id, fichaId, nome, ordem}]
+let pcpItensSubstitutos = []; // [{id, fichaId, nome, ordem, multiplicador}]
 async function pcpCarregarItensSubstitutos(){
   const { data, error } = await sb.from('pcp_itens_substitutos').select('*').eq('ativo', true).order('ordem');
   if(error){ showAlert("Erro ao carregar itens substitutos: " + error.message); pcpItensSubstitutos = []; return; }
-  pcpItensSubstitutos = (data || []).map(row => { const f = fichas.get(row.ficha_id); return { id: row.id, fichaId: row.ficha_id, nome: f ? f.nome : row.ficha_id, ordem: row.ordem }; });
+  pcpItensSubstitutos = (data || []).map(row => { const f = fichas.get(row.ficha_id); return { id: row.id, fichaId: row.ficha_id, nome: f ? f.nome : row.ficha_id, ordem: row.ordem, multiplicador: Number(row.multiplicador) || 1 }; });
+}
+// 21/10/2026, pedido do Marcelo: multiplicador por item substituto, editável na própria tela (não fixo no
+// código) — some(ndo) com o mesmo espírito de pcpAdicionarItemSubstituto/pcpRemoverItemSubstituto.
+async function pcpAtualizarMultiplicadorItemSubstituto(id, multiplicador){
+  const m = Number(multiplicador);
+  if(!(m > 0)){ showAlert("Multiplicador precisa ser um número maior que zero."); return false; }
+  const { error } = await sb.from('pcp_itens_substitutos').update({ multiplicador: m }).eq('id', id);
+  if(error){ showAlert("Erro ao salvar multiplicador: " + error.message); return false; }
+  return true;
 }
 async function pcpAdicionarItemSubstituto(fichaId){
   if(pcpItensSubstitutos.some(it => it.fichaId === fichaId)){ showAlert("Esta ficha já está na lista de itens substitutos."); return false; }
@@ -11007,6 +11018,22 @@ function pcpGramagemSubstituicao(ficha){
   if(!ficha || !ficha.rendimento_und || !ficha.rendimento_kg) return null;
   return ficha.rendimento_kg / ficha.rendimento_und;
 }
+// multiplicador configurado do item (pcpItensSubstitutos) — 1 se o item não estiver mais na lista de
+// colunas (ex. removido depois de já ter lançamento antigo, ver pcpRemoverItemSubstituto) ou sem valor salvo.
+function pcpMultiplicadorSubstituicao(fichaId){
+  const it = pcpItensSubstitutos.find(x => x.fichaId === fichaId);
+  return (it && it.multiplicador > 0) ? it.multiplicador : 1;
+}
+// 21/10/2026, pedido do Marcelo: unidades DE VERDADE a produzir/custear de 1 lançamento — pessoas ×
+// multiplicador do item (ex. omelete leva 3 ovos por pessoa) + 1 de amostra, por LANÇAMENTO (cada linha
+// cliente×serviço×item, não 1 só por item no dia). "pessoas" sozinho (sem isso) continua sendo usado só pro
+// desconto de efetivo da proteína original do cardápio (pcpPessoasSubstituidasPorTurno) — ali é sobre quantos
+// DIAS deixaram de comer o prato de origem, não sobre quantas unidades do substituto saem da cozinha; não
+// passa por aqui de propósito.
+function pcpUnidadesSubstituicao(item){
+  if(!item || !item.pessoas) return 0;
+  return item.pessoas * pcpMultiplicadorSubstituicao(item.fichaId) + 1;
+}
 // soma as substituições do contrato no MESMO mapa `receitas` das receitas normais do cardápio — assim
 // Produção/Volume por cliente mostram a ficha substituta sem nenhum código extra de exibição.
 // `turno` (16/10/2026): filtra só as substituições lançadas pra esse serviço — chamada 1x por serviço que
@@ -11020,7 +11047,10 @@ function pcpAplicarSubstituicoesReceitas(dia, contratoId, nomeCliente, receitas,
       avisos.push({ tipo: "warn", txt: `${nomeCliente}: substituição por "${f ? f.nome : s.fichaId}" não tem rendimento (kg/un) cadastrado — não entrou na produção.` });
       return;
     }
-    const kg = gramagem * s.pessoas;
+    // 21/10/2026: kg pelas unidades DE VERDADE (pessoas × multiplicador do item + amostra), não mais pelas
+    // pessoas cru — ver nota em pcpUnidadesSubstituicao.
+    const unidades = pcpUnidadesSubstituicao(s);
+    const kg = gramagem * unidades;
     // chave por serviço (não só contrato) — o mesmo cliente pode trocar a MESMA ficha no almoço e no
     // jantar; sem o serviço na chave, os dois lançamentos cairiam na mesma linha de porCliente e a coluna
     // de serviço da tela de Produção/impressão ficaria errada.
@@ -11028,8 +11058,8 @@ function pcpAplicarSubstituicoesReceitas(dia, contratoId, nomeCliente, receitas,
     const R = receitas.get(s.fichaId) || { fichaId: s.fichaId, nome: f ? f.nome : s.fichaId, grupo: pcpGrupoFicha(f), total: 0, porTurno: {almoco:0, jantar:0, ceia:0}, porCliente: new Map() };
     R.total += kg;
     R.porTurno[turno] = (R.porTurno[turno] || 0) + kg;
-    const pc = R.porCliente.get(chave) || { contratoId, nome: nomeCliente, produtoId: null, servico: turno, qtd: 0, pessoas: 0 };
-    pc.qtd += kg; pc.pessoas += s.pessoas;
+    const pc = R.porCliente.get(chave) || { contratoId, nome: nomeCliente, produtoId: null, servico: turno, qtd: 0, pessoas: 0, unidades: 0 };
+    pc.qtd += kg; pc.pessoas += s.pessoas; pc.unidades += unidades;
     R.porCliente.set(chave, pc);
     receitas.set(s.fichaId, R);
   });
@@ -11043,7 +11073,8 @@ function pcpAplicarSubstituicoesInsumos(dia, contratoId, buckets){
     const f = fichas.get(s.fichaId);
     const gramagem = pcpGramagemSubstituicao(f);
     if(gramagem == null) return; // já avisado em pcpAplicarSubstituicoesReceitas
-    const porInsumo = insumosParaKgNecessario(s.fichaId, gramagem * s.pessoas);
+    // 21/10/2026: mesma régua de pcpAplicarSubstituicoesReceitas — unidades de verdade, não pessoas cru.
+    const porInsumo = insumosParaKgNecessario(s.fichaId, gramagem * pcpUnidadesSubstituicao(s));
     const mapa = buckets.get("cozinha") || new Map();
     porInsumo.forEach((kg, insumoId) => mapa.set(insumoId, (mapa.get(insumoId) || 0) + kg));
     buckets.set("cozinha", mapa);
@@ -12273,13 +12304,22 @@ function pcpEtiquetasProdutoImprimir(res){
   const dataTxt = fmtDataCompleta(dataDoDia(res.semana, res.dia));
   const etiquetas = [];
   res.clientes.forEach(cli => {
+    // produtoId !== null exclui a linha injetada por substituição (ver pcpAplicarSubstituicoesReceitas) —
+    // ela tem etiqueta própria logo abaixo, em QUANTIDADE (não peso).
     res.receitas.forEach(r => {
-      const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id);
+      const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id && x.produtoId !== null);
       if(p) etiquetas.push({ cliente: cli.nome, produto: r.nome, pesoTxt: pcpFmtQtd(p.qtd) });
     });
     res.diretos.forEach(d => {
       const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id);
       if(p) etiquetas.push({ cliente: cli.nome, produto: d.nome, pesoTxt: `${fmtNum(p.qtd,2)} ${d.unidade||""}` });
+    });
+    // Substituições (21/10/2026, pedido do Marcelo): etiqueta em QUANTIDADE (unidades a produzir — já com
+    // multiplicador do item + 1 de amostra por lançamento), não em kg. Direto de pcpListaSubstituicoes (não
+    // via porCliente de `receitas`, que só guarda kg) pra não arredondar/duplicar errado.
+    pcpListaSubstituicoes(res.dia, cli.id).forEach(s => {
+      const f = fichas.get(s.fichaId);
+      etiquetas.push({ cliente: cli.nome, produto: `${f ? f.nome : s.fichaId} (substituição)`, pesoTxt: `${fmtNum(pcpUnidadesSubstituicao(s),0)} un.` });
     });
   });
   if(!etiquetas.length){ showAlert("Nada a produzir neste dia — nenhuma etiqueta a gerar."); return; }
@@ -14288,12 +14328,15 @@ function pcpSubstGerenciarItensHtml(){
   return `<details class="integrity-detail" style="margin-bottom:14px;" ${pcpItensSubstitutos.length ? "" : "open"}>
     <summary>Itens substitutos configurados (${pcpItensSubstitutos.length}) — cada um vira uma coluna na grade</summary>
     <div style="display:flex; flex-wrap:wrap; gap:8px; margin:10px 0;">
-      ${pcpItensSubstitutos.length ? pcpItensSubstitutos.map(it => `<span class="chip neutral">${escapeHtml(it.nome)} <button type="button" class="btn small ghost" data-subst-item-remover="${it.id}" style="padding:1px 6px; margin-left:4px;">✕</button></span>`).join("") : `<span class="footnote">Nenhum item configurado ainda — adicione abaixo pra liberar a grade.</span>`}
+      ${pcpItensSubstitutos.length ? pcpItensSubstitutos.map(it => `<span class="chip neutral" style="display:inline-flex; align-items:center; gap:5px;">${escapeHtml(it.nome)}
+        <span style="white-space:nowrap; font-size:11px;">×<input type="number" min="1" step="1" value="${it.multiplicador}" class="subst-item-mult" data-subst-item-mult="${it.id}" data-orig="${it.multiplicador}" title="Unidades a produzir por pessoa trocada (ex. omelete = 3 ovos por pessoa)" style="width:34px; text-align:center; padding:1px 2px;"></span>
+        <button type="button" class="btn small ghost" data-subst-item-remover="${it.id}" style="padding:1px 6px;">✕</button></span>`).join("") : `<span class="footnote">Nenhum item configurado ainda — adicione abaixo pra liberar a grade.</span>`}
     </div>
     <div style="display:flex; gap:8px; align-items:center;">
       <select id="subst-item-novo" style="max-width:280px;"><option value="">Escolher ficha (Proteína/Extra)…</option>${disponiveis.map(f => `<option value="${f.id}">${escapeHtml(f.nome)}</option>`).join("")}</select>
       <button type="button" class="btn small primary" data-subst-item-add="1">Adicionar à lista</button>
     </div>
+    <p class="footnote" style="margin:8px 0 0;">× = quantas unidades do item entram na produção/Requisição/CMV por pessoa trocada (edite e clique fora do campo pra salvar). Toda substituição lançada soma +1 unidade de amostra por lançamento, além do multiplicador.</p>
   </details>`;
 }
 function pcpSubstGradeBlocoHtml(res, itens){
@@ -14408,6 +14451,23 @@ function pcpSubstMarcarSuja(inp){
   inp.style.fontWeight = suja ? "600" : "";
 }
 function pcpSubstituicoesBind(content, semana, dia, unidade, listaRes){
+  // 21/10/2026, pedido do Marcelo: editar o multiplicador (×) de cada item substituto direto no chip —
+  // listener separado do resto da grade pra não mexer na lógica já existente dos inputs subst-grid-cel.
+  content.addEventListener("change", async e => {
+    const multInp = e.target.closest("input.subst-item-mult");
+    if(!multInp) return;
+    const raw = multInp.value.trim();
+    if(raw === multInp.dataset.orig) return;
+    if(!(Number(raw) > 0) || Math.round(Number(raw)) !== Number(raw)){
+      showAlert("Multiplicador precisa ser um número inteiro maior que zero.");
+      multInp.value = multInp.dataset.orig;
+      return;
+    }
+    multInp.disabled = true;
+    const ok = await pcpAtualizarMultiplicadorItemSubstituto(multInp.dataset.substItemMult, raw);
+    if(ok){ await pcpCarregarItensSubstitutos(); renderPCP(); }
+    else { multInp.value = multInp.dataset.orig; multInp.disabled = false; }
+  });
   content.addEventListener("input", e => {
     const inp = e.target.closest("input.subst-grid-cel");
     if(!inp) return;
