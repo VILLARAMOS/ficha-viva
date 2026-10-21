@@ -269,6 +269,22 @@ tbody tr:hover{background:var(--surface-alt);}
 .es-wrap .seg-toggle button.active .es-badge{background:rgba(255,255,255,.22); color:#fff;}
 .es-wrap .btn{display:inline-flex; align-items:center; justify-content:center; gap:7px; height:36px; padding:0 14px; white-space:nowrap;}
 .es-wrap .btn.small{height:30px; padding:0 11px; gap:5px;}
+
+/* ---- Ajuda (orientações/dúvidas) ---- */
+.duvida-flutuante-btn{position:fixed; bottom:24px; right:24px; width:50px; height:50px; border-radius:50%; background:var(--accent); color:#fff; border:none; box-shadow:0 4px 14px rgba(0,0,0,.25); cursor:pointer; display:flex; align-items:center; justify-content:center; z-index:500;}
+.duvida-flutuante-btn .ico{width:24px; height:24px;}
+.duvida-flutuante-btn:hover{filter:brightness(1.08);}
+.ajuda-lista{padding:6px 20px 16px;}
+.ajuda-item{border-bottom:1px solid var(--border); padding:10px 0;}
+.ajuda-item:last-child{border-bottom:none;}
+.ajuda-item summary{cursor:pointer; display:flex; align-items:center; justify-content:space-between; gap:10px; font-weight:600; font-size:13.5px; list-style:none;}
+.ajuda-item summary::-webkit-details-marker{display:none;}
+.ajuda-resposta{margin-top:8px; white-space:pre-wrap;}
+.ajuda-duvida-card{border-bottom:1px solid var(--border); padding:14px 20px;}
+.ajuda-duvida-card:last-child{border-bottom:none;}
+.ajuda-duvida-head{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-bottom:6px;}
+.ajuda-duvida-msg{font-size:13.5px;}
+.ajuda-duvida-actions{display:flex; gap:8px; margin-top:10px;}
 .es-wrap .btn.small .ico{width:13px; height:13px;}
 .es-tools{display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
 .es-tools select, .es-wrap .search-bar select, .es-wrap .search-bar input{height:36px; padding:0 11px;}
@@ -464,6 +480,11 @@ table.cardapio-table .autocomplete{position:relative;}
       <button class="nav-btn" data-view="pcp" title="PCP"><i class="ico" data-lucide="chef-hat"></i><span class="label">PCP</span></button>
     </div>
 
+    <div class="nav-group">
+      <div class="group-label">Suporte</div>
+      <button class="nav-btn" data-view="ajuda" title="Ajuda"><i class="ico" data-lucide="help-circle"></i><span class="label">Ajuda</span></button>
+    </div>
+
     <div class="sidebar-foot">
       Cadastro único de custo dos insumos. Os demais módulos do Ficha Viva ainda serão migrados para cá.
     </div>
@@ -545,6 +566,7 @@ const VIEWS = {
   compras: renderCompras,
   orcamento: renderOrcamento,
   pcp: renderPCP,
+  ajuda: renderAjuda,
 };
 
 function goToView(view){
@@ -599,7 +621,8 @@ async function showApp(user){
   await carregarMeusAcessos();
   aplicarMenuPorPerfil();
   if(!possoVerView(currentView)) currentView = primeiraViewPermitida() || currentView;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadRotas(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadFornecedores(), loadConjuntosCompra(), loadAjusteSeguranca(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas(), loadPcpConfig(), loadPcpSubstituicoesTudo()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadRotas(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadFornecedores(), loadConjuntosCompra(), loadAjusteSeguranca(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas(), loadPcpConfig(), loadPcpSubstituicoesTudo(), loadAjudaConteudo(), loadAjudaDuvidas()]);
+  renderBotaoDuvidaFlutuante();
   goToView(currentView);
 }
 
@@ -629,6 +652,7 @@ const VIEW_AREA = {
   fornecedores: 'compras', compras: 'compras', orcamento: 'compras', pcp: 'pcp'
 };
 function possoVerView(view){
+  if(view === 'ajuda') return true;
   if(meusAcessos.diretoria) return true;
   if(view === 'painel') return temAcesso('faturamento','leitura') || temAcesso('compras','leitura') || temAcesso('pcp','leitura');
   const area = VIEW_AREA[view];
@@ -1476,6 +1500,23 @@ async function loadEventos(){
   eventos = new Map();
   if (error){ showAlert('Erro ao carregar eventos: ' + error.message); return; }
   (data || []).forEach(row => { const { id, ...rest } = row; eventos.set(id, rest); });
+}
+
+/* ---- Ajuda: orientações/treinamento e dúvidas da equipe ---- */
+let ajudaConteudo = new Map();   // id -> {bloco, pergunta, resposta, ordem, ...}
+let ajudaDuvidas = new Map();    // id -> {tela, tela_label, mensagem, usuario_email, status, resposta, ...}
+
+async function loadAjudaConteudo(){
+  const { data, error } = await sb.from('ajuda_conteudo').select('*').order('bloco').order('ordem');
+  ajudaConteudo = new Map();
+  if (error){ showAlert('Erro ao carregar conteúdo de ajuda: ' + error.message); return; }
+  (data || []).forEach(row => { const { id, ...rest } = row; ajudaConteudo.set(id, rest); });
+}
+async function loadAjudaDuvidas(){
+  const { data, error } = await sb.from('ajuda_duvidas').select('*').order('criado_em', { ascending: false });
+  ajudaDuvidas = new Map();
+  if (error){ showAlert('Erro ao carregar dúvidas: ' + error.message); return; }
+  (data || []).forEach(row => { const { id, ...rest } = row; ajudaDuvidas.set(id, rest); });
 }
 
 /* ---- tabela de incidência de proteínas (mapa de carnes) ---- */
@@ -5002,6 +5043,319 @@ function renderEventoModal(id, draft){
       root.innerHTML = "";
       renderEventos();
     }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+  };
+}
+
+/* ===================================================================== AJUDA (orientações, treinamento e dúvidas) */
+const AJUDA_BLOCOS = ["Painel", "Cardápio & receitas", "Comercial", "Suprimentos & financeiro", "PCP", "Geral"];
+let ajudaSubTab = "orientacoes";
+let ajudaFiltroStatus = "aberta";
+
+function renderAjuda(){
+  document.getElementById("page-title").textContent = "Ajuda";
+  document.getElementById("page-desc").textContent = "Orientações, treinamento e dúvidas da equipe sobre o Ficha Viva";
+  document.getElementById("topbar-actions").innerHTML = ajudaSubTab === "orientacoes"
+    ? `<button class="btn primary" id="btn-nova-orientacao">+ Nova orientação</button>`
+    : "";
+  if(document.getElementById("btn-nova-orientacao")) document.getElementById("btn-nova-orientacao").addEventListener("click", () => openAjudaConteudoModal(null));
+
+  const content = document.getElementById("content");
+  const duvidasAbertas = [...ajudaDuvidas.values()].filter(d => d.status === "aberta").length;
+
+  const subtabs = [
+    {id:"orientacoes", nome:"Orientações", ico:"book-open"},
+    {id:"duvidas", nome:"Dúvidas recebidas", ico:"message-circle-question", badge: duvidasAbertas || null},
+  ];
+
+  content.innerHTML = `
+    <div class="es-nav">
+      <div class="seg-toggle" id="ajuda-subtabs">
+        ${subtabs.map(t => `<button type="button" data-sub="${t.id}" class="${ajudaSubTab===t.id?"active":""}"><i class="ico" data-lucide="${t.ico}"></i>${t.nome}${t.badge?`<span class="es-badge">${t.badge}</span>`:""}</button>`).join("")}
+      </div>
+    </div>
+    <div id="ajuda-sub-body"></div>
+  `;
+  document.getElementById("ajuda-subtabs").addEventListener("click", e => {
+    const b = e.target.closest("button[data-sub]"); if(!b) return;
+    ajudaSubTab = b.dataset.sub;
+    renderAjuda();
+  });
+
+  if(ajudaSubTab === "orientacoes") renderAjudaOrientacoes();
+  else renderAjudaDuvidas();
+  if(window.lucide) lucide.createIcons();
+}
+
+function renderAjudaOrientacoes(){
+  const body = document.getElementById("ajuda-sub-body");
+  const porBloco = new Map();
+  AJUDA_BLOCOS.forEach(b => porBloco.set(b, []));
+  [...ajudaConteudo.entries()].forEach(([id, item]) => {
+    const bloco = AJUDA_BLOCOS.includes(item.bloco) ? item.bloco : "Geral";
+    porBloco.get(bloco).push({ id, ...item });
+  });
+  porBloco.forEach(lista => lista.sort((a,b) => (a.ordem||0) - (b.ordem||0)));
+
+  const temAlgo = [...porBloco.values()].some(l => l.length);
+  if(!temAlgo){
+    body.innerHTML = `<div class="footnote" style="margin-top:14px;">Ainda não há orientações cadastradas. Use "+ Nova orientação" para começar a montar o material de treinamento.</div>`;
+    return;
+  }
+
+  body.innerHTML = AJUDA_BLOCOS.map(bloco => {
+    const itens = porBloco.get(bloco);
+    if(!itens.length) return "";
+    return `
+      <div class="panel" style="margin-top:14px;">
+        <div class="panel-head"><h3>${escapeHtml(bloco)}</h3></div>
+        <div class="ajuda-lista">
+          ${itens.map(it => `
+            <details class="ajuda-item">
+              <summary><span>${escapeHtml(it.pergunta)}</span><button type="button" class="btn ghost small" data-editar="${it.id}"><i class="ico" data-lucide="pencil"></i></button></summary>
+              <div class="footnote ajuda-resposta">${escapeHtml(it.resposta).replace(/\n/g,"<br>")}</div>
+            </details>
+          `).join("")}
+        </div>
+      </div>`;
+  }).join("");
+
+  body.querySelectorAll("[data-editar]").forEach(btn => btn.addEventListener("click", e => {
+    e.preventDefault(); e.stopPropagation();
+    openAjudaConteudoModal(btn.dataset.editar);
+  }));
+}
+
+function openAjudaConteudoModal(id){
+  const existing = id ? ajudaConteudo.get(id) : null;
+  const draft = existing ? { ...existing } : { bloco: "Geral", pergunta: "", resposta: "", ordem: 0 };
+  renderAjudaConteudoModal(id, draft);
+}
+
+function renderAjudaConteudoModal(id, draft){
+  const root = document.getElementById("modal-root");
+  root.innerHTML = `
+    <div class="modal-overlay" id="ov">
+      <div class="modal">
+        <div class="modal-head"><h2>${id ? "Editar orientação" : "Nova orientação"}</h2><button class="close-x" id="close-m">&times;</button></div>
+        <div class="modal-body">
+          <div class="field-row">
+            <div class="field" style="flex:2;"><label>Bloco / tela</label>
+              <select id="aj-bloco">
+                ${AJUDA_BLOCOS.map(b => `<option value="${escapeHtml(b)}" ${draft.bloco===b?"selected":""}>${escapeHtml(b)}</option>`).join("")}
+              </select>
+            </div>
+            <div class="field"><label>Ordem</label><input type="number" id="aj-ordem" value="${draft.ordem ?? 0}"></div>
+          </div>
+          <div class="field"><label>Pergunta / título</label><input type="text" id="aj-pergunta" value="${escapeHtml(draft.pergunta||"")}" placeholder="Ex.: Como lançar uma venda do dia?"></div>
+          <div class="field"><label>Resposta / orientação</label><textarea id="aj-resposta" rows="6">${escapeHtml(draft.resposta||"")}</textarea></div>
+          <div class="footnote" id="aj-err" style="color:var(--critical); margin-top:10px;"></div>
+        </div>
+        <div class="modal-foot">
+          <div>${id ? `<button class="btn danger" id="del-m">Excluir</button>` : ""}</div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn" id="cancel-m">Cancelar</button>
+            <button class="btn primary" id="save-m">Salvar</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+  document.getElementById("close-m").onclick = () => root.innerHTML = "";
+  document.getElementById("cancel-m").onclick = () => root.innerHTML = "";
+  document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
+
+  if(id) document.getElementById("del-m").onclick = async () => {
+    if(!(await confirmDialog(`Excluir a orientação "${draft.pergunta}"?`))) return;
+    try{
+      const { error } = await sb.from('ajuda_conteudo').delete().eq('id', id);
+      if(error) throw error;
+      await loadAjudaConteudo();
+      root.innerHTML="";
+      renderAjuda();
+    }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
+  };
+
+  document.getElementById("save-m").onclick = async () => {
+    const errEl = document.getElementById("aj-err");
+    const pergunta = document.getElementById("aj-pergunta").value.trim();
+    if(!pergunta){ errEl.textContent = "Informe a pergunta/título."; return; }
+    const resposta = document.getElementById("aj-resposta").value.trim();
+    if(!resposta){ errEl.textContent = "Informe a resposta/orientação."; return; }
+
+    const payload = {
+      bloco: document.getElementById("aj-bloco").value,
+      pergunta,
+      resposta,
+      ordem: Number(document.getElementById("aj-ordem").value) || 0,
+      ...carimbo(),
+    };
+
+    try{
+      if(id){
+        const { error } = await sb.from('ajuda_conteudo').update(payload).eq('id', id);
+        if(error) throw error;
+      } else {
+        const { error } = await sb.from('ajuda_conteudo').insert(payload);
+        if(error) throw error;
+      }
+      await loadAjudaConteudo();
+      root.innerHTML = "";
+      renderAjuda();
+    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+  };
+}
+
+function renderAjudaDuvidas(){
+  const body = document.getElementById("ajuda-sub-body");
+  const statusOpts = [["aberta","Abertas"],["respondida","Respondidas"],["arquivada","Arquivadas"],["todas","Todas"]];
+
+  const lista = [...ajudaDuvidas.entries()]
+    .map(([id, d]) => ({ id, ...d }))
+    .filter(d => ajudaFiltroStatus === "todas" || d.status === ajudaFiltroStatus)
+    .sort((a,b) => (b.criado_em||"").localeCompare(a.criado_em||""));
+
+  body.innerHTML = `
+    <div class="panel" style="margin-top:14px;">
+      <div class="panel-head" style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+        <h3>Dúvidas recebidas</h3>
+        <div class="seg-toggle" id="ajuda-duvidas-filtro">
+          ${statusOpts.map(([v,l]) => `<button type="button" data-status="${v}" class="${ajudaFiltroStatus===v?"active":""}">${l}</button>`).join("")}
+        </div>
+      </div>
+      <div class="table-wrap">
+        ${lista.length ? lista.map(d => `
+          <div class="ajuda-duvida-card" data-id="${d.id}">
+            <div class="ajuda-duvida-head">
+              <span class="chip">${escapeHtml(d.tela_label || d.tela)}</span>
+              <span class="footnote">${escapeHtml(d.usuario_email||"—")} · ${d.criado_em ? new Date(d.criado_em).toLocaleString('pt-BR') : ""}</span>
+              <span class="chip ${d.status==='aberta'?'warn':d.status==='respondida'?'ok':''}">${d.status}</span>
+            </div>
+            <div class="ajuda-duvida-msg">${escapeHtml(d.mensagem).replace(/\n/g,"<br>")}</div>
+            ${d.resposta ? `<div class="footnote" style="margin-top:6px;"><strong>Resposta:</strong> ${escapeHtml(d.resposta).replace(/\n/g,"<br>")}</div>` : ""}
+            <div class="ajuda-duvida-actions">
+              <button class="btn ghost small" data-responder="${d.id}">Responder</button>
+              ${d.status !== 'arquivada' ? `<button class="btn ghost small" data-arquivar="${d.id}">Arquivar</button>` : `<button class="btn ghost small" data-reabrir="${d.id}">Reabrir</button>`}
+            </div>
+          </div>
+        `).join("") : `<div class="footnote" style="padding:16px 0;">Nenhuma dúvida neste filtro.</div>`}
+      </div>
+    </div>
+  `;
+
+  document.getElementById("ajuda-duvidas-filtro").addEventListener("click", e => {
+    const b = e.target.closest("button[data-status]"); if(!b) return;
+    ajudaFiltroStatus = b.dataset.status;
+    renderAjudaDuvidas();
+  });
+  body.querySelectorAll("[data-responder]").forEach(btn => btn.addEventListener("click", () => openAjudaResponderModal(btn.dataset.responder)));
+  body.querySelectorAll("[data-arquivar]").forEach(btn => btn.addEventListener("click", async () => {
+    try{
+      const { error } = await sb.from('ajuda_duvidas').update({ status: 'arquivada' }).eq('id', btn.dataset.arquivar);
+      if(error) throw error;
+      await loadAjudaDuvidas();
+      renderAjudaDuvidas();
+    }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
+  }));
+  body.querySelectorAll("[data-reabrir]").forEach(btn => btn.addEventListener("click", async () => {
+    try{
+      const { error } = await sb.from('ajuda_duvidas').update({ status: 'aberta' }).eq('id', btn.dataset.reabrir);
+      if(error) throw error;
+      await loadAjudaDuvidas();
+      renderAjudaDuvidas();
+    }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
+  }));
+}
+
+function openAjudaResponderModal(id){
+  const duvida = ajudaDuvidas.get(id);
+  if(!duvida) return;
+  const root = document.getElementById("modal-root");
+  root.innerHTML = `
+    <div class="modal-overlay" id="ov">
+      <div class="modal">
+        <div class="modal-head"><h2>Responder dúvida</h2><button class="close-x" id="close-m">&times;</button></div>
+        <div class="modal-body">
+          <div class="footnote"><strong>${escapeHtml(duvida.tela_label || duvida.tela)}</strong> · ${escapeHtml(duvida.usuario_email||"—")}</div>
+          <div class="footnote" style="margin:8px 0 14px;">${escapeHtml(duvida.mensagem).replace(/\n/g,"<br>")}</div>
+          <div class="field"><label>Resposta</label><textarea id="aj-resp-texto" rows="5">${escapeHtml(duvida.resposta||"")}</textarea></div>
+          <div class="footnote" id="aj-resp-err" style="color:var(--critical); margin-top:10px;"></div>
+        </div>
+        <div class="modal-foot">
+          <div></div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn" id="cancel-m">Cancelar</button>
+            <button class="btn primary" id="save-m">Salvar resposta</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById("close-m").onclick = () => root.innerHTML = "";
+  document.getElementById("cancel-m").onclick = () => root.innerHTML = "";
+  document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
+  document.getElementById("save-m").onclick = async () => {
+    const resposta = document.getElementById("aj-resp-texto").value.trim();
+    if(!resposta){ document.getElementById("aj-resp-err").textContent = "Escreva uma resposta."; return; }
+    try{
+      const { error } = await sb.from('ajuda_duvidas').update({
+        resposta, status: 'respondida', respondido_em: new Date().toISOString(), respondido_por: usuarioId || null,
+      }).eq('id', id);
+      if(error) throw error;
+      await loadAjudaDuvidas();
+      root.innerHTML = "";
+      renderAjuda();
+    }catch(e){ document.getElementById("aj-resp-err").textContent = "Erro ao salvar: " + (e.message||e.code||e); }
+  };
+}
+
+/* ---- botão flutuante "Não entendi / tenho uma dúvida", presente em todas as telas ---- */
+function renderBotaoDuvidaFlutuante(){
+  if(document.getElementById("duvida-flutuante-btn")) return;
+  const btn = document.createElement("button");
+  btn.id = "duvida-flutuante-btn";
+  btn.className = "duvida-flutuante-btn";
+  btn.title = "Não entendi / tenho uma dúvida";
+  btn.innerHTML = `<i class="ico" data-lucide="help-circle"></i>`;
+  btn.addEventListener("click", () => openDuvidaFlutuanteModal());
+  document.body.appendChild(btn);
+  if(window.lucide) lucide.createIcons();
+}
+
+function openDuvidaFlutuanteModal(){
+  const root = document.getElementById("modal-root");
+  const telaLabel = document.getElementById("page-title")?.textContent || currentView;
+  root.innerHTML = `
+    <div class="modal-overlay" id="ov">
+      <div class="modal">
+        <div class="modal-head"><h2>Não entendi / tenho uma dúvida</h2><button class="close-x" id="close-m">&times;</button></div>
+        <div class="modal-body">
+          <div class="footnote">Sua dúvida vai para a aba <strong>Ajuda &gt; Dúvidas recebidas</strong>, onde qualquer um da equipe pode responder. Tela atual: <strong>${escapeHtml(telaLabel)}</strong>.</div>
+          <div class="field" style="margin-top:12px;"><label>O que você não entendeu?</label><textarea id="dv-msg" rows="4" placeholder="Descreva sua dúvida..."></textarea></div>
+          <div class="footnote" id="dv-err" style="color:var(--critical); margin-top:10px;"></div>
+        </div>
+        <div class="modal-foot">
+          <div></div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn" id="cancel-m">Cancelar</button>
+            <button class="btn primary" id="save-m">Enviar</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById("close-m").onclick = () => root.innerHTML = "";
+  document.getElementById("cancel-m").onclick = () => root.innerHTML = "";
+  document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
+  document.getElementById("save-m").onclick = async () => {
+    const mensagem = document.getElementById("dv-msg").value.trim();
+    if(!mensagem){ document.getElementById("dv-err").textContent = "Descreva sua dúvida."; return; }
+    try{
+      const { error } = await sb.from('ajuda_duvidas').insert({
+        tela: currentView, tela_label: telaLabel, mensagem, usuario_email: usuarioId || null, status: 'aberta',
+      });
+      if(error) throw error;
+      await loadAjudaDuvidas();
+      root.innerHTML = "";
+      showAlert("Dúvida enviada! A equipe vai responder na aba Ajuda.");
+    }catch(e){ document.getElementById("dv-err").textContent = "Erro ao enviar: " + (e.message||e.code||e); }
   };
 }
 
