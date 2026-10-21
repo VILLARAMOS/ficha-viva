@@ -4734,7 +4734,17 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
       await Promise.all([loadContratos(), loadContratoItens(), loadContratoEventos(), loadContratoFaturamentoHistorico()]);
       root.innerHTML="";
       renderContratos();
-    }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
+    }catch(e){
+      // Contrato com vendas ou ajustes de mínimo lançados não pode ser excluído (FK) — mensagem
+      // amigável em vez do erro cru do Postgres (pedido de auditoria de 21/10/2026: nunca apaga
+      // vendas em cascata automaticamente, só avisa o que está travando).
+      const msg = String(e?.message || e?.code || e || "");
+      if(e?.code === "23503" || /foreign key/i.test(msg)){
+        showAlert(`Não foi possível excluir "${draft.nome_cliente}": este contrato ainda tem vendas e/ou ajustes de mínimo lançados no sistema. Remova esses lançamentos primeiro (ou desative o contrato em vez de excluir) e tente de novo.`);
+      } else {
+        showAlert("Erro: "+msg);
+      }
+    }
   };
 
   document.getElementById("save-m").onclick = async () => {
@@ -6391,10 +6401,19 @@ function renderGradeLancamento(){
         document.querySelector(`.vd-qtd[data-produto="${CSS.escape(produtoId)}"][data-dia="${dia}"]`)?.focus();
       });
       // arredonda pra no máx. 4 casas decimais ao sair do campo — não a cada tecla, pra não
-      // atrapalhar quem ainda está digitando.
+      // atrapalhar quem ainda está digitando. Também barra quantidade negativa aqui (não a
+      // cada tecla, pelo mesmo motivo) — pedido de auditoria de 21/10/2026: negativo era aceito
+      // sem aviso e distorcia RECEITA/CUSTO/MARGEM da semana sem sinalizar erro de digitação.
       inp.addEventListener("blur", () => {
         const produtoId = inp.dataset.produto, dia = inp.dataset.dia;
         if(!produtoId || draftVendas[dia]?.[produtoId] === undefined) return;
+        if(draftVendas[dia][produtoId] < 0){
+          showAlert("Quantidade não pode ser negativa — campo zerado.");
+          delete draftVendas[dia][produtoId];
+          inp.value = "";
+          redraw();
+          return;
+        }
         draftVendas[dia][produtoId] = Number(Number(draftVendas[dia][produtoId]).toFixed(4));
         redraw();
       });
@@ -14482,7 +14501,7 @@ async function renderPCP(){
     ) : ehCafe ? (
       pcpPainelAreaHtml((() => {
         const cafeClientes = pcpCafeClientesUnidade(unidadeFiltro);
-        const cafeConfirmados = cafeClientes.filter(c => cafePadariaPedidoDiaCache.has(c.id)).length;
+        const cafeConfirmados = cafeClientes.filter(c => { const r = cafePadariaPedidoDiaCache.get(c.id); return !!(r && r.confirmado); }).length;
         return [
           {label:"Clientes com café cadastrado", valor: cafeClientes.length},
           {label:"Pedido do dia confirmado", valor: `${cafeConfirmados}/${cafeClientes.length}`, ok: cafeClientes.length>0 && cafeConfirmados===cafeClientes.length}
