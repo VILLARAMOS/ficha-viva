@@ -12036,7 +12036,9 @@ function pcpSubstituicoesImpressaoLinhas(res){
   res.clientes.forEach(cli => {
     pcpListaSubstituicoes(res.dia, cli.id).forEach(s => {
       const f = fichas.get(s.fichaId);
-      linhas.push({ clienteId: cli.id, cliente: cli.nome, servico: s.servico || "almoco", pessoas: s.pessoas, ficha: f ? f.nome : s.fichaId });
+      // unidades (21/10/2026, pedido do Marcelo): pessoas×multiplicador do item + 1 de amostra — ver
+      // pcpUnidadesSubstituicao. "pessoas" continua aqui do lado (é quem pediu), as duas colunas convivem.
+      linhas.push({ clienteId: cli.id, cliente: cli.nome, servico: s.servico || "almoco", pessoas: s.pessoas, unidades: pcpUnidadesSubstituicao(s), ficha: f ? f.nome : s.fichaId });
     });
   });
   return linhas;
@@ -12045,8 +12047,8 @@ function pcpSubstituicoesImpressaoHtml(res){
   const linhas = pcpSubstituicoesImpressaoLinhas(res);
   if(!linhas.length) return "";
   return `<h2>Substituições lançadas neste dia</h2>
-    <table><thead><tr><th>Cliente</th><th style="width:90px;">Serviço</th><th style="width:90px; text-align:right;">Pessoas</th><th>Recebe</th></tr></thead><tbody>
-      ${linhas.map(l => `<tr><td>${escapeHtml(l.cliente)}</td><td>${escapeHtml(PCP_TURNOS.find(t=>t.id===l.servico)?.nome || l.servico)}</td><td class="peso">${fmtNum(l.pessoas,0)}</td><td>${escapeHtml(l.ficha)}</td></tr>`).join("")}
+    <table><thead><tr><th>Cliente</th><th style="width:90px;">Serviço</th><th style="width:80px; text-align:right;">Pessoas</th><th style="width:110px; text-align:right;">Unidades a produzir</th><th>Recebe</th></tr></thead><tbody>
+      ${linhas.map(l => `<tr><td>${escapeHtml(l.cliente)}</td><td>${escapeHtml(PCP_TURNOS.find(t=>t.id===l.servico)?.nome || l.servico)}</td><td class="peso">${fmtNum(l.pessoas,0)}</td><td class="peso destaque">${fmtNum(l.unidades,0)}</td><td>${escapeHtml(l.ficha)}</td></tr>`).join("")}
     </tbody></table>`;
 }
 // ---------- Impressão própria da lista de substituições (16/10/2026, Tarefa 7) ----------
@@ -12059,23 +12061,23 @@ function pcpImprimirListaSubstituicoes(resOuLista){
   const linhas = listaRes.flatMap(r => pcpSubstituicoesImpressaoLinhas(r));
   if(!linhas.length){ showAlert("Nenhuma substituição lançada para este dia/unidade."); return; }
   const res = listaRes[0];
-  const totais = new Map(); // "ficha|servico" -> {ficha, servico, pessoas}
+  const totais = new Map(); // "ficha|servico" -> {ficha, servico, pessoas, unidades}
   linhas.forEach(l => {
     const chave = l.ficha + "|" + l.servico;
-    const t = totais.get(chave) || { ficha: l.ficha, servico: l.servico, pessoas: 0 };
-    t.pessoas += l.pessoas;
+    const t = totais.get(chave) || { ficha: l.ficha, servico: l.servico, pessoas: 0, unidades: 0 };
+    t.pessoas += l.pessoas; t.unidades += l.unidades;
     totais.set(chave, t);
   });
   const linhasTotais = [...totais.values()].sort((a,b) => a.servico.localeCompare(b.servico) || normalizeText(a.ficha).localeCompare(normalizeText(b.ficha)));
   const porCliente = [...linhas].sort((a,b) => normalizeText(a.cliente).localeCompare(normalizeText(b.cliente)) || a.servico.localeCompare(b.servico));
   const corpo = `
     <h2>Total do dia por item substituto</h2>
-    <table><thead><tr><th>Recebe</th><th style="width:90px;">Serviço</th><th style="width:100px; text-align:right;">Pessoas</th></tr></thead><tbody>
-      ${linhasTotais.map(t => `<tr><td>${escapeHtml(t.ficha)}</td><td>${escapeHtml(PCP_TURNOS.find(x=>x.id===t.servico)?.nome||t.servico)}</td><td class="peso destaque">${fmtNum(t.pessoas,0)}</td></tr>`).join("")}
+    <table><thead><tr><th>Recebe</th><th style="width:90px;">Serviço</th><th style="width:80px; text-align:right;">Pessoas</th><th style="width:110px; text-align:right;">Unidades a produzir</th></tr></thead><tbody>
+      ${linhasTotais.map(t => `<tr><td>${escapeHtml(t.ficha)}</td><td>${escapeHtml(PCP_TURNOS.find(x=>x.id===t.servico)?.nome||t.servico)}</td><td class="peso">${fmtNum(t.pessoas,0)}</td><td class="peso destaque">${fmtNum(t.unidades,0)}</td></tr>`).join("")}
     </tbody></table>
     <h2>Por cliente</h2>
-    <table><thead><tr><th>Cliente</th><th style="width:90px;">Serviço</th><th style="width:100px; text-align:right;">Pessoas</th><th>Recebe</th></tr></thead><tbody>
-      ${porCliente.map(l => `<tr><td>${escapeHtml(l.cliente)}</td><td>${escapeHtml(PCP_TURNOS.find(x=>x.id===l.servico)?.nome||l.servico)}</td><td class="peso">${fmtNum(l.pessoas,0)}</td><td>${escapeHtml(l.ficha)}</td></tr>`).join("")}
+    <table><thead><tr><th>Cliente</th><th style="width:90px;">Serviço</th><th style="width:80px; text-align:right;">Pessoas</th><th style="width:110px; text-align:right;">Unidades a produzir</th><th>Recebe</th></tr></thead><tbody>
+      ${porCliente.map(l => `<tr><td>${escapeHtml(l.cliente)}</td><td>${escapeHtml(PCP_TURNOS.find(x=>x.id===l.servico)?.nome||l.servico)}</td><td class="peso">${fmtNum(l.pessoas,0)}</td><td class="peso destaque">${fmtNum(l.unidades,0)}</td><td>${escapeHtml(l.ficha)}</td></tr>`).join("")}
     </tbody></table>`;
   const contexto = listaRes.length > 1 ? `${DIA_LABEL[res.dia]} · ${rotuloSemana(res.semana)} · Unidade: Matriz + Filial` : pcpContextoImpressao(res, null);
   pcpAbrirImpressaoReceitas(`Lista de substituições — ${DIA_LABEL[res.dia]}, ${rotuloSemana(res.semana)}`, contexto, corpo);
