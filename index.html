@@ -5231,7 +5231,7 @@ function renderAjudaDuvidas(){
               <span class="chip ${d.status==='aberta'?'warn':d.status==='respondida'?'ok':''}">${d.status}</span>
             </div>
             <div class="ajuda-duvida-msg">${escapeHtml(d.mensagem).replace(/\n/g,"<br>")}</div>
-            ${d.resposta ? `<div class="footnote" style="margin-top:6px;"><strong>Resposta:</strong> ${escapeHtml(d.resposta).replace(/\n/g,"<br>")}</div>`
+            ${d.resposta ? `<div class="footnote" style="margin-top:6px;"><strong>Resposta${d.respondido_por === "IA (automático)" ? ` <span class="chip neutral" title="Respondida automaticamente, sem revisão humana">🤖 automático</span>` : ""}:</strong> ${escapeHtml(d.resposta).replace(/\n/g,"<br>")}</div>`
               : (d.status === "aberta" && d.resposta_sugerida) ? `<div class="footnote" style="margin-top:6px;"><span class="chip neutral">🤖 rascunho da IA pronto</span> — clique em Responder pra revisar antes de publicar</div>` : ""}
             <div class="ajuda-duvida-actions">
               <button class="btn ghost small" data-responder="${d.id}">Responder</button>
