@@ -5231,7 +5231,8 @@ function renderAjudaDuvidas(){
               <span class="chip ${d.status==='aberta'?'warn':d.status==='respondida'?'ok':''}">${d.status}</span>
             </div>
             <div class="ajuda-duvida-msg">${escapeHtml(d.mensagem).replace(/\n/g,"<br>")}</div>
-            ${d.resposta ? `<div class="footnote" style="margin-top:6px;"><strong>Resposta:</strong> ${escapeHtml(d.resposta).replace(/\n/g,"<br>")}</div>` : ""}
+            ${d.resposta ? `<div class="footnote" style="margin-top:6px;"><strong>Resposta:</strong> ${escapeHtml(d.resposta).replace(/\n/g,"<br>")}</div>`
+              : (d.status === "aberta" && d.resposta_sugerida) ? `<div class="footnote" style="margin-top:6px;"><span class="chip neutral">🤖 rascunho da IA pronto</span> — clique em Responder pra revisar antes de publicar</div>` : ""}
             <div class="ajuda-duvida-actions">
               <button class="btn ghost small" data-responder="${d.id}">Responder</button>
               ${d.status !== 'arquivada' ? `<button class="btn ghost small" data-arquivar="${d.id}">Arquivar</button>` : `<button class="btn ghost small" data-reabrir="${d.id}">Reabrir</button>`}
@@ -5269,6 +5270,10 @@ function renderAjudaDuvidas(){
 function openAjudaResponderModal(id){
   const duvida = ajudaDuvidas.get(id);
   if(!duvida) return;
+  // 21/10/2026: se ainda não tem resposta humana mas tem resposta_sugerida (rascunho gerado
+  // periodicamente por tarefa agendada, lendo as Orientações + o código do sistema), pré-preenche
+  // o campo com o rascunho — NUNCA publica sozinho, é só ponto de partida editável.
+  const temRascunho = !duvida.resposta && duvida.resposta_sugerida;
   const root = document.getElementById("modal-root");
   root.innerHTML = `
     <div class="modal-overlay" id="ov">
@@ -5277,7 +5282,8 @@ function openAjudaResponderModal(id){
         <div class="modal-body">
           <div class="footnote"><strong>${escapeHtml(duvida.tela_label || duvida.tela)}</strong> · ${escapeHtml(duvida.usuario_email||"—")}</div>
           <div class="footnote" style="margin:8px 0 14px;">${escapeHtml(duvida.mensagem).replace(/\n/g,"<br>")}</div>
-          <div class="field"><label>Resposta</label><textarea id="aj-resp-texto" rows="5">${escapeHtml(duvida.resposta||"")}</textarea></div>
+          ${temRascunho ? `<div class="footnote" style="margin:0 0 8px; color:#8a6d00;">🤖 Rascunho gerado automaticamente a partir das Orientações — revise e corrija antes de salvar. Ninguém viu isso ainda.</div>` : ""}
+          <div class="field"><label>Resposta</label><textarea id="aj-resp-texto" rows="5">${escapeHtml(duvida.resposta || duvida.resposta_sugerida || "")}</textarea></div>
           <div class="footnote" id="aj-resp-err" style="color:var(--critical); margin-top:10px;"></div>
         </div>
         <div class="modal-foot">
