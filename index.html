@@ -4416,13 +4416,13 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
           <div class="footnote" style="margin-bottom:10px;">Vale pra semana inteira — define de onde vem o custo das linhas de Refeição e Café da grade de itens abaixo.</div>
           <div class="field-row" style="align-items:flex-start;">
             <div class="field"><label>Refeição</label>
-              <select id="kk-ref-num">${REFEICAO_NUMS.map(n => `<option value="${n}" ${n===draft.cardapio_refeicao_num?"selected":""}>${labelNumeroCardapio("refeicao",n)}</option>`).join("")}</select>
+              <select id="kk-ref-num">${numerosPorGrupoAtual("refeicao").map(n => `<option value="${n}" ${n===draft.cardapio_refeicao_num?"selected":""}>${labelNumeroCardapio("refeicao",n)}</option>`).join("")}</select>
             </div>
             <div class="field">
               <label>Marmita</label>
-              <select id="kk-marmita-num">${MARMITA_NUMS.map(n => `<option value="${n}" ${n===draft.cardapio_marmita_num?"selected":""}>${labelNumeroCardapio("marmita",n)}</option>`).join("")}</select>
+              <select id="kk-marmita-num">${numerosPorGrupoAtual("marmita").map(n => `<option value="${n}" ${n===draft.cardapio_marmita_num?"selected":""}>${labelNumeroCardapio("marmita",n)}</option>`).join("")}</select>
               <label style="margin-top:6px; font-size:12.5px;"><input type="checkbox" id="kk-marmita-esp-on" style="width:auto; display:inline-block; margin-right:6px;" ${draft.marmita_especial_ativo?"checked":""}> este cliente também tem marmita especial</label>
-              <select id="kk-marmita-esp-num" style="margin-top:4px; display:${draft.marmita_especial_ativo?"block":"none"};">${MARMITA_NUMS.map(n => `<option value="${n}" ${n===draft.cardapio_marmita_especial_num?"selected":""}>${labelNumeroCardapio("marmita",n)} (especial)</option>`).join("")}</select>
+              <select id="kk-marmita-esp-num" style="margin-top:4px; display:${draft.marmita_especial_ativo?"block":"none"};">${numerosPorGrupoAtual("marmita").map(n => `<option value="${n}" ${n===draft.cardapio_marmita_especial_num?"selected":""}>${labelNumeroCardapio("marmita",n)} (especial)</option>`).join("")}</select>
             </div>
             <div class="field">
               <label>Café</label>
