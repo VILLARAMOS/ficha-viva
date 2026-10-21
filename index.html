@@ -5253,7 +5253,7 @@ function renderAjudaDuvidas(){
       const { error } = await sb.from('ajuda_duvidas').update({ status: 'arquivada' }).eq('id', btn.dataset.arquivar);
       if(error) throw error;
       await loadAjudaDuvidas();
-      renderAjudaDuvidas();
+      renderAjuda();
     }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
   }));
   body.querySelectorAll("[data-reabrir]").forEach(btn => btn.addEventListener("click", async () => {
@@ -5261,7 +5261,7 @@ function renderAjudaDuvidas(){
       const { error } = await sb.from('ajuda_duvidas').update({ status: 'aberta' }).eq('id', btn.dataset.reabrir);
       if(error) throw error;
       await loadAjudaDuvidas();
-      renderAjudaDuvidas();
+      renderAjuda();
     }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
   }));
 }
