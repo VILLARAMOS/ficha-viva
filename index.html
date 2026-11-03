@@ -417,7 +417,7 @@ table.cardapio-table .autocomplete{position:relative;}
 .cardapio-toolbar{display:flex; justify-content:space-between; align-items:center; margin-top:14px; gap:12px; flex-wrap:wrap;}
 .cardapio-cmv-panel{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:16px;}
 .cardapio-cmv-panel .stat-block{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:12px 14px;}
-.orientacao-cardapio{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; margin-bottom:16px;}
+.orientacao-cardapio{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; margin-top:16px; margin-bottom:16px;}
 .orientacao-title{font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-faint); font-weight:600; margin-bottom:10px;}
 .orientacao-cols{display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:20px;}
 .orientacao-col table{margin-bottom:0;}
@@ -3012,6 +3012,7 @@ function renderCardapio(){
     </div>
     <div id="card-cmv-panel"></div>
     <div id="card-week"></div>
+    <div id="card-orientacao-panel"></div>
   `;
 
   document.getElementById("card-num").addEventListener("change", e => { cardapioNumSel = Number(e.target.value); cardapioSemanaSel = null; cardapioSemanaNovaPendente = null; renderCardapio(); });
@@ -3134,6 +3135,7 @@ function perfisUsadosPorCardapio(grupo, num){
 }
 function montarPainelCmv(grupo, num, semana){
   const host = document.getElementById("card-cmv-panel");
+  const hostOrientacao = document.getElementById("card-orientacao-panel");
   if(!host || num == null || semana == null) return;
   const mesId = mesDoDia(semana, "QUARTA");
   const semanaDoMesInfo = _infoSemana(semana);
@@ -3237,7 +3239,8 @@ function montarPainelCmv(grupo, num, semana){
       </div>`;
   }
 
-  host.innerHTML = `<div class="cardapio-cmv-panel">${blocosHtml}</div>${orientacaoHtml}`;
+  host.innerHTML = `<div class="cardapio-cmv-panel">${blocosHtml}</div>`;
+  if(hostOrientacao) hostOrientacao.innerHTML = orientacaoHtml;
   const linkInc = document.getElementById("card-abrir-incidencia");
   if(linkInc) linkInc.addEventListener("click", e => { e.preventDefault(); abrirTabelaIncidenciaModal(); });
   const linkMeta = document.getElementById("card-editar-meta");
