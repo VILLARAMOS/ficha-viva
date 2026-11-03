@@ -417,6 +417,11 @@ table.cardapio-table .autocomplete{position:relative;}
 .cardapio-toolbar{display:flex; justify-content:space-between; align-items:center; margin-top:14px; gap:12px; flex-wrap:wrap;}
 .cardapio-cmv-panel{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-bottom:16px;}
 .cardapio-cmv-panel .stat-block{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:12px 14px;}
+.orientacao-cardapio{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:14px 16px; margin-bottom:16px;}
+.orientacao-title{font-size:11px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-faint); font-weight:600; margin-bottom:10px;}
+.orientacao-cols{display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:20px;}
+.orientacao-col table{margin-bottom:0;}
+.orientacao-col th,.orientacao-col td{white-space:normal;}
 </style>
 
 <div class="loginWrap" id="loginScreen">
@@ -3177,46 +3182,62 @@ function montarPainelCmv(grupo, num, semana){
     `;
   }
 
-  let incHtml = "";
+  // Incidência de proteína + Estrutura do cardápio, lado a lado em formato de tabela — decisão de
+  // 07/10/2026 (estrutura) + reformatação em tabela de 03/11/2026 (eram parágrafos corridos em footnote).
+  let orientacaoHtml = "";
   if(grupo !== "cafe"){
     const atual = incidenciaAtualSemana(num, semana);
     const perfis = perfisUsadosPorCardapio(grupo, num);
     const perfilUnico = perfis.length === 1 ? perfisIncidencia.get(perfis[0]) : null;
     const alvoDaSemana = (perfilUnico && semanaDoMes) ? (perfilUnico.semanas[semanaDoMes-1] || {}) : null;
     let notaPerfil = "";
-    if(perfilUnico && alvoDaSemana) notaPerfil = ` <span class="footnote">· alvo: ${escapeHtml(perfilUnico.nome)}, semana ${semanaDoMes} do mês</span>`;
-    else if(perfis.length > 1) notaPerfil = ` <span class="footnote" style="color:var(--critical);">· ${perfis.length} perfis de incidência diferentes usam este cardápio (${perfis.map(pid => escapeHtml((perfisIncidencia.get(pid)||{}).nome || pid)).join(", ")}) — sem alvo único pra comparar</span>`;
-    else if(!perfis.length) notaPerfil = ` <span class="footnote">· nenhum contrato ativo com perfil de incidência usa este cardápio</span>`;
-    const linha = TIPOS_PROTEINA.map(t => {
+    if(perfilUnico && alvoDaSemana) notaPerfil = `alvo: ${escapeHtml(perfilUnico.nome)}, semana ${semanaDoMes} do mês`;
+    else if(perfis.length > 1) notaPerfil = `<span style="color:var(--critical);">${perfis.length} perfis de incidência diferentes usam este cardápio (${perfis.map(pid => escapeHtml((perfisIncidencia.get(pid)||{}).nome || pid)).join(", ")}) — sem alvo único pra comparar</span>`;
+    else if(!perfis.length) notaPerfil = `nenhum contrato ativo com perfil de incidência usa este cardápio`;
+    const linhasInc = TIPOS_PROTEINA.map(t => {
       const n = atual.counts[t.id] || 0;
       const alvoN = alvoDaSemana ? (alvoDaSemana[t.id] ?? null) : null;
       const diff = alvoN != null ? n - alvoN : null;
       const cor = diff == null ? "" : (diff === 0 ? "color:var(--text-muted);" : (diff > 0 ? "color:var(--ok);" : "color:var(--critical);"));
-      return `<span style="margin-right:16px;"><strong>${escapeHtml(t.curto)}:</strong> <span style="${cor}">${n}${alvoN!=null?` / ${alvoN}`:""}</span></span>`;
+      return `<tr><td>${escapeHtml(t.curto)}</td><td class="num-cell" style="${cor}">${n}</td><td class="num-cell">${alvoN!=null?alvoN:"—"}</td></tr>`;
     }).join("");
-    incHtml = `<div class="footnote" style="margin:-6px 0 14px;">Incidência de proteína nesta semana (Proteína 1+2)${notaPerfil}<br>${linha}${atual.semClassificar?`<span style="color:var(--text-faint);"> · ${atual.semClassificar} prato(s) sem classificação de proteína ou sem ficha vinculada</span>`:""}</div>
-      <a href="#" id="card-abrir-incidencia" class="footnote" style="display:inline-block; margin:-10px 0 14px;">Abrir Tabela de incidência completa →</a>`;
-  }
+    const tabelaInc = `
+      <table class="tbl-compact">
+        <thead><tr><th>Proteína (1+2)</th><th class="num-cell">Nesta semana</th><th class="num-cell">Alvo</th></tr></thead>
+        <tbody>${linhasInc}</tbody>
+      </table>
+      ${notaPerfil ? `<div class="footnote" style="margin-top:6px;">${notaPerfil}</div>` : ""}
+      ${atual.semClassificar?`<div class="footnote">${atual.semClassificar} prato(s) sem classificação de proteína ou sem ficha vinculada</div>`:""}
+      <a href="#" id="card-abrir-incidencia" class="footnote" style="display:inline-block; margin-top:8px;">Abrir Tabela de incidência completa →</a>`;
 
-  // Estrutura (quantas vagas/dia de guarnição/salada/sobremesa/suco o motor preenche) — decisão de
-  // 07/10/2026. Sem linha cadastrada = sem restrição, mesmo texto já deixa isso explícito.
-  let estHtml = "";
-  if(grupo !== "cafe"){
     const estrutura = estruturaDoCardapio(grupo, num);
-    const resumo = estrutura ? [
-      estrutura.qtd_guarnicao!=null ? `${estrutura.qtd_guarnicao} guarnição(ões)/dia` : null,
-      estrutura.qtd_salada!=null ? `${estrutura.qtd_salada} salada(s)/dia` : null,
-      estrutura.qtd_sobremesa!=null ? `${estrutura.qtd_sobremesa} sobremesa(s)/dia` : null,
-      (estrutura.qtd_suco_simples!=null || estrutura.qtd_suco_natural!=null) ? `suco ${estrutura.qtd_suco_simples??0} simples + ${estrutura.qtd_suco_natural??0} natural/dia` : null,
-      estrutura.gramagem_proteina_principal_g!=null ? `proteína principal ${estrutura.gramagem_proteina_principal_g}g (alvo)` : null,
-      (estrutura.salada_fixa_ids||[]).length ? `salada fixa: ${estrutura.salada_fixa_ids.map(id => fichas.get(id)?.nome || "?").join(" + ")}` : null,
-      (estrutura.sobremesa_fixa_ids||[]).length ? `sobremesa fixa: ${estrutura.sobremesa_fixa_ids.map(id => fichas.get(id)?.nome || "?").join(" + ")}` : null,
-    ].filter(Boolean).join(" · ") : "";
-    estHtml = `<div class="footnote" style="margin:-6px 0 2px;">Estrutura deste cardápio (vagas/dia que o motor preenche)${estrutura && resumo ? `: ${resumo}` : ": sem restrição — preenche todas as vagas da grade"}</div>
-      <a href="#" id="card-editar-estrutura" class="footnote" style="display:inline-block; margin:-10px 0 14px;">Editar estrutura deste cardápio →</a>`;
+    const linhasEstArr = estrutura ? [
+      estrutura.qtd_guarnicao!=null ? ["Guarnição/dia", `${estrutura.qtd_guarnicao}`] : null,
+      estrutura.qtd_salada!=null ? ["Salada(s)/dia", `${estrutura.qtd_salada}`] : null,
+      estrutura.qtd_sobremesa!=null ? ["Sobremesa(s)/dia", `${estrutura.qtd_sobremesa}`] : null,
+      (estrutura.qtd_suco_simples!=null || estrutura.qtd_suco_natural!=null) ? ["Suco/dia", `${estrutura.qtd_suco_simples??0} simples + ${estrutura.qtd_suco_natural??0} natural`] : null,
+      estrutura.gramagem_proteina_principal_g!=null ? ["Proteína principal (alvo)", `${estrutura.gramagem_proteina_principal_g}g`] : null,
+      (estrutura.salada_fixa_ids||[]).length ? ["Salada fixa", estrutura.salada_fixa_ids.map(id => fichas.get(id)?.nome || "?").join(" + ")] : null,
+      (estrutura.sobremesa_fixa_ids||[]).length ? ["Sobremesa fixa", estrutura.sobremesa_fixa_ids.map(id => fichas.get(id)?.nome || "?").join(" + ")] : null,
+    ].filter(Boolean) : [];
+    const tabelaEst = `
+      <table class="tbl-compact">
+        <thead><tr><th colspan="2">Estrutura do cardápio (vagas/dia)</th></tr></thead>
+        <tbody>${linhasEstArr.length ? linhasEstArr.map(([k,v]) => `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(String(v))}</td></tr>`).join("") : `<tr><td colspan="2">Sem restrição — preenche todas as vagas da grade</td></tr>`}</tbody>
+      </table>
+      <a href="#" id="card-editar-estrutura" class="footnote" style="display:inline-block; margin-top:8px;">Editar estrutura deste cardápio →</a>`;
+
+    orientacaoHtml = `
+      <div class="orientacao-cardapio">
+        <div class="orientacao-title">Orientações para sugestão de cardápio</div>
+        <div class="orientacao-cols">
+          <div class="orientacao-col">${tabelaInc}</div>
+          <div class="orientacao-col">${tabelaEst}</div>
+        </div>
+      </div>`;
   }
 
-  host.innerHTML = `<div class="cardapio-cmv-panel">${blocosHtml}</div>${incHtml}${estHtml}`;
+  host.innerHTML = `<div class="cardapio-cmv-panel">${blocosHtml}</div>${orientacaoHtml}`;
   const linkInc = document.getElementById("card-abrir-incidencia");
   if(linkInc) linkInc.addEventListener("click", e => { e.preventDefault(); abrirTabelaIncidenciaModal(); });
   const linkMeta = document.getElementById("card-editar-meta");
