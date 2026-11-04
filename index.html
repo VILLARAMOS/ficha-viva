@@ -75,6 +75,11 @@ button{font-family:inherit;}
 .field input,.field select{font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:9px 11px;width:100%;}
 .field-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;}
 .loginErr{color:var(--critical);font-size:.82rem;min-height:1.2em;margin:0;}
+.loginPassWrap{position:relative;}
+.loginPassWrap input{padding-right:40px;}
+.loginPassToggle{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:32px;height:32px;display:flex;align-items:center;justify-content:center;background:transparent;border:0;border-radius:6px;color:var(--text-muted);cursor:pointer;padding:0;}
+.loginPassToggle:hover{background:var(--bg);color:var(--text);}
+.loginPassToggle svg{width:18px;height:18px;}
 [hidden]{display:none!important;}
 
 /* ---------- app shell ---------- */
@@ -436,7 +441,12 @@ table.cardapio-table .autocomplete{position:relative;}
     </div>
     <div class="field" style="margin-bottom:0;">
       <label for="loginPass">Senha</label>
-      <input id="loginPass" type="password" autocomplete="current-password" placeholder="••••••••">
+      <div class="loginPassWrap">
+        <input id="loginPass" type="password" autocomplete="current-password" placeholder="••••••••">
+        <button type="button" class="loginPassToggle" id="loginPassToggle" aria-label="Mostrar senha" aria-pressed="false" tabindex="-1">
+          <svg id="loginPassToggleIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
     </div>
     <div style="display:flex; flex-direction:column; gap:6px; margin-top:2px;">
       <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted); cursor:pointer;"><input id="loginSalvarEmail" type="checkbox" style="width:auto;"> Salvar meu email</label>
@@ -541,6 +551,20 @@ const loginBtn = document.getElementById('loginBtn');
 const meEmailEl = document.getElementById('meEmail');
 const loginSalvarEmailEl = document.getElementById('loginSalvarEmail');
 const loginManterConectadoEl = document.getElementById('loginManterConectado');
+
+// Alterna visibilidade da senha no login (olho aberto/fechado)
+const loginPassEl = document.getElementById('loginPass');
+const loginPassToggleEl = document.getElementById('loginPassToggle');
+const loginPassToggleIconEl = document.getElementById('loginPassToggleIcon');
+const EYE_OPEN = '<path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/>';
+const EYE_OFF = '<path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.3 21.3 0 0 1 5.06-5.94M9.9 4.24A10.4 10.4 0 0 1 12 4c7 0 11 7 11 7a21.3 21.3 0 0 1-2.61 3.57M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>';
+loginPassToggleEl?.addEventListener('click', ()=>{
+  const mostrando = loginPassEl.type === 'text';
+  loginPassEl.type = mostrando ? 'password' : 'text';
+  loginPassToggleIconEl.innerHTML = mostrando ? EYE_OPEN : EYE_OFF;
+  loginPassToggleEl.setAttribute('aria-pressed', String(!mostrando));
+  loginPassToggleEl.setAttribute('aria-label', mostrando ? 'Mostrar senha' : 'Ocultar senha');
+});
 
 const LS_SAVED_EMAIL = 'fv-saved-email';
 const LS_MANTER_CONECTADO = 'fv-manter-conectado';
