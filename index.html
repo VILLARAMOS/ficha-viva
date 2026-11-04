@@ -558,13 +558,19 @@ const loginPassToggleEl = document.getElementById('loginPassToggle');
 const loginPassToggleIconEl = document.getElementById('loginPassToggleIcon');
 const EYE_OPEN = '<path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/>';
 const EYE_OFF = '<path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.3 21.3 0 0 1 5.06-5.94M9.9 4.24A10.4 10.4 0 0 1 12 4c7 0 11 7 11 7a21.3 21.3 0 0 1-2.61 3.57M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>';
-loginPassToggleEl?.addEventListener('click', ()=>{
-  const mostrando = loginPassEl.type === 'text';
-  loginPassEl.type = mostrando ? 'password' : 'text';
-  loginPassToggleIconEl.innerHTML = mostrando ? EYE_OPEN : EYE_OFF;
-  loginPassToggleEl.setAttribute('aria-pressed', String(!mostrando));
-  loginPassToggleEl.setAttribute('aria-label', mostrando ? 'Mostrar senha' : 'Ocultar senha');
-});
+const LOGIN_PASS_AUTO_HIDE_MS = 8000;
+let loginPassAutoHideTimer = null;
+function loginPassSetVisible(mostrar){
+  clearTimeout(loginPassAutoHideTimer);
+  loginPassEl.type = mostrar ? 'text' : 'password';
+  loginPassToggleIconEl.innerHTML = mostrar ? EYE_OFF : EYE_OPEN;
+  loginPassToggleEl.setAttribute('aria-pressed', String(mostrar));
+  loginPassToggleEl.setAttribute('aria-label', mostrar ? 'Ocultar senha' : 'Mostrar senha');
+  if (mostrar) loginPassAutoHideTimer = setTimeout(()=> loginPassSetVisible(false), LOGIN_PASS_AUTO_HIDE_MS);
+}
+loginPassToggleEl?.addEventListener('click', ()=> loginPassSetVisible(loginPassEl.type === 'password'));
+// Reinicia a contagem enquanto a pessoa ainda está digitando com a senha visível
+loginPassEl?.addEventListener('input', ()=>{ if (loginPassEl.type === 'text') loginPassSetVisible(true); });
 
 const LS_SAVED_EMAIL = 'fv-saved-email';
 const LS_MANTER_CONECTADO = 'fv-manter-conectado';
