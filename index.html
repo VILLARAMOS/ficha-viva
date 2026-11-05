@@ -10772,23 +10772,38 @@ function visaoNegocioCardHtml(b){
         ${deltaReceitaHtml(b.receita, b.plReceita)}
       </div>
       <div class="vn-grid">
+      <div class="vn-card ${cmvCardCls(b.cmvRealGeral, b.plCmv)}">
+        <div class="vn-label">CMV Real (compras)</div>
+        <div class="vn-value">${b.cmvRealGeral!==null?fmtPct(b.cmvRealGeral):"—"}</div>
+        ${deltaCmvHtml(b.cmvRealGeral, b.plCmv)}
+        <div class="vn-sub">Comprado ÷ Faturamento</div>
+      </div>
+      <div class="vn-card ${cmvCardCls(b.cmvRealRefeicao, b.plCmvRefeicao)}">
+        <div class="vn-label">CMV Real Refeição${b.cmvRealAproximado?" (aprox.)":""}</div>
+        <div class="vn-value">${b.cmvRealRefeicao!==null?fmtPct(b.cmvRealRefeicao):"—"}</div>
+        ${deltaCmvHtml(b.cmvRealRefeicao, b.plCmvRefeicao)}
+        <div class="vn-sub">Comprado rateado pela proporção do custo teórico</div>
+      </div>
+      <div class="vn-card ${cmvCardCls(b.cmvRealCafeExtras, b.plCmvCafeExtras)}">
+        <div class="vn-label">CMV Real Café e Extras${b.cmvRealAproximado?" (aprox.)":""}</div>
+        <div class="vn-value">${b.cmvRealCafeExtras!==null?fmtPct(b.cmvRealCafeExtras):"—"}</div>
+        ${deltaCmvHtml(b.cmvRealCafeExtras, b.plCmvCafeExtras)}
+        <div class="vn-sub">Comprado rateado pela proporção do custo teórico</div>
+      </div>
       <div class="vn-card ${cmvCardCls(b.cmv, b.plCmv)}">
         <div class="vn-label">CMV Total</div>
         <div class="vn-value">${b.cmv!==null?fmtPct(b.cmv):"—"}</div>
         ${deltaCmvHtml(b.cmv, b.plCmv)}
-        ${cmvRealHtml(b.cmvRealGeral, false)}
       </div>
       <div class="vn-card ${cmvCardCls(b.cmvRefeicao, b.plCmvRefeicao)}">
         <div class="vn-label">CMV Refeição</div>
         <div class="vn-value">${b.cmvRefeicao!==null?fmtPct(b.cmvRefeicao):"—"}</div>
         ${deltaCmvHtml(b.cmvRefeicao, b.plCmvRefeicao)}
-        ${cmvRealHtml(b.cmvRealRefeicao, b.cmvRealAproximado)}
       </div>
       <div class="vn-card ${cmvCardCls(b.cmvCafeExtras, b.plCmvCafeExtras)}">
         <div class="vn-label">CMV Café e Extras</div>
         <div class="vn-value">${b.cmvCafeExtras!==null?fmtPct(b.cmvCafeExtras):"—"}</div>
         ${deltaCmvHtml(b.cmvCafeExtras, b.plCmvCafeExtras)}
-        ${cmvRealHtml(b.cmvRealCafeExtras, b.cmvRealAproximado)}
       </div>
       <div class="vn-card">
         <div class="vn-label">Orçamento</div>
