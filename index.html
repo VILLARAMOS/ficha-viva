@@ -232,6 +232,7 @@ tbody tr:hover{background:var(--surface-alt);}
 .vn-card .vn-sub b{font-family:'IBM Plex Mono',monospace; font-weight:600; color:var(--text);}
 .vn-sub .up{color:var(--ok); font-weight:600;}
 .vn-sub .down{color:var(--critical); font-weight:600;}
+.vn-card .vn-sub-real{border-top:1px dashed var(--border); padding-top:5px; margin-top:7px; font-style:italic;}
 .vn-card-fat{display:flex; flex-direction:column; justify-content:center; min-height:100%;}
 .vn-card-fat .vn-label{font-size:11px;}
 .vn-card-fat .vn-value{font-size:30px; line-height:1.2;}
@@ -10707,12 +10708,28 @@ function visaoNegocioBloco(mesId, escopo, nome, almocoIdx, cafeIdx){
   });
   const cmvDe = (c,r) => r > 0 ? c/r : null;
   const orcado = totalOrcadoMes(mesId, escopo), comprado = totalCompradoMes(mesId, escopo);
+  // CMV real (base compra), pedido do Marcelo em 05/11/2026: Comprado ÷ Faturamento, estoque
+  // inicial/final = 0 por enquanto (não contabilizados ainda). Geral é exato — Comprado já é o
+  // total de pedidos do mês. Refeição/Café são APROXIMADOS: os Pedidos não são lançados separando
+  // destino (ver nota em Orçamento), então rateio o Comprado total entre as duas categorias na
+  // mesma proporção do custo teórico de receita (catAcum.refeicao/cafeExtras.custo) — se o cliente
+  // come proporcionalmente mais refeição que café em custo teórico, a fatia do Comprado também vai
+  // mais pra refeição. É só uma divisão proporcional, não um rastreio real do insumo comprado.
+  const custoTeoRef = resumo.catAcum.refeicao.custo, custoTeoCafe = resumo.catAcum.cafeExtras.custo;
+  const custoTeoSoma = custoTeoRef + custoTeoCafe;
+  const fracaoRef = custoTeoSoma > 0.005 ? custoTeoRef / custoTeoSoma : null;
+  const compradoRefAprox = fracaoRef !== null ? comprado * fracaoRef : null;
+  const compradoCafeAprox = fracaoRef !== null ? comprado * (1 - fracaoRef) : null;
+  const cmvRealGeral = cmvDe(comprado, resumo.receita);
+  const cmvRealRefeicao = compradoRefAprox !== null ? cmvDe(compradoRefAprox, resumo.catAcum.refeicao.receita) : null;
+  const cmvRealCafeExtras = compradoCafeAprox !== null ? cmvDe(compradoCafeAprox, resumo.catAcum.cafeExtras.receita) : null;
   return {
     nome, escopo,
     receita: resumo.receita, custo: resumo.custo, cmv: resumo.cmv, cmvRefeicao: resumo.cmvRefeicao, cmvCafeExtras: resumo.cmvCafeExtras,
     plReceita, plCusto, plCmv: cmvDe(plCusto, plReceita),
     plCmvRefeicao: cmvDe(plCat.refeicao.custo, plCat.refeicao.receita), plCmvCafeExtras: cmvDe(plCat.cafeExtras.custo, plCat.cafeExtras.receita),
-    orcado, comprado, saldo: orcado - comprado
+    orcado, comprado, saldo: orcado - comprado,
+    cmvRealGeral, cmvRealRefeicao, cmvRealCafeExtras, cmvRealAproximado: fracaoRef !== null
   };
 }
 function cmvCardCls(real, plan){
@@ -10737,6 +10754,12 @@ function deltaCmvHtml(real, plan){
   const sinal = diffPP > 0 ? "+" : "";
   return `<div class="vn-sub">Planejado <b>${fmtPct(plan)}</b> · <span class="${cls}">${sinal}${diffPP.toFixed(1).replace(".",",")} p.p.</span></div>`;
 }
+// CMV real (base compra) — pedido do Marcelo em 05/11/2026. aproximado=true marca Refeição/Café,
+// que são rateio proporcional (ver nota em visaoNegocioBloco), não rastreio exato do insumo comprado.
+function cmvRealHtml(v, aproximado){
+  if(v === null || v === undefined) return "";
+  return `<div class="vn-sub vn-sub-real">CMV real (compras)${aproximado ? " · aprox." : ""} <b>${fmtPct(v)}</b></div>`;
+}
 function visaoNegocioCardHtml(b){
   const subEscopo = b.escopo === "todos" ? "Matriz + Filial" : (b.escopo === "matriz" ? "Contratos da Matriz" : "Contratos da Filial");
   const clsFat = b.plReceita > 0.5 ? (b.receita >= b.plReceita ? "ok" : (b.receita > 0 ? "warn" : "critical")) : "";
@@ -10753,16 +10776,19 @@ function visaoNegocioCardHtml(b){
         <div class="vn-label">CMV Total</div>
         <div class="vn-value">${b.cmv!==null?fmtPct(b.cmv):"—"}</div>
         ${deltaCmvHtml(b.cmv, b.plCmv)}
+        ${cmvRealHtml(b.cmvRealGeral, false)}
       </div>
       <div class="vn-card ${cmvCardCls(b.cmvRefeicao, b.plCmvRefeicao)}">
         <div class="vn-label">CMV Refeição</div>
         <div class="vn-value">${b.cmvRefeicao!==null?fmtPct(b.cmvRefeicao):"—"}</div>
         ${deltaCmvHtml(b.cmvRefeicao, b.plCmvRefeicao)}
+        ${cmvRealHtml(b.cmvRealRefeicao, b.cmvRealAproximado)}
       </div>
       <div class="vn-card ${cmvCardCls(b.cmvCafeExtras, b.plCmvCafeExtras)}">
         <div class="vn-label">CMV Café e Extras</div>
         <div class="vn-value">${b.cmvCafeExtras!==null?fmtPct(b.cmvCafeExtras):"—"}</div>
         ${deltaCmvHtml(b.cmvCafeExtras, b.plCmvCafeExtras)}
+        ${cmvRealHtml(b.cmvRealCafeExtras, b.cmvRealAproximado)}
       </div>
       <div class="vn-card">
         <div class="vn-label">Orçamento</div>
@@ -10869,7 +10895,7 @@ function renderPainel(){
   content.innerHTML = `
     <details class="painel-notas">
       <summary>Notas técnicas desta versão</summary>
-      <div class="footnote">Visão do Negócio em quadros (Grupo/Matriz/Filial, realizado × planejado) e Painel de pendências. O "Planejado" da Visão do Negócio é novo aqui: não existia motor de previsão de receita, então reaproveito o motor de previsão de CONSUMO (o mesmo da aba Compras) multiplicado pelo preço do contrato — não lê Vendas, é projeção pura. Checagem de órfãos/fichas duplicadas e insights automáticos continuam abaixo. Retirados do Painel a pedido do Marcelo (05/10/2026): evolução semanal, análise por cliente, orçado×comprado por bloco, CMV de formulação, Refeição×Café/Extras, pratos mais caros e proteínas mais baratas — o código continua no sistema, só não é mais exibido aqui, caso precisem voltar. "Divergência vs. planilha" do sistema antigo não foi portada (sem dado equivalente aqui) e "fechar mês" foi substituído por uma exportação simples. O que ainda falta do Painel antigo, e por que: a "Visão do negócio" segmentada por operação (RB · Cardápio 1 / Clientes do Cardápio 2 dentro da Matriz) — bloqueado estruturalmente, porque a tabela de contratos desta base não guarda essa sub-operação (só Matriz/Filial); decidir isso é um passo separado, de esquema, não desta rodada.</div>
+      <div class="footnote">Visão do Negócio em quadros (Grupo/Matriz/Filial, realizado × planejado) e Painel de pendências. O "Planejado" da Visão do Negócio usa quantidadePlanejadaReceita (lançado no dia, com ausência = 0 se o dia já tem Vendas gravada > mediana do mês > ciclo de 2 meses > quantidade contratada) multiplicado pelo preço do contrato — corrigido em 05/11/2026 pra não inflar com venda "fantasma" de item opcional não pedido num dia específico. <strong>CMV real (compras)</strong>, pedido do Marcelo em 05/11/2026: Comprado ÷ Faturamento, com estoque inicial/final = 0 (ainda não contabilizados — quando entrarem, a fórmula vira (estoque inicial + Comprado − estoque final) ÷ Faturamento). O total (CMV Total) é exato, porque Comprado já é a soma de todos os pedidos do mês. Refeição e Café são <strong>aproximados</strong>: os Pedidos não são lançados separando destino (mesma limitação já registrada na aba Orçamento), então o Comprado total é rateado entre as duas categorias na mesma proporção do custo teórico de receita apurado em Vendas — não é rastreio real de qual insumo comprado foi pra cada lado. Checagem de órfãos/fichas duplicadas e insights automáticos continuam abaixo. Retirados do Painel a pedido do Marcelo (05/10/2026): evolução semanal, análise por cliente, orçado×comprado por bloco, CMV de formulação, Refeição×Café/Extras, pratos mais caros e proteínas mais baratas — o código continua no sistema, só não é mais exibido aqui, caso precisem voltar. "Divergência vs. planilha" do sistema antigo não foi portada (sem dado equivalente aqui) e "fechar mês" foi substituído por uma exportação simples. O que ainda falta do Painel antigo, e por que: a "Visão do negócio" segmentada por operação (RB · Cardápio 1 / Clientes do Cardápio 2 dentro da Matriz) — bloqueado estruturalmente, porque a tabela de contratos desta base não guarda essa sub-operação (só Matriz/Filial); decidir isso é um passo separado, de esquema, não desta rodada.</div>
     </details>
     <div class="menu-controls">
       <select id="pn-mes">${meses.map(m => `<option value="${m.id}" ${m.id===painelMesSel?"selected":""}>${escapeHtml(m.nome)}</option>`).join("")}</select>
