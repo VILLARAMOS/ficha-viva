@@ -7941,6 +7941,7 @@ let comprasSalvando = false;
 let comprasListaGerada = false; // já clicou "Gerar lista de compra" nesta visita à aba?
 let conjuntosCompra = new Map(); // id -> {nome, contrato_ids, alterado_em, alterado_por}
 let comprasTotaisOverride = new Map(); // "produtoId|DIA" -> valor — ajuste manual da tabela de Totais, só pra "Gerar lista de compra" (rateado proporcionalmente entre os clientes selecionados); nunca salva, zera ao trocar semana/seleção
+let comprasTotaisCategoriaOverride = new Map(); // "categoria|DIA" (categoria = "refeicao" ou "cafeExtras") -> valor — ajuste manual do Total do dia (redução/aumento esporádico), mesmo princípio: só pra "Gerar lista de compra", rateado proporcionalmente, nunca salvo
 let comprasDiasSelecionados = new Set(DIAS_ORDEM); // dias que entram no cálculo da Lista de compra desta visita (feriado/sem expediente na semana fica desmarcado); nunca salva, zera (volta pra semana toda) ao trocar de semana
 function comprasDiaAtivo(dia){ return comprasDiasSelecionados.has(dia); }
 let refeicoesFuncDraft = new Map(); // "semana|DIA" -> quantidade (null = remover ajuste salvo, volta pro padrão 40/20) — mesmo rascunho pendente da previsão, salva junto em "Salvar alterações"
@@ -8148,6 +8149,26 @@ function comprasTotalRefeicoesDia(dia, semana, selecionados, itensRefeicao){
 function comprasTotalCafeDia(dia, semana, selecionados, itensCafe){
   return itensCafe.reduce((s,item) => s + comprasTotalBase(item.produto_id, dia, semana, selecionados), 0);
 }
+function comprasTotCatKey(categoria, dia){ return `${categoria}|${dia}`; }
+// ajuste manual do Total do dia (refeições ou café): mesmo princípio do ajuste por item (calcularTotaisOverrideScale),
+// mas o fator de escala se aplica a TODOS os itens daquela categoria naquele dia (inclusive Refeições funcionários,
+// que conta como "refeicao"), não a um produto específico.
+function calcularCategoriaOverrideScale(semana, selIds){
+  const mapa = new Map();
+  if(!comprasTotaisCategoriaOverride.size) return mapa;
+  const selecionadosCt = selIds.map(id => [id, contratos.get(id)]).filter(([,ct]) => ct);
+  const itens = itensUniaoSelecao(selecionadosCt);
+  const itensRefeicao = itens.filter(it => it.categoria === "refeicao");
+  const itensCafe = itens.filter(it => it.categoria !== "refeicao");
+  comprasTotaisCategoriaOverride.forEach((alvo, k) => {
+    const [categoria, dia] = k.split("|");
+    const base = categoria === "refeicao"
+      ? comprasTotalRefeicoesDia(dia, semana, selecionadosCt, itensRefeicao)
+      : comprasTotalCafeDia(dia, semana, selecionadosCt, itensCafe);
+    mapa.set(k, base > 0 ? (alvo / base) : null); // null = sem base nos clientes selecionados pra ratear; ajuste não se aplica
+  });
+  return mapa;
+}
 function calcularTotaisOverrideScale(semana, selIds){
   const mapa = new Map();
   comprasTotaisOverride.forEach((alvo, k) => {
@@ -8228,11 +8249,27 @@ function renderComprasTotais(area, semana, selecionados){
             <tbody>
               <tr class="row-total">
                 <td class="cat-col"><strong>Total refeições do dia</strong></td>
-                ${DIAS_ORDEM.map(dia => `<td class="num-cell"><strong>${fmtNum(comprasTotalRefeicoesDia(dia, semana, selecionados, itensRefeicao), 0)}</strong></td>`).join("")}
+                ${DIAS_ORDEM.map(dia => {
+                  const base = comprasTotalRefeicoesDia(dia, semana, selecionados, itensRefeicao);
+                  const k = comprasTotCatKey("refeicao", dia);
+                  const overridden = comprasTotaisCategoriaOverride.has(k);
+                  const val = overridden ? comprasTotaisCategoriaOverride.get(k) : base;
+                  const semBase = overridden && !base;
+                  const titulo = semBase ? "Sem previsão nos clientes selecionados — este ajuste não poderá ser aplicado à lista." : `Soma atual dos clientes selecionados: ${base}`;
+                  return `<td class="cel"><input type="number" step="1" min="0" class="cel-gram cp-tot-cat${overridden?" cp-qtd-pend":""}" style="font-weight:700;" data-categoria="refeicao" data-dia="${dia}" value="${val}" title="${escapeHtml(titulo)}"></td>`;
+                }).join("")}
               </tr>
               <tr class="row-total">
                 <td class="cat-col"><strong>Total café do dia</strong></td>
-                ${DIAS_ORDEM.map(dia => `<td class="num-cell"><strong>${fmtNum(comprasTotalCafeDia(dia, semana, selecionados, itensCafe), 0)}</strong></td>`).join("")}
+                ${DIAS_ORDEM.map(dia => {
+                  const base = comprasTotalCafeDia(dia, semana, selecionados, itensCafe);
+                  const k = comprasTotCatKey("cafeExtras", dia);
+                  const overridden = comprasTotaisCategoriaOverride.has(k);
+                  const val = overridden ? comprasTotaisCategoriaOverride.get(k) : base;
+                  const semBase = overridden && !base;
+                  const titulo = semBase ? "Sem previsão nos clientes selecionados — este ajuste não poderá ser aplicado à lista." : `Soma atual dos clientes selecionados: ${base}`;
+                  return `<td class="cel"><input type="number" step="1" min="0" class="cel-gram cp-tot-cat${overridden?" cp-qtd-pend":""}" style="font-weight:700;" data-categoria="cafeExtras" data-dia="${dia}" value="${val}" title="${escapeHtml(titulo)}"></td>`;
+                }).join("")}
               </tr>
               <tr>
                 <td class="cat-col">Refeições funcionários</td>
@@ -8269,7 +8306,7 @@ function renderComprasTotais(area, semana, selecionados){
             </tbody>
           </table>
         </div>
-        ${comprasTotaisOverride.size ? `<button type="button" class="btn small ghost" id="cx-tot-limpar" style="margin-top:10px;">Limpar ajustes de total</button>` : ""}
+        ${(comprasTotaisOverride.size || comprasTotaisCategoriaOverride.size) ? `<button type="button" class="btn small ghost" id="cx-tot-limpar" style="margin-top:10px;">Limpar ajustes de total</button>` : ""}
       </div>
     </div>
   `;
@@ -8284,12 +8321,25 @@ function renderComprasTotais(area, semana, selecionados){
     }
     inp.classList.toggle("cp-qtd-pend", comprasTotaisOverride.has(k));
   }));
+  area.querySelectorAll(".cp-tot-cat").forEach(inp => inp.addEventListener("input", () => {
+    const { categoria, dia } = inp.dataset;
+    const k = comprasTotCatKey(categoria, dia);
+    const base = categoria === "refeicao"
+      ? comprasTotalRefeicoesDia(dia, semana, selecionados, itensRefeicao)
+      : comprasTotalCafeDia(dia, semana, selecionados, itensCafe);
+    if(inp.value === ""){ comprasTotaisCategoriaOverride.delete(k); }
+    else{
+      const val = Number(inp.value);
+      if(val === base) comprasTotaisCategoriaOverride.delete(k); else comprasTotaisCategoriaOverride.set(k, val);
+    }
+    inp.classList.toggle("cp-qtd-pend", comprasTotaisCategoriaOverride.has(k));
+  }));
   area.querySelectorAll(".cp-func").forEach(inp => inp.addEventListener("change", () => {
     refeicoesFuncSetDraft(semana, inp.dataset.dia, inp.value);
     renderCompras(); // o valor alimenta a linha "Total refeições do dia" acima, precisa recalcular
   }));
   const btnLimpar = document.getElementById("cx-tot-limpar");
-  if(btnLimpar) btnLimpar.addEventListener("click", () => { comprasTotaisOverride = new Map(); renderCompras(); });
+  if(btnLimpar) btnLimpar.addEventListener("click", () => { comprasTotaisOverride = new Map(); comprasTotaisCategoriaOverride = new Map(); renderCompras(); });
 }
 
 function abrirBuscarInsumoSimples(onEscolher){
@@ -8438,7 +8488,7 @@ function atualizarBarraPendenciasCompras(){
   if(btnGerar) btnGerar.textContent = nPend ? "Salvar e gerar lista" : "Gerar lista de compra";
 }
 
-function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale){
+function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale, categoriaOverrideScale){
   const area = document.getElementById("cp-lista-resultado");
   if(!area) return;
   const almocoIdx = indiceCardapioAlmoco();
@@ -8459,8 +8509,15 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale){
       itensContrato.forEach(item => {
         let q = quantidadePrevista(id, item.produto_id, dia, semana);
         if(!q) return;
-        if(totaisOverrideScale && totaisOverrideScale.has(`${item.produto_id}|${dia}`)){
-          const fator = totaisOverrideScale.get(`${item.produto_id}|${dia}`);
+        const chaveItem = `${item.produto_id}|${dia}`;
+        if(totaisOverrideScale && totaisOverrideScale.has(chaveItem)){
+          const fator = totaisOverrideScale.get(chaveItem);
+          if(fator == null){ temAjusteTotalIgnorado = true; }
+          else q = q * fator;
+        } else if(categoriaOverrideScale && categoriaOverrideScale.has(`${categoriaSimples(item.produto_id)}|${dia}`)){
+          // sem ajuste específico do item: se o Total do dia (refeições ou café) foi ajustado, aplica o
+          // mesmo fator de redução/aumento proporcional que o ajuste por item já usa
+          const fator = categoriaOverrideScale.get(`${categoriaSimples(item.produto_id)}|${dia}`);
           if(fator == null){ temAjusteTotalIgnorado = true; }
           else q = q * fator;
         }
@@ -8483,8 +8540,13 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale){
   // refeições de funcionários (sem cliente/contrato — puxa insumo do cardápio Ultra, sempre Matriz)
   DIAS_ORDEM.forEach(dia => {
     if(!comprasDiaAtivo(dia)) return;
-    const qFunc = refeicoesFuncValorAtual(semana, dia);
+    let qFunc = refeicoesFuncValorAtual(semana, dia);
     if(!qFunc) return;
+    if(categoriaOverrideScale && categoriaOverrideScale.has(`refeicao|${dia}`)){
+      const fator = categoriaOverrideScale.get(`refeicao|${dia}`);
+      if(fator == null){ temAjusteTotalIgnorado = true; }
+      else qFunc = qFunc * fator;
+    }
     const row = almocoIdx.get(`${REFEICOES_FUNC_CARDAPIO_NUM}|${semana}|${dia}`);
     if(!row) return;
     const porItem = insumosDoDiaRefeicaoCompra(row, qFunc, dia, coletor);
@@ -8838,7 +8900,7 @@ function renderComprasLista(content, tabsHtml, wireTabs){
   `;
   wireTabs();
 
-  const limparOverridesTotais = () => { comprasTotaisOverride = new Map(); };
+  const limparOverridesTotais = () => { comprasTotaisOverride = new Map(); comprasTotaisCategoriaOverride = new Map(); };
   const limparFiltroDias = () => { comprasDiasSelecionados = new Set(DIAS_ORDEM); };
   document.getElementById("cp-semana").addEventListener("change", e => { comprasSemana = parseInt(e.target.value,10); limparOverridesTotais(); limparFiltroDias(); renderCompras(); });
   document.getElementById("cx-sem-ant").addEventListener("click", () => { comprasSemana = opcoesSemana[idxSem-1]; limparOverridesTotais(); limparFiltroDias(); renderCompras(); });
@@ -8885,7 +8947,7 @@ function renderComprasLista(content, tabsHtml, wireTabs){
   document.getElementById("cx-gerar").addEventListener("click", async () => {
     if(comprasPendCount() && !(await comprasSalvarAlteracoes())) return;
     comprasListaGerada = true;
-    renderListaCompraResultado(comprasSemana, selIds, calcularTotaisOverrideScale(comprasSemana, selIds));
+    renderListaCompraResultado(comprasSemana, selIds, calcularTotaisOverrideScale(comprasSemana, selIds), calcularCategoriaOverrideScale(comprasSemana, selIds));
     const r = document.getElementById("cp-lista-resultado");
     if(r) r.scrollIntoView({behavior:"smooth", block:"start"});
   });
@@ -8896,7 +8958,7 @@ function renderComprasLista(content, tabsHtml, wireTabs){
   if(comprasMostrarPorCliente) renderComprasQuantidades(areaCliente, selecionadosCt);
   else areaCliente.innerHTML = "";
   renderComprasAjusteSeguranca(document.getElementById("cp-ajuste-area"), comprasSemana);
-  if(comprasListaGerada && selIds.length) renderListaCompraResultado(comprasSemana, selIds, calcularTotaisOverrideScale(comprasSemana, selIds));
+  if(comprasListaGerada && selIds.length) renderListaCompraResultado(comprasSemana, selIds, calcularTotaisOverrideScale(comprasSemana, selIds), calcularCategoriaOverrideScale(comprasSemana, selIds));
 }
 
 function renderCompras(){
