@@ -10217,6 +10217,14 @@ function totalCompradoMes(mesId, escopo){
   const r = compradoPorBlocoSemana(mesId, escopo); if(!r) return 0;
   let t = 0; r.porSemanaBloco.forEach(sb => sb.porBloco.forEach(v => t += v)); return t;
 }
+// Comprado "CMV" (06/11/2026, pedido do Marcelo): igual a totalCompradoMes, mas tira o bloco LIMPEZA
+// E DESCARTÁVEIS — confirmado contra a planilha financeira (DRE Matriz/Filial) que isso não entra no
+// CMV, é Despesa Fixa (rateada) lá. Só usado pro cálculo do CMV Real no Painel; o card "Comprado" do
+// Orçamento continua somando tudo (ali é controle de compra, não CMV).
+function totalCompradoCmvMes(mesId, escopo){
+  const r = compradoPorBlocoSemana(mesId, escopo); if(!r) return 0;
+  let t = 0; r.porSemanaBloco.forEach(sb => sb.porBloco.forEach((v,g) => { if(g !== GRUPO_LIMPEZA_DESCARTAVEIS) t += v; })); return t;
+}
 function resumoEstoqueUnidade(unidade){
   const semanasComContagem = [...new Set([...estoqueContagem.values()].filter(r => r.unidade === unidade).map(r => r.semana))].sort((a,b) => b-a);
   if(!semanasComContagem.length) return { semana: null };
@@ -10723,18 +10731,21 @@ function visaoNegocioBloco(mesId, escopo, nome, almocoIdx, cafeIdx){
   const cmvDe = (c,r) => r > 0 ? c/r : null;
   const orcado = totalOrcadoMes(mesId, escopo), comprado = totalCompradoMes(mesId, escopo);
   // CMV real (base compra), pedido do Marcelo em 05/11/2026: Comprado ÷ Faturamento, estoque
-  // inicial/final = 0 por enquanto (não contabilizados ainda). Geral é exato — Comprado já é o
-  // total de pedidos do mês. Refeição/Café são APROXIMADOS: os Pedidos não são lançados separando
-  // destino (ver nota em Orçamento), então rateio o Comprado total entre as duas categorias na
-  // mesma proporção do custo teórico de receita (catAcum.refeicao/cafeExtras.custo) — se o cliente
-  // come proporcionalmente mais refeição que café em custo teórico, a fatia do Comprado também vai
-  // mais pra refeição. É só uma divisão proporcional, não um rastreio real do insumo comprado.
+  // inicial/final = 0 por enquanto (não contabilizados ainda). Geral é exato — compradoCmv já é o
+  // total de pedidos do mês, MENOS o bloco LIMPEZA E DESCARTÁVEIS (06/11/2026: confirmado contra a
+  // planilha financeira — lá isso é Despesa Fixa, não CMV; ver totalCompradoCmvMes). Refeição/Café
+  // são APROXIMADOS: os Pedidos não são lançados separando destino (ver nota em Orçamento), então
+  // rateio o compradoCmv entre as duas categorias na mesma proporção do custo teórico de receita
+  // (catAcum.refeicao/cafeExtras.custo) — se o cliente come proporcionalmente mais refeição que café
+  // em custo teórico, a fatia do compradoCmv também vai mais pra refeição. É só uma divisão
+  // proporcional, não um rastreio real do insumo comprado.
+  const compradoCmv = totalCompradoCmvMes(mesId, escopo);
   const custoTeoRef = resumo.catAcum.refeicao.custo, custoTeoCafe = resumo.catAcum.cafeExtras.custo;
   const custoTeoSoma = custoTeoRef + custoTeoCafe;
   const fracaoRef = custoTeoSoma > 0.005 ? custoTeoRef / custoTeoSoma : null;
-  const compradoRefAprox = fracaoRef !== null ? comprado * fracaoRef : null;
-  const compradoCafeAprox = fracaoRef !== null ? comprado * (1 - fracaoRef) : null;
-  const cmvRealGeral = cmvDe(comprado, resumo.receita);
+  const compradoRefAprox = fracaoRef !== null ? compradoCmv * fracaoRef : null;
+  const compradoCafeAprox = fracaoRef !== null ? compradoCmv * (1 - fracaoRef) : null;
+  const cmvRealGeral = cmvDe(compradoCmv, resumo.receita);
   const cmvRealRefeicao = compradoRefAprox !== null ? cmvDe(compradoRefAprox, resumo.catAcum.refeicao.receita) : null;
   const cmvRealCafeExtras = compradoCafeAprox !== null ? cmvDe(compradoCafeAprox, resumo.catAcum.cafeExtras.receita) : null;
   return {
@@ -10790,7 +10801,7 @@ function visaoNegocioCardHtml(b){
         <div class="vn-label">CMV Real (compras)</div>
         <div class="vn-value">${b.cmvRealGeral!==null?fmtPct(b.cmvRealGeral):"—"}</div>
         ${deltaCmvHtml(b.cmvRealGeral, b.plCmv)}
-        <div class="vn-sub">Comprado ÷ Faturamento</div>
+        <div class="vn-sub">Comprado (sem limpeza/descartáveis) ÷ Faturamento</div>
       </div>
       <div class="vn-card ${cmvCardCls(b.cmvRealRefeicao, b.plCmvRefeicao)}">
         <div class="vn-label">CMV Real Refeição${b.cmvRealAproximado?" (aprox.)":""}</div>
@@ -10945,7 +10956,7 @@ function renderPainel(){
   content.innerHTML = `
     <details class="painel-notas">
       <summary>Notas técnicas desta versão</summary>
-      <div class="footnote">Visão do Negócio em quadros (Grupo/Matriz/Filial, realizado × planejado) e Painel de pendências. O "Planejado" da Visão do Negócio usa quantidadePlanejadaReceita (lançado no dia, com ausência = 0 se o dia já tem Vendas gravada > mediana do mês > ciclo de 2 meses > quantidade contratada) multiplicado pelo preço do contrato — corrigido em 05/11/2026 pra não inflar com venda "fantasma" de item opcional não pedido num dia específico. <strong>CMV real (compras)</strong>, pedido do Marcelo em 05/11/2026: Comprado ÷ Faturamento, com estoque inicial/final = 0 (ainda não contabilizados — quando entrarem, a fórmula vira (estoque inicial + Comprado − estoque final) ÷ Faturamento). O total (CMV Total) é exato, porque Comprado já é a soma de todos os pedidos do mês. Refeição e Café são <strong>aproximados</strong>: os Pedidos não são lançados separando destino (mesma limitação já registrada na aba Orçamento), então o Comprado total é rateado entre as duas categorias na mesma proporção do custo teórico de receita apurado em Vendas — não é rastreio real de qual insumo comprado foi pra cada lado. Checagem de órfãos/fichas duplicadas e insights automáticos continuam abaixo. Retirados do Painel a pedido do Marcelo (05/10/2026): evolução semanal, análise por cliente, orçado×comprado por bloco, CMV de formulação, Refeição×Café/Extras, pratos mais caros e proteínas mais baratas — o código continua no sistema, só não é mais exibido aqui, caso precisem voltar. "Divergência vs. planilha" do sistema antigo não foi portada (sem dado equivalente aqui) e "fechar mês" foi substituído por uma exportação simples. O que ainda falta do Painel antigo, e por que: a "Visão do negócio" segmentada por operação (RB · Cardápio 1 / Clientes do Cardápio 2 dentro da Matriz) — bloqueado estruturalmente, porque a tabela de contratos desta base não guarda essa sub-operação (só Matriz/Filial); decidir isso é um passo separado, de esquema, não desta rodada.</div>
+      <div class="footnote">Visão do Negócio em quadros (Grupo/Matriz/Filial, realizado × planejado) e Painel de pendências. O "Planejado" da Visão do Negócio usa quantidadePlanejadaReceita (lançado no dia, com ausência = 0 se o dia já tem Vendas gravada > mediana do mês > ciclo de 2 meses > quantidade contratada) multiplicado pelo preço do contrato — corrigido em 05/11/2026 pra não inflar com venda "fantasma" de item opcional não pedido num dia específico. <strong>CMV real (compras)</strong>, pedido do Marcelo em 05/11/2026: Comprado ÷ Faturamento, com estoque inicial/final = 0 (ainda não contabilizados — quando entrarem, a fórmula vira (estoque inicial + Comprado − estoque final) ÷ Faturamento). Ajustado em 06/11/2026: esse Comprado <strong>exclui o bloco LIMPEZA E DESCARTÁVEIS</strong> — comparando com a planilha financeira (DRE Matriz/Filial de Setembro), esse bloco lá entra como Despesa Fixa rateada, não como CMV; incluir deixava o CMV Real do sistema artificialmente mais alto (~5 p.p. a mais na Matriz). O "Comprado"/"Saldo do Orçamento" nos cards ao lado continuam somando tudo, incluindo limpeza — ali é controle de compra, não CMV. O total (CMV Total) é exato, porque esse Comprado (sem limpeza) já é a soma de todos os pedidos relevantes do mês. Refeição e Café são <strong>aproximados</strong>: os Pedidos não são lançados separando destino (mesma limitação já registrada na aba Orçamento), então o Comprado é rateado entre as duas categorias na mesma proporção do custo teórico de receita apurado em Vendas — não é rastreio real de qual insumo comprado foi pra cada lado. Checagem de órfãos/fichas duplicadas e insights automáticos continuam abaixo. Retirados do Painel a pedido do Marcelo (05/10/2026): evolução semanal, análise por cliente, orçado×comprado por bloco, CMV de formulação, Refeição×Café/Extras, pratos mais caros e proteínas mais baratas — o código continua no sistema, só não é mais exibido aqui, caso precisem voltar. "Divergência vs. planilha" do sistema antigo não foi portada (sem dado equivalente aqui) e "fechar mês" foi substituído por uma exportação simples. O que ainda falta do Painel antigo, e por que: a "Visão do negócio" segmentada por operação (RB · Cardápio 1 / Clientes do Cardápio 2 dentro da Matriz) — bloqueado estruturalmente, porque a tabela de contratos desta base não guarda essa sub-operação (só Matriz/Filial); decidir isso é um passo separado, de esquema, não desta rodada.</div>
     </details>
     <div class="menu-controls">
       <select id="pn-mes">${meses.map(m => `<option value="${m.id}" ${m.id===painelMesSel?"selected":""}>${escapeHtml(m.nome)}</option>`).join("")}</select>
