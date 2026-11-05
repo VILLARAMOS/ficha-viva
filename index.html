@@ -7922,6 +7922,33 @@ function quantidadePrevista(contratoId, produtoId, dia, semana){
   if(item && item.quantidade_ajustada !== null && item.quantidade_ajustada !== undefined) return item.quantidade_ajustada;
   return origemSugestao(contratoId, produtoId, dia, semana).valor;
 }
+// Versão para o "Planejado" de RECEITA (Painel/Contratos), não para Compras.
+// Diferença da quantidadePrevista: se o DIA já tem documento de Vendas lançado
+// (vendas.get(contratoId|semana|dia) existe), um item ausente nesse dia conta
+// como 0 vendido — nunca cai na mediana/ciclo/contrato. Só usa a cascata de
+// estimativa (mediana > ciclo > contrato) quando o dia inteiro ainda não foi
+// lançado em Vendas. Isso evita o viés de "venda fantasma" que inflava o
+// Planejado toda vez que um item opcional (café da tarde, extras, lanche,
+// jantar-marmita etc.) simplesmente não era pedido num dia específico — a
+// mediana só olha valores > 0, então um "não vendido" nunca vira 0 nela.
+// Decisão de 05/11/2026 (análise planejado x realizado set/out 2026).
+function quantidadePlanejadaReceita(contratoId, produtoId, dia, semana){
+  if(!contratoVigenteNoDia(contratos.get(contratoId), semana, dia)) return 0;
+  const doc = previsaoCompra.get(`${contratoId}|${semana}|${dia}`);
+  const item = doc && (doc.itens||[]).find(it => it.produto_id === produtoId);
+  if(item && item.quantidade_ajustada !== null && item.quantidade_ajustada !== undefined) return item.quantidade_ajustada;
+  if(vendas.has(`${contratoId}|${semana}|${dia}`)){
+    // dia já lançado: item ausente = vendeu 0, não é "ainda não lançado"
+    return vendaLancadaNoDia(contratoId, produtoId, dia, semana) || 0;
+  }
+  const mi = mediaHistoricaInfo(contratoId, produtoId, dia, semana);
+  if(mi && mi.n >= MEDIA_MIN_AMOSTRAS) return mi.valor;
+  const ciclo = projecaoCiclo(contratoId, produtoId, dia, semana, 0);
+  if(ciclo !== null) return ciclo;
+  if(mi) return mi.valor;
+  const ct = quantidadeContratadaDia(contratoId, produtoId, dia);
+  return ct !== null ? ct : 0;
+}
 function rotuloOrigemSugestao(origem, n){
   if(origem === "lancado") return "já lançado em Vendas nesta semana";
   if(origem === "media") return `mediana do mês (${n} lançamento${n===1?"":"s"})`;
@@ -10625,13 +10652,16 @@ function insightsAutomaticos(ctx){
 /* ---- v127: Visão do Negócio — quadros Grupo/Matriz/Filial (pedido do Marcelo, 05/10/2026) ----
    Reaproveita apurarResumoMes (realizado) e totalOrcadoMes/totalCompradoMes (orçamento), que já são
    por construção filtráveis por "todos"/"matriz"/"filial" — por isso Grupo/Matriz/Filial bate aqui
-   com o resto do Painel, sem fórmula nova. O "Planejado" é novo: meu sistema não tinha, até aqui,
-   nenhum motor de previsão de RECEITA (só o de previsão de CONSUMO de insumo, usado em Compras) —
-   então o planejado de faturamento/CMV abaixo reaproveita esse mesmo motor de previsão de
-   quantidade (ajuste manual > lançado na semana > mediana do mês > ciclo de 2 meses > quantidade
-   contratada), multiplicando a quantidade prevista pelo preço do contrato em vez de pelo kg de
-   insumo. Confirmado com o Marcelo antes de construir — é a única base de dado que já existe pra
-   isso; não lê Vendas (por isso não vira "zero planejado" quando ninguém lançou nada ainda). */
+   com o resto do Painel, sem fórmula nova. O "Planejado" usa quantidadePlanejadaReceita (ajuste
+   manual > item lançado nesse dia exato, com AUSÊNCIA = 0 se o dia já tem Vendas gravada > mediana
+   do mês > ciclo de 2 meses > quantidade contratada), multiplicando pelo preço do contrato.
+   Correção de 05/11/2026: antes usava quantidadePrevista (o motor de Compras), que trata item
+   ausente num dia já lançado como "ainda não lançado" e cai na mediana — isso inflava o Planejado
+   toda vez que um item opcional (café da tarde, extras, lanche, jantar-marmita) não era pedido num
+   dia específico, porque a mediana só enxerga valores > 0, nunca um 0 real. Resultado prático:
+   Planejado batendo ~10% acima do Realizado em set/out mesmo com quase tudo já lançado em Vendas.
+   quantidadePlanejadaReceita corrige isso sem mexer no motor de Compras (que mantém o viés de
+   segurança de propósito, pra não faltar insumo). */
 function apurarPlanejadoContrato(id, ct, mesId, almocoIdx, cafeIdx){
   const mes = MESES_REFERENCIA.find(m => m.id === mesId);
   const out = { receita: 0, receitaItemizada: 0, custo: 0, quantidade: 0, porCategoria: { refeicao: {custo:0, receita:0, quantidade:0}, cafeExtras: {custo:0, receita:0, quantidade:0} } };
@@ -10643,7 +10673,7 @@ function apurarPlanejadoContrato(id, ct, mesId, almocoIdx, cafeIdx){
     if(!contratoVigenteNoDia(ct, semana, dia)) return;
     itensContrato.forEach(item => {
       if(!item.produto_id) return;
-      const q = quantidadePrevista(id, item.produto_id, dia, semana);
+      const q = quantidadePlanejadaReceita(id, item.produto_id, dia, semana);
       if(!q) return;
       const custoUnd = custoUnidadeItemVendaVivo(almocoIdx, cafeIdx, item.produto_id, ct, semana, dia, id);
       const c = (custoUnd != null ? custoUnd : 0) * q;
