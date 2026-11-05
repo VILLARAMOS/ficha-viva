@@ -210,6 +210,12 @@ tbody tr:hover{background:var(--surface-alt);}
 .insight-item.warn .dot{background:var(--warn);}
 .insight-item.critical .dot{background:var(--critical);}
 .insight-item.neutral .dot{background:var(--text-faint);}
+.insight-item.insight-clicavel{cursor:pointer; border-radius:8px; margin:-4px -6px; padding:4px 6px; transition:background .12s ease;}
+.insight-item.insight-clicavel:hover{background:var(--surface-alt);}
+.insight-item.insight-clicavel:hover .pend-go{opacity:1; transform:translateX(2px);}
+.insight-item .pend-go{width:14px; height:14px; margin-left:auto; flex:none; align-self:center; opacity:.45; color:var(--text-faint); transition:opacity .12s ease, transform .12s ease;}
+@keyframes rowFocusPulse{0%{background:var(--warn-soft);} 100%{background:transparent;}}
+.row-focus-pulse{animation:rowFocusPulse 1.8s ease-out;}
 .painel-clientes-grid{display:grid; grid-template-columns:220px 1fr; gap:22px; align-items:center;}
 @media (max-width:860px){ .painel-clientes-grid{grid-template-columns:1fr;} }
 /* ---------- v127/v128: Visão do Negócio (quadros Grupo/Matriz/Filial) + Pendências ---------- */
@@ -6274,6 +6280,7 @@ function renderFichaModal(id, draft){
 let vendaContratoSel = null;
 let vendaSemanaSel = null;
 let vendaTabSel = "lancamento"; // "lancamento" | "fechamento"
+let vendasFechamentoFoco = null; // semana pra rolar/realçar ao chegar em Fechamento de semanas vindo de uma pendência do Painel (consumido uma vez)
 let draftVendas = null; // { [DIA]: { [produto_id]: quantidade } }
 let draftAjusteMinimo = {}; // { [produto_id]: quantidade } — diferença mínimo contratado x enviado, só entra na receita
 
@@ -7110,7 +7117,7 @@ function renderTabFechamentoSemanas(){
             const g = semanasFechadas.get(s);
             const fechada = g?.fechado === true;
             const clientesFechados = contratosAtivos.filter(([id]) => clienteFechadoNaSemana(id, s)).length;
-            return `<tr>
+            return `<tr id="vd-fs-row-${s}">
               <td class="name-cell">${escapeHtml(rotuloSemana(s))} <span class="hint">(${intervaloSemana(s)})</span></td>
               <td>${fechada
                 ? `<span class="chip critical"><span class="dot"></span>fechada por ${escapeHtml(g.fechado_por||"—")} em ${g.fechado_em ? escapeHtml(new Date(g.fechado_em).toLocaleDateString("pt-BR")) : "—"}</span>`
@@ -7158,6 +7165,13 @@ function renderTabFechamentoSemanas(){
     if(clienteFechadoNaSemana(contratoId, s)) reabrirSemanaClienteAction(contratoId, s, renderTabFechamentoSemanas);
     else fecharSemanaClienteAction(contratoId, s, renderTabFechamentoSemanas);
   }));
+
+  // veio de uma pendência do Painel ("semana sem fechamento") — rola até a linha e realça, uma vez só
+  if(vendasFechamentoFoco !== null){
+    const alvo = vendasFechamentoFoco; vendasFechamentoFoco = null;
+    const row = document.getElementById(`vd-fs-row-${alvo}`);
+    if(row){ row.scrollIntoView({behavior:"smooth", block:"center"}); row.classList.add("row-focus-pulse"); }
+  }
 }
 
 /* ===================================================================== FATURAMENTO APURADO
@@ -10832,22 +10846,43 @@ function visaoNegocioCardHtml(b){
 function pendenciasDoMes(mesId, linhasRealizado, orfaos, duplicadas){
   const itens = [];
   linhasRealizado.forEach(r => {
-    if(r.ap.itensSemCusto) itens.push({tone:"critical", texto: `${escapeHtml(r.ct.nome_cliente)}: ${r.ap.itensSemCusto} lançamento(s) de venda sem custo apurado neste mês — item sem ficha/custo vinculado ou faltando cadastro.`});
-    if(r.ap.itensSemPreco) itens.push({tone:"warn", texto: `${escapeHtml(r.ct.nome_cliente)}: ${r.ap.itensSemPreco} lançamento(s) de venda sem preço apurado neste mês — item sem preço no contrato.`});
+    if(r.ap.itensSemCusto) itens.push({tone:"critical", texto: `${escapeHtml(r.ct.nome_cliente)}: ${r.ap.itensSemCusto} lançamento(s) de venda sem custo apurado neste mês — item sem ficha/custo vinculado ou faltando cadastro.`, acao:{tipo:"contrato", id:r.id}});
+    if(r.ap.itensSemPreco) itens.push({tone:"warn", texto: `${escapeHtml(r.ct.nome_cliente)}: ${r.ap.itensSemPreco} lançamento(s) de venda sem preço apurado neste mês — item sem preço no contrato.`, acao:{tipo:"contrato", id:r.id}});
   });
-  if(orfaos.length) itens.push({tone:"critical", texto: `${orfaos.length} ingrediente(s) de ficha técnica apontando para insumo/ficha que não existe mais — ver Checagem de integridade das fichas, abaixo.`});
-  if(duplicadas.length) itens.push({tone:"warn", texto: `${duplicadas.length} ficha(s) técnica(s) com nome duplicado cadastradas — ver Checagem de integridade das fichas, abaixo.`});
+  if(orfaos.length) itens.push({tone:"critical", texto: `${orfaos.length} ingrediente(s) de ficha técnica apontando para insumo/ficha que não existe mais — ver Checagem de integridade das fichas, abaixo.`, acao:{tipo:"integridade"}});
+  if(duplicadas.length) itens.push({tone:"warn", texto: `${duplicadas.length} ficha(s) técnica(s) com nome duplicado cadastradas — ver Checagem de integridade das fichas, abaixo.`, acao:{tipo:"integridade"}});
   const mes = MESES_REFERENCIA.find(m => m.id === mesId);
   if(mes){
     const semanasPassadasAbertas = mes.semanas.filter(s => diaJaAconteceu(s, "DOMINGO") && !semanaGeralFechada(s));
-    if(semanasPassadasAbertas.length) itens.push({tone:"warn", texto: `${semanasPassadasAbertas.length} semana(s) já encerrada(s) e ainda sem fechamento geral em Vendas: ${semanasPassadasAbertas.map(s=>escapeHtml(rotuloSemanaCurto(s))).join(", ")} — enquanto aberta, o custo continua sendo recalculado ao vivo.`});
+    if(semanasPassadasAbertas.length) itens.push({tone:"warn", texto: `${semanasPassadasAbertas.length} semana(s) já encerrada(s) e ainda sem fechamento geral em Vendas: ${semanasPassadasAbertas.map(s=>escapeHtml(rotuloSemanaCurto(s))).join(", ")} — enquanto aberta, o custo continua sendo recalculado ao vivo.`, acao:{tipo:"vendas-fechamento", semanas:semanasPassadasAbertas}});
   }
   const ordem = {critical:0, warn:1, neutral:2};
   return itens.sort((a,b) => (ordem[a.tone]??2) - (ordem[b.tone]??2));
 }
 function pendenciasHtml(itens){
   if(!itens.length) return `<div class="empty-state">Nenhuma pendência encontrada para este período.</div>`;
-  return `<div class="insight-list">${itens.map(it => `<div class="insight-item ${it.tone}"><span class="dot"></span><span>${it.texto}</span></div>`).join("")}</div>`;
+  return `<div class="insight-list">${itens.map((it,i) => {
+    const clicavel = !!it.acao;
+    return `<div class="insight-item ${it.tone}${clicavel?" insight-clicavel":""}"${clicavel?` data-pend-idx="${i}" role="button" tabindex="0" title="Clique para ir até a área da pendência"`:""}><span class="dot"></span><span>${it.texto}</span>${clicavel?`<i class="ico pend-go" data-lucide="arrow-right"></i>`:""}</div>`;
+  }).join("")}</div>`;
+}
+// executa a navegação de uma pendência clicada — pedido do Marcelo em 05/11/2026 (clicar e ir direto
+// corrigir). "contrato" abre o modal do cliente; "integridade" só rola a página até o painel de
+// checagem logo abaixo (mesma tela); "vendas-fechamento" vai para Vendas → Fechamento de semanas e
+// realça a primeira semana pendente da lista.
+function executarAcaoPendencia(acao){
+  if(!acao) return;
+  if(acao.tipo === "contrato"){
+    goToView("contratos");
+    openContratoModal(acao.id);
+  } else if(acao.tipo === "integridade"){
+    const el = document.getElementById("painel-integridade-fichas");
+    if(el){ el.scrollIntoView({behavior:"smooth", block:"start"}); el.classList.remove("row-focus-pulse"); void el.offsetWidth; el.classList.add("row-focus-pulse"); }
+  } else if(acao.tipo === "vendas-fechamento"){
+    vendaTabSel = "fechamento";
+    vendasFechamentoFoco = acao.semanas && acao.semanas.length ? acao.semanas[0] : null;
+    goToView("vendas");
+  }
 }
 
 function renderPainel(){
@@ -10943,7 +10978,7 @@ function renderPainel(){
         cmvRefeicao: catAcum.refeicao.receita>0 ? catAcum.refeicao.custo/catAcum.refeicao.receita : null, orfaosCount: orfaos.length
       })}</div>
     </div>
-    <div class="panel">
+    <div class="panel" id="painel-integridade-fichas">
       <div class="panel-head"><h3><i class="ico" data-lucide="shield-check"></i>Checagem de integridade das fichas</h3></div>
       <div class="panel-body">
         <div class="two-col-num" style="margin-bottom:10px;">
@@ -10982,6 +11017,11 @@ function renderPainel(){
   });
   document.getElementById("pn-ir-orcamento").addEventListener("click", e => { e.preventDefault(); orcamentoMesSel = painelMesSel; orcamentoEscopoSel = painelEscopoSel; goToView("orcamento"); });
   document.getElementById("pn-ir-estoque").addEventListener("click", e => { e.preventDefault(); insumoTabSel = "estoque"; estoqueSubTab = "contagem"; goToView("insumos"); });
+  content.querySelectorAll(".insight-item[data-pend-idx]").forEach(el => {
+    const ir = () => executarAcaoPendencia(pendencias[Number(el.dataset.pendIdx)]?.acao);
+    el.addEventListener("click", ir);
+    el.addEventListener("keydown", e => { if(e.key==="Enter" || e.key===" "){ e.preventDefault(); ir(); } });
+  });
   if(window.lucide) lucide.createIcons();
 }
 
