@@ -656,7 +656,7 @@ async function showApp(user){
   await carregarMeusAcessos();
   aplicarMenuPorPerfil();
   if(!possoVerView(currentView)) currentView = primeiraViewPermitida() || currentView;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadRotas(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadFornecedores(), loadConjuntosCompra(), loadAjusteSeguranca(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas(), loadPcpConfig(), loadPcpSubstituicoesTudo(), loadAjudaConteudo(), loadAjudaDuvidas()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadRotas(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadFornecedores(), loadConjuntosCompra(), loadAjusteSeguranca(), loadRefeicoesFuncionarios(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas(), loadPcpConfig(), loadPcpSubstituicoesTudo(), loadAjudaConteudo(), loadAjudaDuvidas()]);
   renderBotaoDuvidaFlutuante();
   goToView(currentView);
 }
@@ -1231,6 +1231,21 @@ async function loadAjusteSeguranca(){
   if (error){ showAlert('Erro ao carregar ajuste de segurança: ' + error.message); return; }
   (data || []).forEach(row => ajusteSeguranca.set(`${row.semana}|${row.insumo_id}`, row));
 }
+/* ---- refeições de funcionários na Lista de compra (buffer por semana/dia, sem vínculo com cliente — puxa insumo do cardápio Ultra) ---- */
+let refeicoesFuncionarios = new Map(); // "semana|DIA" -> {id, semana, dia, quantidade}
+async function loadRefeicoesFuncionarios(){
+  const { data, error } = await sb.from('refeicoes_funcionarios').select('*');
+  refeicoesFuncionarios = new Map();
+  if (error){ showAlert('Erro ao carregar refeições de funcionários: ' + error.message); return; }
+  (data || []).forEach(row => refeicoesFuncionarios.set(`${row.semana}|${row.dia}`, row));
+}
+const REFEICOES_FUNC_CARDAPIO_NUM = 2; // "Ultra" — cardápio que representa a refeição do funcionário
+function refeicoesFuncPadrao(dia){ return (dia === "SABADO" || dia === "DOMINGO") ? 20 : 40; }
+function refeicoesFuncValorSalvo(semana, dia){
+  const row = refeicoesFuncionarios.get(`${semana}|${dia}`);
+  return row ? (row.quantidade || 0) : null;
+}
+
 function nomeUnidadeCompra(u){ return u === "filial" ? "Filial" : (u === "matriz" ? "Matriz" : "—"); }
 function pedidoUnidade(p){ return (p && (p.unidade === "matriz" || p.unidade === "filial")) ? p.unidade : "matriz"; }
 function blocoDoInsumo(insumoId){
@@ -7928,6 +7943,7 @@ let conjuntosCompra = new Map(); // id -> {nome, contrato_ids, alterado_em, alte
 let comprasTotaisOverride = new Map(); // "produtoId|DIA" -> valor — ajuste manual da tabela de Totais, só pra "Gerar lista de compra" (rateado proporcionalmente entre os clientes selecionados); nunca salva, zera ao trocar semana/seleção
 let comprasDiasSelecionados = new Set(DIAS_ORDEM); // dias que entram no cálculo da Lista de compra desta visita (feriado/sem expediente na semana fica desmarcado); nunca salva, zera (volta pra semana toda) ao trocar de semana
 function comprasDiaAtivo(dia){ return comprasDiasSelecionados.has(dia); }
+let refeicoesFuncDraft = new Map(); // "semana|DIA" -> quantidade (null = remover ajuste salvo, volta pro padrão 40/20) — mesmo rascunho pendente da previsão, salva junto em "Salvar alterações"
 let comprasMostrarPorCliente = false; // Totais é a visão padrão; detalhamento por cliente (tabelas antigas) fica colapsado atrás de um botão
 let ajusteSegurancaDraft = new Map(); // "semana|insumo_id" -> quantidade (null = remover ajuste salvo) — mesmo rascunho pendente da previsão, salva junto em "Salvar alterações"
 let ajusteSegExtras = new Set(); // "semana|insumo_id" adicionados via "+ Adicionar insumo" nesta visita, mesmo antes de digitar valor
@@ -7993,10 +8009,10 @@ function comprasSetDraft(contratoId, semana, dia, produtoId, valStr){
     if(val === salvo) comprasDraft.delete(k); else comprasDraft.set(k, val);
   }
 }
-function comprasPendCount(){ return comprasDraft.size + ajusteSegurancaDraft.size; }
-function comprasDescartar(){ comprasDraft = new Map(); ajusteSegurancaDraft = new Map(); ajusteSegExtras = new Set(); renderCompras(); }
+function comprasPendCount(){ return comprasDraft.size + ajusteSegurancaDraft.size + refeicoesFuncDraft.size; }
+function comprasDescartar(){ comprasDraft = new Map(); ajusteSegurancaDraft = new Map(); ajusteSegExtras = new Set(); refeicoesFuncDraft = new Map(); renderCompras(); }
 async function comprasSalvarAlteracoes(){
-  if(!comprasDraft.size && !ajusteSegurancaDraft.size) return true;
+  if(!comprasDraft.size && !ajusteSegurancaDraft.size && !refeicoesFuncDraft.size) return true;
   comprasSalvando = true; renderCompras();
   const grupos = new Map(); // "contratoId|semana|DIA" -> Map produto_id -> valor (null = remover)
   comprasDraft.forEach((val, key) => {
@@ -8027,10 +8043,22 @@ async function comprasSalvarAlteracoes(){
         if(error) throw error;
       }
     }
-    await Promise.all([loadPrevisaoCompra(), loadAjusteSeguranca()]);
+    for(const [key, val] of refeicoesFuncDraft){
+      const [semanaStr, dia] = key.split("|");
+      const semana = parseInt(semanaStr, 10);
+      if(val === null){
+        const { error } = await sb.from('refeicoes_funcionarios').delete().match({ semana, dia });
+        if(error) throw error;
+      } else {
+        const { error } = await sb.from('refeicoes_funcionarios').upsert({ semana, dia, quantidade: val, ...carimbo() }, { onConflict: 'semana,dia' });
+        if(error) throw error;
+      }
+    }
+    await Promise.all([loadPrevisaoCompra(), loadAjusteSeguranca(), loadRefeicoesFuncionarios()]);
     comprasDraft = new Map();
     ajusteSegurancaDraft = new Map();
     ajusteSegExtras = new Set();
+    refeicoesFuncDraft = new Map();
     showAlert("Alterações salvas.");
     return true;
   }catch(e){ showAlert("Erro ao salvar: " + (e.message || e.code || e)); return false; }
@@ -8071,6 +8099,26 @@ function ajusteSegLinhasVisiveis(semana){
   ajusteSegExtras.forEach(k => { const [s, iid] = k.split("|"); if(parseInt(s,10) === semana) ids.add(iid); });
   return [...ids];
 }
+/* ---- rascunho de Refeições funcionários (mesmo padrão salvo>rascunho, mas com padrão 40 seg-sex / 20 sáb-dom em vez de 0) ---- */
+function refeicoesFuncKey(semana, dia){ return `${semana}|${dia}`; }
+function refeicoesFuncValorAtual(semana, dia){ // rascunho > salvo > padrão
+  const k = refeicoesFuncKey(semana, dia);
+  if(refeicoesFuncDraft.has(k)){ const d = refeicoesFuncDraft.get(k); return d === null ? refeicoesFuncPadrao(dia) : d; }
+  const salvo = refeicoesFuncValorSalvo(semana, dia);
+  return salvo === null ? refeicoesFuncPadrao(dia) : salvo;
+}
+function refeicoesFuncPendente(semana, dia){ return refeicoesFuncDraft.has(refeicoesFuncKey(semana, dia)); }
+function refeicoesFuncSetDraft(semana, dia, valStr){
+  const k = refeicoesFuncKey(semana, dia);
+  const salvo = refeicoesFuncValorSalvo(semana, dia);
+  const baseline = salvo === null ? refeicoesFuncPadrao(dia) : salvo;
+  if(valStr === ""){
+    if(salvo === null) refeicoesFuncDraft.delete(k); else refeicoesFuncDraft.set(k, null); // null = remover ajuste salvo, volta ao padrão
+    return;
+  }
+  const val = Number(valStr);
+  if(val === baseline) refeicoesFuncDraft.delete(k); else refeicoesFuncDraft.set(k, val);
+}
 /* ---- override da tabela de Totais: só pra "Gerar lista de compra", nunca salvo (sessão/seleção/semana atuais) ---- */
 function comprasTotaisKey(produtoId, dia){ return `${produtoId}|${dia}`; }
 function comprasTotalBase(produtoId, dia, semana, selecionados){
@@ -8089,7 +8137,13 @@ function itensUniaoSelecao(selecionados){
       if(item.produto_id && !porId.has(item.produto_id)) porId.set(item.produto_id, item.nome);
     });
   });
-  return [...porId.entries()].map(([produto_id, nome]) => ({ produto_id, nome }));
+  return [...porId.entries()].map(([produto_id, nome]) => ({ produto_id, nome, categoria: categoriaSimples(produto_id) }));
+}
+function refeicoesFuncValorEfetivo(semana, dia){ return comprasDiaAtivo(dia) ? refeicoesFuncValorAtual(semana, dia) : 0; }
+function comprasTotalRefeicoesDia(dia, semana, selecionados, itensRefeicao){
+  let soma = refeicoesFuncValorEfetivo(semana, dia);
+  itensRefeicao.forEach(item => { soma += comprasTotalBase(item.produto_id, dia, semana, selecionados); });
+  return soma;
 }
 function calcularTotaisOverrideScale(semana, selIds){
   const mapa = new Map();
@@ -8155,6 +8209,7 @@ function renderComprasTotais(area, semana, selecionados){
   if(!selecionados.length){ area.innerHTML = ""; return; }
   const itens = itensUniaoSelecao(selecionados);
   if(!itens.length){ area.innerHTML = ""; return; }
+  const itensRefeicao = itens.filter(it => it.categoria === "refeicao"); // exclui café/lanches do total de refeições
   area.innerHTML = `
     <div class="panel">
       <div class="panel-head">
@@ -8167,8 +8222,32 @@ function renderComprasTotais(area, semana, selecionados){
           <table class="cardapio-table">
             <thead><tr><th class="cat-col">Item</th>${DIAS_ORDEM.map(dia => `<th>${DIA_LABEL[dia]}</th>`).join("")}</tr></thead>
             <tbody>
-              ${itens.map(item => `<tr>
+              <tr class="row-total">
+                <td class="cat-col"><strong>Total refeições do dia</strong></td>
+                ${DIAS_ORDEM.map(dia => `<td class="num-cell"><strong>${fmtNum(comprasTotalRefeicoesDia(dia, semana, selecionados, itensRefeicao), 0)}</strong></td>`).join("")}
+              </tr>
+              <tr>
+                <td class="cat-col">Refeições funcionários <span class="footnote">(não ligada a cliente — puxa do cardápio Ultra)</span></td>
+                ${DIAS_ORDEM.map(dia => {
+                  const val = refeicoesFuncValorAtual(semana, dia);
+                  const pend = refeicoesFuncPendente(semana, dia);
+                  return `<td class="cel"><input type="number" step="1" min="0" class="cel-gram cp-func${pend?" cp-qtd-pend":""}" data-dia="${dia}" value="${val}" title="Padrão: ${refeicoesFuncPadrao(dia)}/dia. ${comprasDiaAtivo(dia)?"":"Dia excluído da lista — não entra no total nem na compra."}"></td>`;
+                }).join("")}
+              </tr>
+              ${itensRefeicao.map(item => `<tr>
                 <td class="cat-col">${escapeHtml(item.nome)}</td>
+                ${DIAS_ORDEM.map(dia => {
+                  const base = comprasTotalBase(item.produto_id, dia, semana, selecionados);
+                  const k = comprasTotaisKey(item.produto_id, dia);
+                  const overridden = comprasTotaisOverride.has(k);
+                  const val = overridden ? comprasTotaisOverride.get(k) : base;
+                  const semBase = overridden && !base;
+                  const titulo = semBase ? "Sem previsão nos clientes selecionados — este ajuste não poderá ser aplicado à lista." : `Soma atual dos clientes selecionados: ${base}`;
+                  return `<td class="cel"><input type="number" step="1" min="0" class="cel-gram cp-tot${overridden?" cp-qtd-pend":""}" data-produto="${escapeHtml(item.produto_id)}" data-dia="${dia}" value="${val}" title="${escapeHtml(titulo)}"></td>`;
+                }).join("")}
+              </tr>`).join("")}
+              ${itens.filter(it => it.categoria !== "refeicao").map(item => `<tr>
+                <td class="cat-col">${escapeHtml(item.nome)} <span class="footnote">(café)</span></td>
                 ${DIAS_ORDEM.map(dia => {
                   const base = comprasTotalBase(item.produto_id, dia, semana, selecionados);
                   const k = comprasTotaisKey(item.produto_id, dia);
@@ -8196,6 +8275,10 @@ function renderComprasTotais(area, semana, selecionados){
       if(val === base) comprasTotaisOverride.delete(k); else comprasTotaisOverride.set(k, val);
     }
     inp.classList.toggle("cp-qtd-pend", comprasTotaisOverride.has(k));
+  }));
+  area.querySelectorAll(".cp-func").forEach(inp => inp.addEventListener("change", () => {
+    refeicoesFuncSetDraft(semana, inp.dataset.dia, inp.value);
+    renderCompras(); // o valor alimenta a linha "Total refeições do dia" acima, precisa recalcular
   }));
   const btnLimpar = document.getElementById("cx-tot-limpar");
   if(btnLimpar) btnLimpar.addEventListener("click", () => { comprasTotaisOverride = new Map(); renderCompras(); });
@@ -8389,6 +8472,26 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale){
       });
     });
   });
+  // refeições de funcionários (sem cliente/contrato — puxa insumo do cardápio Ultra, sempre Matriz)
+  DIAS_ORDEM.forEach(dia => {
+    if(!comprasDiaAtivo(dia)) return;
+    const qFunc = refeicoesFuncValorAtual(semana, dia);
+    if(!qFunc) return;
+    const row = almocoIdx.get(`${REFEICOES_FUNC_CARDAPIO_NUM}|${semana}|${dia}`);
+    if(!row) return;
+    const porItem = insumosDoDiaRefeicaoCompra(row, qFunc, dia, coletor);
+    mergeInsumosInto(totalInsumos, porItem);
+    porItem.forEach((kg, insumoId) => {
+      const acc = porUnidadeInsumo.get(insumoId) || {matriz:0, filial:0};
+      acc.matriz += kg;
+      porUnidadeInsumo.set(insumoId, acc);
+      if(!demandaPorDiaInsumo.has(insumoId)) demandaPorDiaInsumo.set(insumoId, new Map());
+      const porDia = demandaPorDiaInsumo.get(insumoId);
+      const accDia = porDia.get(dia) || {matriz:0, filial:0};
+      accDia.matriz += kg;
+      porDia.set(dia, accDia);
+    });
+  });
   // abate a contagem de Estoque mais recente da semana, cada unidade só abatendo a própria (igual sistema antigo),
   // distribuída dia a dia: a contagem abate a necessidade dos primeiros dias da semana primeiro (segunda em diante)
   // até se esgotar — assim o que aparece nos dias finais já é o que de fato precisa ser comprado.
@@ -8461,8 +8564,9 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale){
   }).join("") || `<tr><td colspan="${3+DIAS_ORDEM.length+3}" class="empty-state">Nenhuma previsão de consumo para os clientes e semana selecionados.</td></tr>`;
 
   const diasExcluidos = DIAS_ORDEM.filter(d => !comprasDiaAtivo(d));
+  const totalRefeicoesFunc = DIAS_ORDEM.reduce((s,d) => s + (comprasDiaAtivo(d) ? refeicoesFuncValorAtual(semana, d) : 0), 0);
   area.innerHTML = `
-    <div class="footnote" style="margin:16px 0 10px;">Lista gerada para <strong>${escapeHtml(rotuloSemana(semana))}</strong> (${escapeHtml(intervaloSemana(semana))}) — ${contratoIds.length} ${contratoIds.length===1?"cliente":"clientes"}. ${temContagemNaSemana ? "Estoque contado nesta semana já abatido, consumindo primeiro a necessidade dos primeiros dias da semana (cada unidade só abate a própria contagem)." : "Sem contagem de estoque nesta semana — necessidade bruta."}${temAjusteTotalIgnorado ? " Um ou mais ajustes feitos na tabela de Totais não puderam ser aplicados (nenhum cliente selecionado tinha previsão para esse item/dia)." : ""} Insumo de café incluso (produção própria)${nClientesCafeTerc ? `, exceto ${nClientesCafeTerc} ${nClientesCafeTerc===1?"cliente marcado":"clientes marcados"} como café 100% terceirizado` : ""}. O ajuste de segurança (quando lançado) entra só no total da semana — ainda não é possível detalhá-lo por dia.${diasExcluidos.length ? ` <strong>${diasExcluidos.map(d => DIA_LABEL[d]).join(", ")} excluído${diasExcluidos.length===1?"":"s"} desta lista</strong> (sem expediente) — aparece zerado na tabela, não é falta de previsão.` : ""}</div>
+    <div class="footnote" style="margin:16px 0 10px;">Lista gerada para <strong>${escapeHtml(rotuloSemana(semana))}</strong> (${escapeHtml(intervaloSemana(semana))}) — ${contratoIds.length} ${contratoIds.length===1?"cliente":"clientes"}. ${temContagemNaSemana ? "Estoque contado nesta semana já abatido, consumindo primeiro a necessidade dos primeiros dias da semana (cada unidade só abate a própria contagem)." : "Sem contagem de estoque nesta semana — necessidade bruta."}${temAjusteTotalIgnorado ? " Um ou mais ajustes feitos na tabela de Totais não puderam ser aplicados (nenhum cliente selecionado tinha previsão para esse item/dia)." : ""} Insumo de café incluso (produção própria)${nClientesCafeTerc ? `, exceto ${nClientesCafeTerc} ${nClientesCafeTerc===1?"cliente marcado":"clientes marcados"} como café 100% terceirizado` : ""}. O ajuste de segurança (quando lançado) entra só no total da semana — ainda não é possível detalhá-lo por dia.${totalRefeicoesFunc ? ` Inclui ${fmtNum(totalRefeicoesFunc,0)} refeições de funcionários na semana (cardápio Ultra, Matriz).` : ""}${diasExcluidos.length ? ` <strong>${diasExcluidos.map(d => DIA_LABEL[d]).join(", ")} excluído${diasExcluidos.length===1?"":"s"} desta lista</strong> (sem expediente) — aparece zerado na tabela, não é falta de previsão.` : ""}</div>
     <div class="panel">
       <div class="panel-head">
         <h3>Lista de compra — insumos</h3>
