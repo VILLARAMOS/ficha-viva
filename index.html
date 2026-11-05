@@ -7926,6 +7926,8 @@ let comprasSalvando = false;
 let comprasListaGerada = false; // já clicou "Gerar lista de compra" nesta visita à aba?
 let conjuntosCompra = new Map(); // id -> {nome, contrato_ids, alterado_em, alterado_por}
 let comprasTotaisOverride = new Map(); // "produtoId|DIA" -> valor — ajuste manual da tabela de Totais, só pra "Gerar lista de compra" (rateado proporcionalmente entre os clientes selecionados); nunca salva, zera ao trocar semana/seleção
+let comprasDiasSelecionados = new Set(DIAS_ORDEM); // dias que entram no cálculo da Lista de compra desta visita (feriado/sem expediente na semana fica desmarcado); nunca salva, zera (volta pra semana toda) ao trocar de semana
+function comprasDiaAtivo(dia){ return comprasDiasSelecionados.has(dia); }
 let comprasMostrarPorCliente = false; // Totais é a visão padrão; detalhamento por cliente (tabelas antigas) fica colapsado atrás de um botão
 let ajusteSegurancaDraft = new Map(); // "semana|insumo_id" -> quantidade (null = remover ajuste salvo) — mesmo rascunho pendente da previsão, salva junto em "Salvar alterações"
 let ajusteSegExtras = new Set(); // "semana|insumo_id" adicionados via "+ Adicionar insumo" nesta visita, mesmo antes de digitar valor
@@ -8072,6 +8074,7 @@ function ajusteSegLinhasVisiveis(semana){
 /* ---- override da tabela de Totais: só pra "Gerar lista de compra", nunca salvo (sessão/seleção/semana atuais) ---- */
 function comprasTotaisKey(produtoId, dia){ return `${produtoId}|${dia}`; }
 function comprasTotalBase(produtoId, dia, semana, selecionados){
+  if(!comprasDiaAtivo(dia)) return 0;
   let soma = 0;
   selecionados.forEach(([cid, ct]) => {
     if(!contratoVigenteNoDia(ct, semana, dia)) return;
@@ -8093,11 +8096,13 @@ function calcularTotaisOverrideScale(semana, selIds){
   comprasTotaisOverride.forEach((alvo, k) => {
     const [produtoId, dia] = k.split("|");
     let base = 0;
-    selIds.forEach(cid => {
-      const ct = contratos.get(cid);
-      if(!ct || !contratoVigenteNoDia(ct, semana, dia)) return;
-      base += quantidadePrevista(cid, produtoId, dia, semana);
-    });
+    if(comprasDiaAtivo(dia)){
+      selIds.forEach(cid => {
+        const ct = contratos.get(cid);
+        if(!ct || !contratoVigenteNoDia(ct, semana, dia)) return;
+        base += quantidadePrevista(cid, produtoId, dia, semana);
+      });
+    }
     mapa.set(k, base > 0 ? (alvo / base) : null); // null = sem base nos clientes selecionados pra ratear; ajuste não se aplica
   });
   return mapa;
@@ -8359,7 +8364,7 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale){
     const itensContrato = itensComprasDoContrato(ct, id); // refeição + café (se não for 100% terceirizado)
     const un = ct.unidade === "filial" ? "filial" : "matriz";
     DIAS_ORDEM.forEach(dia => {
-      if(!contratoVigenteNoDia(ct, semana, dia)) return;
+      if(!comprasDiaAtivo(dia) || !contratoVigenteNoDia(ct, semana, dia)) return;
       itensContrato.forEach(item => {
         let q = quantidadePrevista(id, item.produto_id, dia, semana);
         if(!q) return;
@@ -8455,8 +8460,9 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale){
     </tr>`;
   }).join("") || `<tr><td colspan="${3+DIAS_ORDEM.length+3}" class="empty-state">Nenhuma previsão de consumo para os clientes e semana selecionados.</td></tr>`;
 
+  const diasExcluidos = DIAS_ORDEM.filter(d => !comprasDiaAtivo(d));
   area.innerHTML = `
-    <div class="footnote" style="margin:16px 0 10px;">Lista gerada para <strong>${escapeHtml(rotuloSemana(semana))}</strong> (${escapeHtml(intervaloSemana(semana))}) — ${contratoIds.length} ${contratoIds.length===1?"cliente":"clientes"}. ${temContagemNaSemana ? "Estoque contado nesta semana já abatido, consumindo primeiro a necessidade dos primeiros dias da semana (cada unidade só abate a própria contagem)." : "Sem contagem de estoque nesta semana — necessidade bruta."}${temAjusteTotalIgnorado ? " Um ou mais ajustes feitos na tabela de Totais não puderam ser aplicados (nenhum cliente selecionado tinha previsão para esse item/dia)." : ""} Insumo de café incluso (produção própria)${nClientesCafeTerc ? `, exceto ${nClientesCafeTerc} ${nClientesCafeTerc===1?"cliente marcado":"clientes marcados"} como café 100% terceirizado` : ""}. O ajuste de segurança (quando lançado) entra só no total da semana — ainda não é possível detalhá-lo por dia.</div>
+    <div class="footnote" style="margin:16px 0 10px;">Lista gerada para <strong>${escapeHtml(rotuloSemana(semana))}</strong> (${escapeHtml(intervaloSemana(semana))}) — ${contratoIds.length} ${contratoIds.length===1?"cliente":"clientes"}. ${temContagemNaSemana ? "Estoque contado nesta semana já abatido, consumindo primeiro a necessidade dos primeiros dias da semana (cada unidade só abate a própria contagem)." : "Sem contagem de estoque nesta semana — necessidade bruta."}${temAjusteTotalIgnorado ? " Um ou mais ajustes feitos na tabela de Totais não puderam ser aplicados (nenhum cliente selecionado tinha previsão para esse item/dia)." : ""} Insumo de café incluso (produção própria)${nClientesCafeTerc ? `, exceto ${nClientesCafeTerc} ${nClientesCafeTerc===1?"cliente marcado":"clientes marcados"} como café 100% terceirizado` : ""}. O ajuste de segurança (quando lançado) entra só no total da semana — ainda não é possível detalhá-lo por dia.${diasExcluidos.length ? ` <strong>${diasExcluidos.map(d => DIA_LABEL[d]).join(", ")} excluído${diasExcluidos.length===1?"":"s"} desta lista</strong> (sem expediente) — aparece zerado na tabela, não é falta de previsão.` : ""}</div>
     <div class="panel">
       <div class="panel-head">
         <h3>Lista de compra — insumos</h3>
@@ -8539,6 +8545,7 @@ function renderSugestoesPedido(semana, linhas){
 }
 
 function imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto){
+  const diasExcluidos = DIAS_ORDEM.filter(d => !comprasDiaAtivo(d));
   const w = window.open("", "_blank");
   if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
 
@@ -8548,7 +8555,7 @@ function imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto)
     const itensContrato = itensRefeicaoDoContrato(id);
     let totalRefeicoes = 0;
     DIAS_ORDEM.forEach(dia => {
-      if(!contratoVigenteNoDia(ct, semana, dia)) return;
+      if(!comprasDiaAtivo(dia) || !contratoVigenteNoDia(ct, semana, dia)) return;
       itensContrato.forEach(item => { totalRefeicoes += quantidadePrevista(id, item.produto_id, dia, semana) || 0; });
     });
     const cardapios = [];
@@ -8562,7 +8569,7 @@ function imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto)
   const totalRefeicoesGeral = clientesInfo.reduce((s,c) => s + c.totalRefeicoes, 0);
 
   const linhasHtml = linhas.map(l => `<tr>
-      <td>${escapeHtml(l.nome)}<div class="sub-receita">${l.usoPorDia.map(d => `<strong>${DIA_LABEL[d.dia].slice(0,3)}:</strong> ${d.receitas.map(r => escapeHtml(r.receita)).join(", ")}`).join(" · ")}</div></td>
+      <td>${escapeHtml(l.nome)}<div class="sub-receita">${l.usoPorDia.map(d => `<strong>${DIA_LABEL[d.dia].slice(0,3)}:</strong> ${d.receitas.map(r => `${escapeHtml(r.receita)} (${fmtNum(r.kg,2)})`).join(", ")}`).join(" · ")}</div></td>
       <td>${escapeHtml(l.grupo)}</td>
       ${l.porDiaKg.map(kg => `<td class="num">${kg>0 ? fmtNum(kg,3) : "—"}</td>`).join("")}
       <td class="num"><strong>${fmtNum(l.kg,3)}</strong></td>
@@ -8602,7 +8609,7 @@ function imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto)
       <tbody>${linhasHtml}</tbody>
       <tfoot><tr><td>Total</td><td></td>${totalPorDia.map(kg => `<td class="num">${kg>0?fmtNum(kg,3):"—"}</td>`).join("")}<td></td><td></td></tr></tfoot>
     </table>
-    <div class="sub">Custo total estimado: ${fmtMoney(totCusto)}. A coluna "Total semana" dos insumos pode incluir ajuste de segurança lançado para a semana (não detalhado por dia).</div>
+    <div class="sub">Custo total estimado: ${fmtMoney(totCusto)}. A coluna "Total semana" dos insumos pode incluir ajuste de segurança lançado para a semana (não detalhado por dia).${diasExcluidos.length ? ` <strong>${diasExcluidos.map(d => DIA_LABEL[d]).join(", ")} excluído${diasExcluidos.length===1?"":"s"} desta lista</strong> (sem expediente) — aparece zerado, não é falta de previsão.` : ""}</div>
     <script>window.onload = () => window.print();<\/script>
     </body></html>`);
   w.document.close();
@@ -8668,6 +8675,18 @@ function renderComprasLista(content, tabsHtml, wireTabs){
     </div>
     <div class="panel">
       <div class="panel-head">
+        <h3>Dias da semana</h3>
+        <span class="hint">${comprasDiasSelecionados.size} de ${DIAS_ORDEM.length}</span>
+      </div>
+      <div class="panel-body">
+        <div class="footnote" style="margin:0 0 10px;">Desmarque um dia sem expediente nesta semana (feriado, parada, etc.) — ele sai do cálculo da lista, mas continua aparecendo na tabela, zerado.</div>
+        <div class="kk-dias-chips" style="flex-wrap:wrap;">
+          ${DIAS_ORDEM.map(dia => `<button type="button" class="chip-dia cp-dia-chip ${comprasDiaAtivo(dia)?"on":""}" data-dia="${dia}">${escapeHtml(DIA_LABEL[dia])}</button>`).join("")}
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="panel-head">
         <h3>Clientes da lista</h3>
         <span class="hint">${escapeHtml(rotuloSel)} · ${selIds.length} de ${idsTodos.length}</span>
       </div>
@@ -8708,9 +8727,15 @@ function renderComprasLista(content, tabsHtml, wireTabs){
   wireTabs();
 
   const limparOverridesTotais = () => { comprasTotaisOverride = new Map(); };
-  document.getElementById("cp-semana").addEventListener("change", e => { comprasSemana = parseInt(e.target.value,10); limparOverridesTotais(); renderCompras(); });
-  document.getElementById("cx-sem-ant").addEventListener("click", () => { comprasSemana = opcoesSemana[idxSem-1]; limparOverridesTotais(); renderCompras(); });
-  document.getElementById("cx-sem-prox").addEventListener("click", () => { comprasSemana = opcoesSemana[idxSem+1]; limparOverridesTotais(); renderCompras(); });
+  const limparFiltroDias = () => { comprasDiasSelecionados = new Set(DIAS_ORDEM); };
+  document.getElementById("cp-semana").addEventListener("change", e => { comprasSemana = parseInt(e.target.value,10); limparOverridesTotais(); limparFiltroDias(); renderCompras(); });
+  document.getElementById("cx-sem-ant").addEventListener("click", () => { comprasSemana = opcoesSemana[idxSem-1]; limparOverridesTotais(); limparFiltroDias(); renderCompras(); });
+  document.getElementById("cx-sem-prox").addEventListener("click", () => { comprasSemana = opcoesSemana[idxSem+1]; limparOverridesTotais(); limparFiltroDias(); renderCompras(); });
+  content.querySelectorAll(".cp-dia-chip").forEach(b => b.addEventListener("click", () => {
+    const dia = b.dataset.dia;
+    if(comprasDiasSelecionados.has(dia)) comprasDiasSelecionados.delete(dia); else comprasDiasSelecionados.add(dia);
+    renderCompras();
+  }));
 
   content.querySelectorAll("[data-atalho]").forEach(b => b.addEventListener("click", () => {
     const k = b.dataset.atalho;
