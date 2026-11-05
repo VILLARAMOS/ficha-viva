@@ -8145,6 +8145,9 @@ function comprasTotalRefeicoesDia(dia, semana, selecionados, itensRefeicao){
   itensRefeicao.forEach(item => { soma += comprasTotalBase(item.produto_id, dia, semana, selecionados); });
   return soma;
 }
+function comprasTotalCafeDia(dia, semana, selecionados, itensCafe){
+  return itensCafe.reduce((s,item) => s + comprasTotalBase(item.produto_id, dia, semana, selecionados), 0);
+}
 function calcularTotaisOverrideScale(semana, selIds){
   const mapa = new Map();
   comprasTotaisOverride.forEach((alvo, k) => {
@@ -8210,6 +8213,7 @@ function renderComprasTotais(area, semana, selecionados){
   const itens = itensUniaoSelecao(selecionados);
   if(!itens.length){ area.innerHTML = ""; return; }
   const itensRefeicao = itens.filter(it => it.categoria === "refeicao"); // exclui café/lanches do total de refeições
+  const itensCafe = itens.filter(it => it.categoria !== "refeicao");
   area.innerHTML = `
     <div class="panel">
       <div class="panel-head">
@@ -8226,8 +8230,12 @@ function renderComprasTotais(area, semana, selecionados){
                 <td class="cat-col"><strong>Total refeições do dia</strong></td>
                 ${DIAS_ORDEM.map(dia => `<td class="num-cell"><strong>${fmtNum(comprasTotalRefeicoesDia(dia, semana, selecionados, itensRefeicao), 0)}</strong></td>`).join("")}
               </tr>
+              <tr class="row-total">
+                <td class="cat-col"><strong>Total café do dia</strong></td>
+                ${DIAS_ORDEM.map(dia => `<td class="num-cell"><strong>${fmtNum(comprasTotalCafeDia(dia, semana, selecionados, itensCafe), 0)}</strong></td>`).join("")}
+              </tr>
               <tr>
-                <td class="cat-col">Refeições funcionários <span class="footnote">(não ligada a cliente — puxa do cardápio Ultra)</span></td>
+                <td class="cat-col">Refeições funcionários</td>
                 ${DIAS_ORDEM.map(dia => {
                   const val = refeicoesFuncValorAtual(semana, dia);
                   const pend = refeicoesFuncPendente(semana, dia);
@@ -8246,7 +8254,7 @@ function renderComprasTotais(area, semana, selecionados){
                   return `<td class="cel"><input type="number" step="1" min="0" class="cel-gram cp-tot${overridden?" cp-qtd-pend":""}" data-produto="${escapeHtml(item.produto_id)}" data-dia="${dia}" value="${val}" title="${escapeHtml(titulo)}"></td>`;
                 }).join("")}
               </tr>`).join("")}
-              ${itens.filter(it => it.categoria !== "refeicao").map(item => `<tr>
+              ${itensCafe.map(item => `<tr>
                 <td class="cat-col">${escapeHtml(item.nome)} <span class="footnote">(café)</span></td>
                 ${DIAS_ORDEM.map(dia => {
                   const base = comprasTotalBase(item.produto_id, dia, semana, selecionados);
