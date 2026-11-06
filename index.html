@@ -10225,6 +10225,23 @@ function totalCompradoCmvMes(mesId, escopo){
   const r = compradoPorBlocoSemana(mesId, escopo); if(!r) return 0;
   let t = 0; r.porSemanaBloco.forEach(sb => sb.porBloco.forEach((v,g) => { if(g !== GRUPO_LIMPEZA_DESCARTAVEIS) t += v; })); return t;
 }
+// Orçado "CMV" (06/11/2026, pedido do Marcelo): mesmo recorte de totalCompradoCmvMes, mas pro lado do
+// Orçado — tira o bloco LIMPEZA E DESCARTÁVEIS (que no Orçado é só a estimativa fixa de
+// ORCAMENTO_LIMPEZA_POR_REFEICAO, não uma previsão real de consumo) pra poder comparar
+// Orçado×Comprado só de matéria-prima, sem o ruído da estimativa de limpeza.
+function totalOrcadoCmvMes(mesId, escopo){
+  const r = orcadoPorBlocoSemana(mesId, escopo); if(!r) return 0;
+  let t = 0; r.porSemanaBloco.forEach(sb => sb.porBloco.forEach((v,g) => { if(g !== GRUPO_LIMPEZA_DESCARTAVEIS) t += v; })); return t;
+}
+// Fatia de Limpeza e Descartáveis isolada (06/11/2026, pedido do Marcelo): ele notou que o Orçamento
+// não tem uma previsão real pra limpeza (só o R$1/refeição fixo de ORCAMENTO_LIMPEZA_POR_REFEICAO) e
+// que parte do "estourou o orçamento" no card da Visão do Negócio era, na real, compra de limpeza —
+// não matéria-prima. Isolado aqui pra mostrar separado, sem misturar com o Saldo de CMV.
+function limpezaOrcadoComprado(mesId, escopo){
+  const orc = totalOrcadoMes(mesId, escopo) - totalOrcadoCmvMes(mesId, escopo);
+  const comp = totalCompradoMes(mesId, escopo) - totalCompradoCmvMes(mesId, escopo);
+  return { orcado: orc, comprado: comp, saldo: orc - comp };
+}
 function resumoEstoqueUnidade(unidade){
   const semanasComContagem = [...new Set([...estoqueContagem.values()].filter(r => r.unidade === unidade).map(r => r.semana))].sort((a,b) => b-a);
   if(!semanasComContagem.length) return { semana: null };
@@ -10740,6 +10757,8 @@ function visaoNegocioBloco(mesId, escopo, nome, almocoIdx, cafeIdx){
   // em custo teórico, a fatia do compradoCmv também vai mais pra refeição. É só uma divisão
   // proporcional, não um rastreio real do insumo comprado.
   const compradoCmv = totalCompradoCmvMes(mesId, escopo);
+  const orcadoCmv = totalOrcadoCmvMes(mesId, escopo);
+  const limpeza = limpezaOrcadoComprado(mesId, escopo);
   const custoTeoRef = resumo.catAcum.refeicao.custo, custoTeoCafe = resumo.catAcum.cafeExtras.custo;
   const custoTeoSoma = custoTeoRef + custoTeoCafe;
   const fracaoRef = custoTeoSoma > 0.005 ? custoTeoRef / custoTeoSoma : null;
@@ -10754,6 +10773,8 @@ function visaoNegocioBloco(mesId, escopo, nome, almocoIdx, cafeIdx){
     plReceita, plCusto, plCmv: cmvDe(plCusto, plReceita),
     plCmvRefeicao: cmvDe(plCat.refeicao.custo, plCat.refeicao.receita), plCmvCafeExtras: cmvDe(plCat.cafeExtras.custo, plCat.cafeExtras.receita),
     orcado, comprado, saldo: orcado - comprado,
+    orcadoCmv, compradoCmv, saldoCmv: orcadoCmv - compradoCmv,
+    limpeza,
     cmvRealGeral, cmvRealRefeicao, cmvRealCafeExtras, cmvRealAproximado: fracaoRef !== null
   };
 }
@@ -10831,19 +10852,24 @@ function visaoNegocioCardHtml(b){
         ${deltaCmvHtml(b.cmvCafeExtras, b.plCmvCafeExtras)}
       </div>
       <div class="vn-card">
-        <div class="vn-label">Orçamento</div>
-        <div class="vn-value">${fmtMoney(b.orcado)}</div>
-        <div class="vn-sub">previsão de compra em R$</div>
+        <div class="vn-label">Orçamento (matéria-prima)</div>
+        <div class="vn-value">${fmtMoney(b.orcadoCmv)}</div>
+        <div class="vn-sub">previsão de compra em R$ · sem limpeza/descartáveis</div>
       </div>
       <div class="vn-card">
-        <div class="vn-label">Comprado</div>
-        <div class="vn-value">${fmtMoney(b.comprado)}</div>
-        <div class="vn-sub">${b.orcado > 0.5 ? fmtPct(b.comprado/b.orcado) + " do orçado" : "sem orçamento no mês"}</div>
+        <div class="vn-label">Comprado (matéria-prima)</div>
+        <div class="vn-value">${fmtMoney(b.compradoCmv)}</div>
+        <div class="vn-sub">${b.orcadoCmv > 0.5 ? fmtPct(b.compradoCmv/b.orcadoCmv) + " do orçado" : "sem orçamento no mês"}</div>
       </div>
-      <div class="vn-card ${b.saldo < 0 ? "critical" : (b.orcado > 0.5 && b.saldo/b.orcado < 0.15 ? "warn" : "ok")}">
-        <div class="vn-label">Saldo do Orçamento</div>
-        <div class="vn-value">${fmtMoney(b.saldo)}</div>
-        <div class="vn-sub">orçado − comprado</div>
+      <div class="vn-card ${b.saldoCmv < 0 ? "critical" : (b.orcadoCmv > 0.5 && b.saldoCmv/b.orcadoCmv < 0.15 ? "warn" : "ok")}">
+        <div class="vn-label">Saldo do Orçamento (matéria-prima)</div>
+        <div class="vn-value">${fmtMoney(b.saldoCmv)}</div>
+        <div class="vn-sub">orçado − comprado, matéria-prima only — quanto comprou a mais/a menos do que a demanda do cardápio previa</div>
+      </div>
+      <div class="vn-card ${b.limpeza.saldo < 0 ? "warn" : ""}">
+        <div class="vn-label">Limpeza e Descartáveis</div>
+        <div class="vn-value">${fmtMoney(b.limpeza.comprado)}</div>
+        <div class="vn-sub">orçado ${fmtMoney(b.limpeza.orcado)} (estimativa fixa/refeição) · saldo ${fmtMoney(b.limpeza.saldo)} · fora do CMV, não entra nos cards de matéria-prima</div>
       </div>
       </div>
     </div>
