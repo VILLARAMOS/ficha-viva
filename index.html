@@ -10854,22 +10854,17 @@ function visaoNegocioCardHtml(b){
       <div class="vn-card">
         <div class="vn-label">Orçamento (matéria-prima)</div>
         <div class="vn-value">${fmtMoney(b.orcadoCmv)}</div>
-        <div class="vn-sub">previsão de compra em R$ · sem limpeza/descartáveis</div>
+        <div class="vn-sub">previsão de compra em R$ · Limpeza e descartáveis: ${fmtMoney(b.limpeza.orcado)} (estimativa fixa/refeição)</div>
       </div>
       <div class="vn-card">
         <div class="vn-label">Comprado (matéria-prima)</div>
         <div class="vn-value">${fmtMoney(b.compradoCmv)}</div>
-        <div class="vn-sub">${b.orcadoCmv > 0.5 ? fmtPct(b.compradoCmv/b.orcadoCmv) + " do orçado" : "sem orçamento no mês"}</div>
+        <div class="vn-sub">${b.orcadoCmv > 0.5 ? fmtPct(b.compradoCmv/b.orcadoCmv) + " do orçado" : "sem orçamento no mês"} · Limpeza e descartáveis: ${fmtMoney(b.limpeza.comprado)}</div>
       </div>
-      <div class="vn-card ${b.saldoCmv < 0 ? "critical" : (b.orcadoCmv > 0.5 && b.saldoCmv/b.orcadoCmv < 0.15 ? "warn" : "ok")}">
+      <div class="vn-card ${(b.saldoCmv < 0 || b.limpeza.saldo < 0) ? "critical" : (b.orcadoCmv > 0.5 && b.saldoCmv/b.orcadoCmv < 0.15 ? "warn" : "ok")}">
         <div class="vn-label">Saldo do Orçamento (matéria-prima)</div>
         <div class="vn-value">${fmtMoney(b.saldoCmv)}</div>
-        <div class="vn-sub">orçado − comprado, matéria-prima only — quanto comprou a mais/a menos do que a demanda do cardápio previa</div>
-      </div>
-      <div class="vn-card ${b.limpeza.saldo < 0 ? "warn" : ""}">
-        <div class="vn-label">Limpeza e Descartáveis</div>
-        <div class="vn-value">${fmtMoney(b.limpeza.comprado)}</div>
-        <div class="vn-sub">orçado ${fmtMoney(b.limpeza.orcado)} (estimativa fixa/refeição) · saldo ${fmtMoney(b.limpeza.saldo)} · fora do CMV, não entra nos cards de matéria-prima</div>
+        <div class="vn-sub">orçado − comprado — quanto comprou a mais/a menos do que a demanda do cardápio previa${(b.saldoCmv < 0 || b.limpeza.saldo < 0) ? ` · comprado a mais: matéria-prima ${fmtMoney(Math.max(0,-b.saldoCmv))} · limpeza e descartáveis ${fmtMoney(Math.max(0,-b.limpeza.saldo))}` : ""}</div>
       </div>
       </div>
     </div>
