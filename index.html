@@ -10854,17 +10854,32 @@ function visaoNegocioCardHtml(b){
       <div class="vn-card">
         <div class="vn-label">Orçamento (matéria-prima)</div>
         <div class="vn-value">${fmtMoney(b.orcadoCmv)}</div>
-        <div class="vn-sub">previsão de compra em R$ · Limpeza e descartáveis: ${fmtMoney(b.limpeza.orcado)} (estimativa fixa/refeição)</div>
+        <div class="vn-sub">previsão de compra em R$ · sem limpeza/descartáveis</div>
       </div>
       <div class="vn-card">
         <div class="vn-label">Comprado (matéria-prima)</div>
         <div class="vn-value">${fmtMoney(b.compradoCmv)}</div>
-        <div class="vn-sub">${b.orcadoCmv > 0.5 ? fmtPct(b.compradoCmv/b.orcadoCmv) + " do orçado" : "sem orçamento no mês"} · Limpeza e descartáveis: ${fmtMoney(b.limpeza.comprado)}</div>
+        <div class="vn-sub">${b.orcadoCmv > 0.5 ? fmtPct(b.compradoCmv/b.orcadoCmv) + " do orçado" : "sem orçamento no mês"}</div>
       </div>
-      <div class="vn-card ${(b.saldoCmv < 0 || b.limpeza.saldo < 0) ? "critical" : (b.orcadoCmv > 0.5 && b.saldoCmv/b.orcadoCmv < 0.15 ? "warn" : "ok")}">
+      <div class="vn-card ${b.saldoCmv < 0 ? "critical" : (b.orcadoCmv > 0.5 && b.saldoCmv/b.orcadoCmv < 0.15 ? "warn" : "ok")}">
         <div class="vn-label">Saldo do Orçamento (matéria-prima)</div>
         <div class="vn-value">${fmtMoney(b.saldoCmv)}</div>
-        <div class="vn-sub">orçado − comprado — quanto comprou a mais/a menos do que a demanda do cardápio previa${(b.saldoCmv < 0 || b.limpeza.saldo < 0) ? ` · comprado a mais: matéria-prima ${fmtMoney(Math.max(0,-b.saldoCmv))} · limpeza e descartáveis ${fmtMoney(Math.max(0,-b.limpeza.saldo))}` : ""}</div>
+        <div class="vn-sub">orçado − comprado, matéria-prima only — quanto comprou a mais/a menos do que a demanda do cardápio previa</div>
+      </div>
+      <div class="vn-card">
+        <div class="vn-label">Orçamento (limpeza e descartáveis)</div>
+        <div class="vn-value">${fmtMoney(b.limpeza.orcado)}</div>
+        <div class="vn-sub">estimativa fixa de R$${ORCAMENTO_LIMPEZA_POR_REFEICAO.toFixed(2).replace(".",",")}/refeição, não é previsão real de consumo</div>
+      </div>
+      <div class="vn-card">
+        <div class="vn-label">Comprado (limpeza e descartáveis)</div>
+        <div class="vn-value">${fmtMoney(b.limpeza.comprado)}</div>
+        <div class="vn-sub">${b.limpeza.orcado > 0.5 ? fmtPct(b.limpeza.comprado/b.limpeza.orcado) + " do orçado" : "sem orçamento no mês"}</div>
+      </div>
+      <div class="vn-card ${b.limpeza.saldo < 0 ? "critical" : (b.limpeza.orcado > 0.5 && b.limpeza.saldo/b.limpeza.orcado < 0.15 ? "warn" : "ok")}">
+        <div class="vn-label">Saldo do Orçamento (limpeza e descartáveis)</div>
+        <div class="vn-value">${fmtMoney(b.limpeza.saldo)}</div>
+        <div class="vn-sub">orçado − comprado, limpeza e descartáveis only</div>
       </div>
       </div>
     </div>
