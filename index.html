@@ -646,10 +646,19 @@ const ORIENTACOES_POR_VIEW = {
   `,
   insumos: `
     <p><strong>Cadastro (Insumos):</strong> cadastro único de custo — toda ficha técnica lê o custo daqui, ninguém digita custo direto na ficha.</p>
-    <p><strong>Estoque:</strong> controle de estoque (entrada por pedido, movimentação, baixa e contagem) — alimenta o cálculo do CMV real.</p>
+    <h4>Estoque — como funciona</h4>
+    <p>Saldo por kardex: toda entrada (de pedido aprovado, movimentação ou ajuste) soma e toda baixa (manual, movimentação de saída ou PCP) subtrai o saldo em tempo real. A contagem física continua existindo para auditar esse saldo — ao gerar ajustes, a diferença entre contado e calculado é lançada como um movimento de ajuste.</p>
+    <p><strong>Contagem:</strong> lance o que tem contado de cada insumo para uma semana, de uma unidade. Isso só audita o saldo — use "Gerar ajustes" para corrigir o saldo de estoque pela contagem (a Lista de compra do mês continua descontando automaticamente pela contagem mais recente, como antes).</p>
+    <p><strong>Entradas pendentes:</strong> toda conferência de recebimento de um pedido (aba Compras → Pedidos) entra aqui como pendente. Ajuste quantidade/custo se precisar e aprove para que o saldo de estoque seja atualizado — ou rejeite se o recebimento foi lançado por engano.</p>
+    <p><strong>Movimentação interna:</strong> transfere um insumo de uma unidade para outra — gera uma baixa na origem e uma entrada no destino, já aprovadas.</p>
+    <p><strong>Baixa manual:</strong> dá baixa manual no estoque (perda, quebra, consumo não previsto, etc.). A baixa por lista de PCP usa o mesmo lançamento quando o módulo de PCP cobrir isso — por enquanto, use a baixa manual.</p>
   `,
   cardapio: `<p>Edição direto na tabela — refeição, marmita e café da manhã.</p>`,
-  contratos: `<p>Visão do negócio por cliente, cadastro de contratos, cardápio de referência e itens contratados.</p>`,
+  contratos: `
+    <p>Visão do negócio por cliente, cadastro de contratos, cardápio de referência e itens contratados.</p>
+    <p><strong>Orçamento do mês</strong> é calculado por cliente a partir da quantidade de atendimento prevista (contratada), do preço de venda e do custo do cardápio planejado (mesmo motor de previsão usado no Painel) — diferente do Orçamento de compras do painel acima, que é por Matriz/Filial/bloco de insumo, não por cliente. "Faturamento do contrato" soma dentro da vigência (data_inicio–data_fim); meses anteriores ao início do sistema (antes de set/2026) usam o valor lançado em "Vendas passadas", dentro do cadastro do cliente.</p>
+    <p><strong>Sem unidade definida</strong> não entra nos blocos Matriz/Filial nem na soma de faturamento/orçamento por unidade — só no Grupo.</p>
+  `,
   eventos: `<p>Produção pontual faturada fora do cardápio padrão — faixa de custo estimada quando não há apuração item a item.</p>`,
   ajuda: `<p>Orientações, treinamento e dúvidas da equipe sobre o Ficha Viva.</p>`,
   incidencia: `
@@ -658,8 +667,15 @@ const ORIENTACOES_POR_VIEW = {
     <p><strong>Classificação das fichas:</strong> uma lista só — grupo (Base, Guarnição de legumes/massas/secos, Salada, Sobremesa, Suco, Proteína ou Extra) e, só quando é Proteína, o tipo (Bovina/Peixe, Ave, Suína, Embutida). Por padrão só aparece o que ainda está sem classificar — assim que você preenche, a ficha some da lista. Marque "mostrar já classificadas" se precisar corrigir alguma depois. Desde a Nova ficha técnica esses dois campos já vêm pra preencher na hora de cadastrar, então essa lista tende a ficar cada vez mais curta.</p>
   `,
   fichas: `<p>Cada ficha calcula o custo sozinha a partir do cadastro de insumos.</p>`,
-  vendas: `<p>Lançamento de vendas realizadas por contrato/semana — quantidade vendida por item, custo e receita calculados.</p>`,
-  faturamento: `<p>Receita e custo realmente apurados a partir do que foi lançado em Vendas e Eventos — recalculado ao vivo (sem fechamento de mês nesta versão).</p>`,
+  vendas: `
+    <p>Lançamento de vendas realizadas por contrato/semana — quantidade vendida por item, custo e receita calculados.</p>
+    <p><strong>Grade de lançamento:</strong> Quantidade aceita até 4 casas decimais. Preço é cifrão + 2 casas — digite direto ou use o campo "%" ao lado (recalcula a partir do preço do contrato; some ao sair do campo). "Ajuste mín." aparece com sugestão quando o enviado na semana fica abaixo do mínimo contratado (soma, não custa, não entra em compra/PCP).</p>
+    <p><strong>"Custo projetado do mês"</strong> usa o mesmo motor de projeção do Painel/Contratos (cardápio planejado × preço), não o custo já realizado nem o Orçamento de compras real — para o que já foi efetivamente apurado, veja Faturamento apurado.</p>
+  `,
+  faturamento: `
+    <p>Receita e custo realmente apurados a partir do que foi lançado em Vendas e Eventos — recalculado ao vivo (sem fechamento de mês nesta versão).</p>
+    <p><strong>Quantidades e receita por dia:</strong> quantidade pela unidade que produz (considera o repasse Matriz→Filial de fim de semana/feriado). Receita por dia é só o itemizado — ajuste de mínimo (semana completa) e contratos fixo/franquia entram na tabela por cliente acima, não aqui.</p>
+  `,
   compras: `
     <p><strong>Lista de compra:</strong> escolha os clientes e a semana, ajuste a previsão de consumo e gere a lista de insumos a comprar.</p>
     <p><strong>Pedidos:</strong> todo pedido fica salvo com data, fornecedor e itens — é o histórico de compras. Use "duplicar" pra repetir uma compra antiga, e "conferir" pra lançar a quantidade recebida de cada item.</p>
@@ -2029,15 +2045,7 @@ function renderTabInsumoCadastro(){
   }));
 }
 
-/* ================= Estoque (dentro de Insumos) — v130: layout de painel (KPIs em cartões, seções em painéis, botões padronizados, textos explicativos recolhíveis) ================= */
-let estoqueAjudaAberta = false; // "Como funciona" recolhido por padrão; lembra o estado entre re-renderizações
-const ESTOQUE_AJUDA = {
-  geral: `Saldo por kardex: toda entrada (de pedido aprovado, movimentação ou ajuste) soma e toda baixa (manual, movimentação de saída ou PCP) subtrai o saldo em tempo real. A contagem física continua existindo para <strong>auditar</strong> esse saldo — ao gerar ajustes, a diferença entre contado e calculado é lançada como um movimento de ajuste.`,
-  contagem: `Lance o que tem contado de cada insumo para UMA semana, de UMA unidade. Isso só audita o saldo — use "Gerar ajustes" para corrigir o saldo de estoque pela contagem (a Lista de compra do mês continua descontando automaticamente pela contagem mais recente, como antes).`,
-  entradas: `Toda conferência de recebimento de um pedido (aba Compras → Pedidos) entra aqui como pendente. Ajuste quantidade/custo se precisar e aprove para que o saldo de estoque seja atualizado — ou rejeite se o recebimento foi lançado por engano.`,
-  movimentar: `Transfere um insumo de uma unidade para outra — gera uma baixa na origem e uma entrada no destino, já aprovadas.`,
-  baixa: `Dá baixa manual no estoque (perda, quebra, consumo não previsto, etc.). A baixa por lista de PCP vai usar o mesmo lançamento quando o módulo de PCP existir — por enquanto, use a baixa manual.`
-};
+/* ================= Estoque (dentro de Insumos) — v130: layout de painel (KPIs em cartões, seções em painéis, botões padronizados) ================= */
 function estoqueKpiCard({tone="", label, value, sub=""}){
   return `<div class="vn-card ${tone}"><div class="vn-label">${label}</div><div class="vn-value">${value}</div>${sub?`<div class="vn-sub">${sub}</div>`:""}</div>`;
 }
@@ -2074,11 +2082,6 @@ function renderTabInsumoEstoque(){
           ${subtabs.map(t => `<button type="button" data-sub="${t.id}" class="${estoqueSubTab===t.id?"active":""}"><i class="ico" data-lucide="${t.ico}"></i>${t.nome}${t.badge?`<span class="es-badge">${t.badge}</span>`:""}</button>`).join("")}
         </div>
       </div>
-      <details class="painel-notas es-help" id="es-help" ${estoqueAjudaAberta?"open":""}>
-        <summary>Como funciona</summary>
-        <div class="footnote">${ESTOQUE_AJUDA.geral}</div>
-        <div class="footnote" style="margin-top:6px;">${ESTOQUE_AJUDA[estoqueSubTab] || ""}</div>
-      </details>
       <div id="es-sub-body"></div>
     </div>
   `;
@@ -2087,8 +2090,6 @@ function renderTabInsumoEstoque(){
     estoqueSubTab = b.dataset.sub;
     renderTabInsumoEstoque();
   });
-  document.getElementById("es-help").addEventListener("toggle", e => { estoqueAjudaAberta = e.target.open; });
-
   if(estoqueSubTab === "contagem") renderEstoqueContagem();
   else if(estoqueSubTab === "entradas") renderEstoqueEntradasPendentes();
   else if(estoqueSubTab === "movimentar") renderEstoqueMovimentar();
@@ -4648,7 +4649,6 @@ function renderContratos(){
     ${semUnidade.length ? `
     <div class="panel" style="margin-bottom:16px;">
       <div class="panel-head"><h3>Sem unidade definida</h3></div>
-      <div class="footnote" style="padding:0 20px 10px;">Não entra nos blocos Matriz/Filial acima nem na soma de faturamento/orçamento por unidade — só no Grupo.</div>
       <div class="table-wrap">
         <table>
           <thead><tr>
@@ -4658,8 +4658,6 @@ function renderContratos(){
         </table>
       </div>
     </div>` : ""}
-
-    <div class="footnote" style="margin-top:4px;">"Orçamento do mês" é calculado por cliente a partir da quantidade de atendimento prevista (contratada), do preço de venda e do custo do cardápio planejado (mesmo motor de previsão usado no Painel) — diferente do Orçamento de compras do painel acima, que é por Matriz/Filial/bloco de insumo, não por cliente. "Faturamento do contrato" soma dentro da vigência (data_inicio–data_fim); meses anteriores ao início do sistema (antes de set/2026) usam o valor lançado em "Vendas passadas", dentro do cadastro do cliente.</div>
   `;
 
   function linhaCliente(id, c){
@@ -6873,7 +6871,6 @@ function renderTabLancamento(){
         </table>
       </div>
     </div>` : ""}
-    <div class="footnote" style="margin-top:4px;">"Custo projetado do mês" usa o mesmo motor de projeção do Painel/Contratos (cardápio planejado × preço), não o custo já realizado nem o Orçamento de compras real — para o que já foi efetivamente apurado, veja Faturamento apurado.</div>
   `;
 
   /* ---- v135: a grade de lançamento abre como uma linha extra dentro da própria tabela de clientes,
@@ -6978,7 +6975,6 @@ function renderGradeLancamento(){
         ${!travado ? `<button type="button" class="btn ghost" id="vd-fechar-cliente">🔒 Fechar só este cliente</button>` : ""}
         <button class="btn primary" id="vd-salvar" style="margin-left:auto;" ${travado ? "disabled" : ""}>Salvar semana</button>
       </div>
-      <div class="footnote" style="margin:0 0 8px;">Quantidade: até 4 casas decimais. Preço: cifrão + 2 casas — digite direto ou use o campo "%" ao lado (recalcula a partir do preço do contrato; some ao sair do campo). "Ajuste mín.": aparece com sugestão quando o enviado na semana fica abaixo do mínimo contratado (soma, não custa, não entra em compra/PCP).</div>
       <div class="table-wrap">
         <table class="cardapio-table tbl-vendas-grade">
           <colgroup>
@@ -7821,7 +7817,6 @@ function renderFaturamento(){
     <div class="panel" style="margin-top:4px;">
       <div class="panel-head"><h3>Quantidades e receita por dia</h3></div>
       <div style="padding:0 20px 18px;">
-        <div class="footnote" style="margin:0 0 10px;">Quantidade pela unidade que <strong>produz</strong> (considera o repasse Matriz→Filial de fds/feriado). Receita por dia é só o itemizado — ajuste de mínimo (semana completa) e contratos fixo/franquia entram na tabela por cliente acima, não aqui.</div>
         <div class="menu-controls" style="flex-wrap:wrap; margin-bottom:10px;">
           <div id="ft-per-nav" style="display:flex; align-items:center; gap:6px;">
             <button type="button" class="btn ghost small" id="ft-per-prev">←</button>
