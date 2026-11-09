@@ -2814,9 +2814,12 @@ let resumoSugestaoPendente = null;      // estatísticas da última sugestão ge
 let cardapioMostrarCategoriasVazias = false; // decisão de 07/10/2026: categorias sem nenhum prato na semana ficam ocultas por padrão
 let draftCafe = null;   // { id, linhas, itens: { [dia]: [...] } }
 
-/* Refeição = cardapio_num 1-5 · Marmita = cardapio_num 6-8 (mesma tabela `cardapios`, grade de 20
-   categorias igual à Refeição; a gramagem da Marmita é independente — não herda/trava com a Refeição). */
-const REFEICAO_NUMS = [1,2,3,4,5];
+/* Refeição = cardapio_num 1-3 · Marmita = cardapio_num 6-8 (mesma tabela `cardapios`, grade de 20
+   categorias igual à Refeição; a gramagem da Marmita é independente — não herda/trava com a Refeição).
+   Migração 2026-11-09: Marmita/Marmita especial viviam nos números 4/5 (compartilhados com a faixa
+   de Refeição, aparecendo lá sem rótulo como "Cardápio 4/5"). Movidos para 6/7 (slots próprios da
+   Marmita, antes órfãos) para a Marmita existir só dentro da própria área. 4 e 5 ficaram livres. */
+const REFEICAO_NUMS = [1,2,3];
 const MARMITA_NUMS = [6,7,8];
 const CAFE_NUMS = [1,2,3,4,5];
 
