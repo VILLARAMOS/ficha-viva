@@ -2138,7 +2138,8 @@ function renderEstoqueBaixaManual(){
   });
 }
 
-function openInsumoModal(id){
+function openInsumoModal(id, opts){
+  opts = opts || {};
   const existing = id ? insumos.get(id) : null;
   const root = document.getElementById("modal-root");
   root.innerHTML = `
@@ -2216,13 +2217,13 @@ function openInsumoModal(id){
     Object.assign(data, carimbo());
     errEl.textContent = "Salvando…";
     try{
-      let error;
+      let error, novoId = id;
       if(id){ ({error} = await sb.from('insumos').update(data).eq('id', id)); }
-      else{ ({error} = await sb.from('insumos').insert(data)); }
+      else{ const r = await sb.from('insumos').insert(data).select('id').single(); error = r.error; novoId = r.data && r.data.id; }
       if(error) throw error;
       await loadInsumos();
-      root.innerHTML = "";
-      renderInsumos();
+      if(opts.onSaved){ opts.onSaved(novoId); }
+      else { root.innerHTML = ""; renderInsumos(); }
     }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
   };
 }
@@ -9427,7 +9428,10 @@ function openPedidoModal(id, opts){
   const existing = id ? pedidos.get(id) : null;
   const origem = (!existing && opts.duplicarDe) ? pedidos.get(opts.duplicarDe) : null;
   let draft;
-  if(existing){
+  if(opts.draftOverride){
+    // reabertura depois de cadastrar um insumo novo sem perder o que já estava digitado — reaproveita o rascunho tal como estava
+    draft = opts.draftOverride;
+  } else if(existing){
     draft = { fornecedor: existing.fornecedor||"", data_pedido: existing.data_pedido||hojeYMD(), data_entrega_prevista: existing.data_entrega_prevista||"",
       unidade: pedidoUnidade(existing), destino_rotulo: existing.destino_rotulo||"Grupo inteiro", destino_ids: existing.destino_ids||null,
       semana_referencia: existing.semana_referencia!=null?existing.semana_referencia:null,
@@ -9478,7 +9482,10 @@ function openPedidoModal(id, opts){
           <h3 style="font-size:14px; margin:14px 0 6px;">Itens</h3>
           <datalist id="pd-insumo-list">${insumosOrdenados.map(([iid,ins]) => `<option value="${escapeHtml(ins.nome)}" data-id="${iid}"></option>`).join("")}</datalist>
           <div id="pd-lines"></div>
-          <button type="button" class="btn small" id="pd-add-line" style="margin-top:6px;">+ adicionar item</button>
+          <div style="display:flex; gap:8px; margin-top:6px;">
+            <button type="button" class="btn small" id="pd-add-line">+ adicionar item</button>
+            <button type="button" class="btn small ghost" id="pd-add-insumo">+ cadastrar insumo novo</button>
+          </div>
           <div class="panel" style="margin-top:16px; background:var(--surface-alt);">
             <div class="panel-body" style="display:flex; justify-content:flex-end;">
               <div class="stat-block"><div class="label">Valor total do pedido</div><div class="val" id="pd-total-val">${fmtMoney(valorTotalItensPedido(draft.itens))}</div></div>
@@ -9605,6 +9612,37 @@ function openPedidoModal(id, opts){
   }
   renderLines();
   document.getElementById("pd-add-line").addEventListener("click", () => { draft.itens.push(novaLinhaPedido()); renderLines(); refreshTotal(); });
+  // 09/11/2026: cadastra o insumo sem sair da tela de pedido — guarda o que já foi preenchido no
+  // resto do formulário (não vive em "draft" até agora, só os itens vivem) e reabre o mesmo modal
+  // com o rascunho intacto + o insumo novo já encaixado numa linha.
+  document.getElementById("pd-add-insumo").addEventListener("click", () => {
+    const destIdx = +document.getElementById("pd-destino").value;
+    const dest = destinos[destIdx] || destinos[0];
+    const semrefVal = document.getElementById("pd-semref").value;
+    draft.fornecedor = document.getElementById("pd-fornecedor").value;
+    draft.data_pedido = document.getElementById("pd-data").value;
+    draft.data_entrega_prevista = document.getElementById("pd-entrega").value;
+    draft.unidade = document.getElementById("pd-unidade").value;
+    draft.destino_rotulo = dest.rotulo;
+    draft.destino_ids = dest.ids;
+    draft.semana_referencia = semrefVal === "" ? null : parseInt(semrefVal, 10);
+    draft.observacoes = document.getElementById("pd-obs").value;
+    openInsumoModal(null, { onSaved: (novoId) => {
+      const novo = insumos.get(novoId);
+      const linhaVazia = draft.itens.find(l => !l.insumo_id && !l.nome);
+      const linha = linhaVazia || novaLinhaPedido();
+      if(novo){
+        linha.insumo_id = novoId;
+        linha.nome = novo.nome;
+        const fator = novo.unidade_convertida > 0 ? novo.unidade_convertida : 1;
+        linha.fator_embalagem = fator;
+        linha.unidade = fator > 1 ? `${fmtNum(fator,3)} ${unidadeCustoInsumo(novo)}` : unidadeCustoInsumo(novo);
+        if(linha.preco_unitario == null && novo.custo_unitario != null) linha.preco_unitario = novo.custo_unitario;
+      }
+      if(!linhaVazia) draft.itens.push(linha);
+      openPedidoModal(id, { ...opts, draftOverride: draft });
+    }});
+  });
   document.getElementById("pd-data").addEventListener("change", renderLines);
   document.getElementById("pd-texto-forn").addEventListener("click", () => {
     const itensValidos = draft.itens.filter(l => l.insumo_id && l.quantidade > 0);
