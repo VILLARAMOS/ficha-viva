@@ -689,6 +689,14 @@ const ORIENTACOES_POR_VIEW = {
     <p><strong>V1 só CMV:</strong> Orçado é o custo de insumo da demanda (mesmo motor da Lista de compra); Comprado é a soma dos Pedidos cuja semana de uso cai neste mês; Utilização é a baixa real gerada no estoque pela Requisição do estoque/Açougue (receita + retirada avulsa) ao imprimir — rastreia o que de fato saiu, não só o que foi comprado. O bloco CAFÉ junta todo insumo consumido pelo cardápio de café (independente do grupo de compra do insumo) — mas como os Pedidos não são lançados separando café de refeição, essa linha só tem Orçado. Ainda sem "fora do CMV" (serviço, limpeza, consumível, escritório) nem embalagem configurável — e sem os recortes menores do sistema antigo (RB, Cardápio 1/2), só Grupo inteiro/Matriz/Filial.</p>
     <p><strong>Bloco × semana — Saldo:</strong> vermelho = comprou mais que o orçado do bloco; amarelo = sobrou menos de 15%. Utilizado é independente do Saldo (compara com Orçado, não com Comprado).</p>
   `,
+  pcp: `
+    <p><strong>Volume do dia:</strong> cada cozinha produz só pros seus próprios clientes — os números nunca somam entre Matriz e Filial. Pra imprimir a ordem de produção ou as receitas do dia, escolha uma cozinha só (Matriz ou Filial) acima.</p>
+    <p><strong>Requisição do estoque:</strong> mesma conta da lista de compra (peso bruto da ficha × produção). Suco e carnes do açougue não entram aqui (suco é feito na unidade do cliente; carnes saem pela ordem do açougue). O estoque não separa entre um dia e outro: a produção de sexta também cobre o fim de semana sem operação — cada dia tem seu próprio bloco e quantidade, não somada.</p>
+    <p><strong>Substituições:</strong> um pra um — cada pessoa trocada tira 1 porção da proteína do cardápio naquele serviço (e também de Base/Guarnição quando for composição completa — Prato Especial/Fit/Lanche) e soma 1 unidade do item escolhido. O lançamento salvo aparece na Conferência de expedição, na produção e nas etiquetas, e o custo entra no CMV real do mês.</p>
+    <p><strong>Ajustes do dia:</strong> ajuste manual do valor efetivo de uma receita pra um cliente, num serviço específico — ex.: cliente pediu mais, sobra da véspera. O valor digitado substitui o calculado só nesta produção deste dia (não muda custo nem compra) e some se você remover o ajuste. Motivo é obrigatório, observação é livre. Suco e sobremesa não entram aqui, nem em Peso por prato.</p>
+    <p><strong>Romaneio:</strong> atribuição cliente→rota é fixa (cadastrada no contrato) — pra mudar, edite o contrato do cliente. Sem ordem de entrega dentro da rota nesta versão.</p>
+    <p><strong>Conferência de expedição:</strong> cozinha confirma que produziu/embalou, expedição confirma que carregou. Salva sozinho a cada campo alterado.</p>
+  `,
 };
 function abrirOrientacoesTela(){
   const conteudo = ORIENTACOES_POR_VIEW[currentView];
@@ -3553,7 +3561,7 @@ function montarPainelCmv(grupo, num, semana){
 
     orientacaoHtml = `
       <div class="orientacao-cardapio">
-        <div class="orientacao-title">Orientações para sugestão de cardápio</div>
+        <div class="orientacao-title">Incidência e estrutura desta semana</div>
         <div class="orientacao-cols">
           <div class="orientacao-col">${tabelaInc}</div>
           <div class="orientacao-col">${tabelaEst}</div>
@@ -12729,7 +12737,6 @@ function pcpProducaoAmbasHtml(listaRes, margemPct){
       </div>
       <div class="panel-body">
         <div class="table-wrap"><table><thead>${thead}</thead><tbody>${linhas}</tbody></table></div>
-        <p class="footnote" style="margin:14px 0 0;">Cada cozinha produz só pros seus próprios clientes — os números nunca somam entre Matriz e Filial. Pra imprimir a ordem de produção ou as receitas do dia, escolha uma cozinha só (Matriz ou Filial) acima.</p>
       </div>
     </div>
     ${listaRes.map(res => pcpSubsPanelHtml(res.subs, margemPct, res.unidade)).join("")}
@@ -13352,7 +13359,6 @@ function pcpReqDiaHtml(diaInfo, semana){
     <div class="panel-body"><div class="table-wrap"><table><thead><tr>${PCP_REQ_COLS_HEAD}</tr></thead><tbody>
       ${linhas.length ? linhas.map(l => pcpReqLinhaHtml(l, false)).join("") : `<tr><td colspan="9" class="footnote">Nada a separar para este dia.</td></tr>`}
     </tbody></table></div>
-    <p class="footnote" style="margin-top:10px;">Mesma conta da lista de compra (peso bruto da ficha × produção). Suco e carnes do açougue não entram aqui (suco é feito na unidade do cliente; carnes saem pela ordem do açougue).</p>
     </div>
   </div>`;
 }
@@ -15177,8 +15183,7 @@ function pcpSubstituicoesHtml(listaRes, unidadeFiltro){
       </tbody></table></div>
     </div></div>` : "";
   return composicoesDetails + gerenciar + banner + resumoHtml +
-    `<div class="panel" style="margin-bottom:14px;"><div class="panel-body" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-      <p class="footnote" style="margin:0;">Um pra um: cada pessoa trocada tira 1 porção da proteína do cardápio naquele serviço (e também de Base/Guarnição quando for composição completa — Prato Especial/Fit/Lanche) e soma 1 unidade do item escolhido — digite direto na grade e clique em Salvar. O lançamento salvo aparece na Conferência de expedição, na produção e nas etiquetas, e o custo entra no CMV real do mês (painel acima, "fechamento da semana").</p>
+    `<div class="panel" style="margin-bottom:14px;"><div class="panel-body" style="display:flex; align-items:center; justify-content:flex-end; gap:12px; flex-wrap:wrap;">
       <button type="button" class="btn small primary" id="pcp-subst-salvar" data-subst-salvar="1">Salvar substituições</button>
     </div></div>
     <div class="panel"><div class="panel-body">${blocos}</div></div>`;
@@ -15373,8 +15378,7 @@ function pcpAjustesHtml(res){
         </tr>`).join("")}</tbody>
       </table></div></div>
     </div>`).join("");
-  return `<div class="panel" style="margin-bottom:14px;"><div class="panel-body"><p class="footnote" style="margin:0;">Ajuste manual do valor efetivo de uma receita pra um cliente, num serviço específico — ex.: cliente pediu mais, sobra da véspera. O valor digitado SUBSTITUI o calculado só nesta produção deste dia (não muda custo nem compra) e some se você remover o ajuste. Motivo é obrigatório, observação é livre — os dois ficam guardados pra consulta depois. Use o filtro Almoço/Jantar/Ceia no topo pra ver só o(s) serviço(s) que te interessa; suco e sobremesa não entram aqui (nem em Peso por prato, abaixo).</p></div></div>
-    ${cards}`;
+  return cards;
 }
 function pcpAjustesBind(content, semana, dia){
   content.addEventListener("click", async e => {
@@ -15703,9 +15707,9 @@ async function renderPCP(){
     ` : ehConferencia ? (
       !unidadeFiltro
         ? `<div class="empty-state">Selecione Matriz ou Filial acima — a conferência é por unidade real (é o que sai na doca de verdade), "Ambas" não se aplica aqui.</div>`
-        : `${pcpConferenciaPainelHtml(confLinhas, pcpDiaSel, unidadeFiltro)}<p class="footnote" style="margin:0 0 14px;">Cozinha confirma que produziu/embalou, expedição confirma que carregou. Salva sozinho a cada campo alterado.</p><div id="pcp-conf-wrap">${pcpConferenciaHtml(confLinhas)}</div>`
+        : `${pcpConferenciaPainelHtml(confLinhas, pcpDiaSel, unidadeFiltro)}<div id="pcp-conf-wrap">${pcpConferenciaHtml(confLinhas)}</div>`
     ) : ehRomaneio ? (
-      `${pcpRomaneioPainelHtml(romaneioGrupos)}<p class="footnote" style="margin:0 0 14px;">Atribuição cliente→rota é fixa (cadastrada no contrato) — pra mudar, edite o contrato do cliente. Sem ordem de entrega dentro da rota nesta versão.</p>${pcpRomaneioHtml(romaneioGrupos)}`
+      `${pcpRomaneioPainelHtml(romaneioGrupos)}${pcpRomaneioHtml(romaneioGrupos)}`
     ) : ehCafe ? (
       pcpPainelAreaHtml((() => {
         const cafeClientes = pcpCafeClientesUnidade(unidadeFiltro);
