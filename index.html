@@ -12902,6 +12902,117 @@ function pcpImprimirListaSubstituicoes(resOuLista){
   const contexto = listaRes.length > 1 ? `${DIA_LABEL[res.dia]} · ${rotuloSemana(res.semana)} · Unidade: Matriz + Filial` : pcpContextoImpressao(res, null);
   pcpAbrirImpressaoReceitas(`Lista de substituições — ${DIA_LABEL[res.dia]}, ${rotuloSemana(res.semana)}`, contexto, corpo);
 }
+// ---------- "Controle de proteínas e substituições" (09/11/2026, pedido do time de PCP) ----------
+// Formato que o PCP já usava fora do sistema: 1 linha por cliente, colunas fixas por tipo de item
+// substituto (em vez da lista "deitada" de pcpImprimirListaSubstituicoes acima). Pedido confirmado com
+// o Marcelo: "Saída" é o horário cadastrado na ROTA do cliente (1 horário por rota, não por cliente —
+// ver rotas.horario), e "LAN/PF"/"HAPPY DAY" são as composições completas da semana (Lanche+Prato Fit
+// somados numa coluna só; Happy Day = Prato Especial). Sai 1 tabela por turno (almoço/jantar/ceia),
+// mesmo que a tela esteja filtrada em só 1 — pedido explícito de replicar pra todos os turnos.
+// Classificação por NOME (normalizeText) do item/tipo, não por um campo de categoria dedicado — se Filé/
+// Ovo/Omelete/Lanche/Prato Fit/Prato Especial forem renomeados na tela de configuração a ponto de não
+// bater mais com esses textos, a coluna correspondente para de reconhecer o item (cai fora das 5 colunas,
+// mas continua contando em Total Subs/Total Proteína normalmente).
+function pcpColunaControleProteinas(fichaId, semana){
+  const it = pcpItensSubstitutos.find(x => x.fichaId === fichaId);
+  if(it){
+    const n = normalizeText(it.nome);
+    if(n.includes("file") || n.includes("file de frango")) return "file";
+    if(n.includes("ovo")) return "ovo";
+    if(n.includes("omelete")) return "omelete";
+    return null;
+  }
+  const semanaRow = [...composicoesSemanaCache.values()].find(r => r.ficha_id === fichaId && r.semana === semana);
+  const tipo = semanaRow ? composicoesTipos.get(semanaRow.tipo_id) : null;
+  if(tipo){
+    const n = normalizeText(tipo.nome);
+    if(n.includes("lanche") || n.includes("fit")) return "lanpf";
+    if(n.includes("especial")) return "happy";
+    return null;
+  }
+  return null;
+}
+const PCP_CONTROLE_PROT_COLS = [
+  { key:"file", label:"FILÉ" }, { key:"ovo", label:"OVO" }, { key:"omelete", label:"OMELETE" },
+  { key:"lanpf", label:"LAN/PF" }, { key:"happy", label:"HAPPY DAY" },
+];
+// 1 linha por cliente, só pro turno pedido — "refeições"/"total proteína" são do turno (cli.porServico),
+// não do dia inteiro (cli.pessoas somaria os 3 turnos, sem sentido numa tabela "— ALMOÇO"). Cliente sem
+// refeição prevista neste turno nem entra (evita linha de zeros em jantar/ceia pra quem só tem almoço).
+function pcpControleProteinasLinhas(res, turno){
+  return res.clientes.map(cli => {
+    const ct = contratos.get(cli.id);
+    const rota = ct && ct.rota_id ? rotas.get(ct.rota_id) : null;
+    const cols = { file:0, ovo:0, omelete:0, lanpf:0, happy:0 };
+    let totalSubsPessoas = 0;
+    pcpListaSubstituicoes(res.dia, cli.id).filter(s => (s.servico || "almoco") === turno).forEach(s => {
+      const col = pcpColunaControleProteinas(s.fichaId, res.semana);
+      if(col) cols[col] += pcpUnidadesSubstituicao(s);
+      totalSubsPessoas += s.pessoas;
+    });
+    const refeicoes = cli.porServico?.[turno] || 0;
+    return { nome: cli.nome, horario: rota ? (rota.horario || null) : null, refeicoes, ...cols,
+      totalSubs: totalSubsPessoas, totalProteina: refeicoes - totalSubsPessoas };
+  }).filter(l => l.refeicoes > 0);
+}
+function pcpControleProteinasHtml(linhas, turnoNome){
+  const comRota = linhas.filter(l => l.horario).sort((a,b) => (a.horario||"").localeCompare(b.horario||"") || normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
+  const semRota = linhas.filter(l => !l.horario).sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
+  const total = { refeicoes:0, file:0, ovo:0, omelete:0, lanpf:0, happy:0, totalSubs:0, totalProteina:0 };
+  linhas.forEach(l => { total.refeicoes += l.refeicoes; PCP_CONTROLE_PROT_COLS.forEach(c => total[c.key] += l[c.key]); total.totalSubs += l.totalSubs; total.totalProteina += l.totalProteina; });
+  const colCount = 4 + PCP_CONTROLE_PROT_COLS.length;
+  const linhaHtml = l => `<tr>
+    <td style="padding:5px 6px; font-weight:600; border:1px solid #bbb;">${escapeHtml(l.nome)}</td>
+    <td style="padding:5px 6px; text-align:center; border:1px solid #bbb;">${fmtNum(l.refeicoes,0)}</td>
+    <td style="padding:5px 6px; text-align:center; border:1px solid #bbb;">${l.horario ? escapeHtml(l.horario) : "—"}</td>
+    ${PCP_CONTROLE_PROT_COLS.map(c => `<td style="padding:5px 6px; text-align:center; border:1px solid #bbb;">${fmtNum(l[c.key],0)}</td>`).join("")}
+    <td style="padding:5px 6px; text-align:center; font-weight:600; border:1px solid #bbb;">${fmtNum(l.totalSubs,0)}</td>
+    <td style="padding:5px 6px; text-align:center; font-weight:600; border:1px solid #bbb;">${fmtNum(l.totalProteina,0)}</td>
+  </tr>`;
+  return `<table style="width:100%; border-collapse:collapse; margin-bottom:6px; font-size:12.5px;">
+    <thead>
+      <tr><th colspan="${colCount}" style="background:#7a0000; color:#fff; font-size:15px; padding:9px; border:1px solid #7a0000;">CONTROLE DE PROTEÍNAS E SUBSTITUIÇÕES — ${escapeHtml(turnoNome.toUpperCase())}</th></tr>
+      <tr>
+        <th style="background:#f4b183; padding:6px; border:1px solid #bbb;">EMPRESA</th>
+        <th style="background:#f4b183; padding:6px; border:1px solid #bbb;">REFEIÇÕES</th>
+        <th style="background:#f4b183; padding:6px; border:1px solid #bbb;">SAÍDA</th>
+        ${PCP_CONTROLE_PROT_COLS.map(c => `<th style="background:#c6e0b4; padding:6px; border:1px solid #bbb;">${c.label}</th>`).join("")}
+        <th style="background:#9dc3e6; padding:6px; border:1px solid #bbb;">TOTAL SUBS</th>
+        <th style="background:#9dc3e6; padding:6px; border:1px solid #bbb;">TOTAL PROTEÍNA</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${comRota.map(linhaHtml).join("")}
+      ${semRota.length ? `<tr><td colspan="${colCount}" style="padding:4px 6px; font-size:11px; color:#666; border:1px solid #bbb;">Sem rota/horário cadastrado:</td></tr>${semRota.map(linhaHtml).join("")}` : ""}
+    </tbody>
+    <tfoot>
+      <tr style="background:#7a0000; color:#fff; font-weight:700;">
+        <td style="padding:6px; border:1px solid #7a0000;">TOTAL GERAL</td>
+        <td style="padding:6px; text-align:center; border:1px solid #7a0000;">${fmtNum(total.refeicoes,0)}</td>
+        <td style="border:1px solid #7a0000;"></td>
+        ${PCP_CONTROLE_PROT_COLS.map(c => `<td style="padding:6px; text-align:center; border:1px solid #7a0000;">${fmtNum(total[c.key],0)}</td>`).join("")}
+        <td style="padding:6px; text-align:center; border:1px solid #7a0000;">${fmtNum(total.totalSubs,0)}</td>
+        <td style="padding:6px; text-align:center; border:1px solid #7a0000;">${fmtNum(total.totalProteina,0)}</td>
+      </tr>
+    </tfoot>
+  </table>`;
+}
+function pcpImprimirControleProteinas(resOuLista, funcionariosFile){
+  const listaRes = Array.isArray(resOuLista) ? resOuLista : [resOuLista];
+  const base = listaRes[0];
+  // recalcula SEM filtro de serviço — a tabela sai pra TODOS os turnos (pedido do PCP), mesmo que a tela
+  // esteja filtrada em só 1 turno no momento em que a pessoa clicou em imprimir.
+  const resCompletos = listaRes.map(r => pcpCalcularDia(r.semana, r.dia, r.unidade, null));
+  const blocos = PCP_TURNOS.filter(t => t.id !== "todos").map(t => {
+    const linhas = resCompletos.flatMap(r => pcpControleProteinasLinhas(r, t.id));
+    if(!linhas.length) return "";
+    return pcpControleProteinasHtml(linhas, t.nome) +
+      `<p style="margin:2px 0 26px; font-size:13px;"><strong>FUNCIONÁRIOS:</strong> &nbsp; FILÉ: ${escapeHtml(funcionariosFile || "").trim() || "_______________________________"}</p>`;
+  }).filter(Boolean);
+  if(!blocos.length){ showAlert("Nenhum cliente com refeições previstas neste dia, em nenhum turno."); return; }
+  const contexto = `${DIA_LABEL[base.dia]} · ${rotuloSemana(base.semana)} · Unidade: ${listaRes.length > 1 ? "Matriz + Filial" : nomeUnidadeCompra(base.unidade)}`;
+  pcpAbrirImpressaoReceitas(`Controle de proteínas e substituições — ${DIA_LABEL[base.dia]}`, contexto, blocos.join(`<div style="page-break-before:always;"></div>`));
+}
 // ---------- "Imprimir cardápios do dia" dentro de Produção (16/10/2026, Tarefa 9) ----------
 // Pedido do Marcelo: poder imprimir os cardápios do dia selecionado direto da Produção. Como cada cliente
 // pode seguir um cardápio (grupo+número) diferente no mesmo dia, a resposta dele foi: imprime o CARDÁPIO
@@ -13322,14 +13433,17 @@ function pcpAbrirGerenciarRotas(){
           <div id="rot-lista" style="display:flex; flex-direction:column; gap:8px; margin:10px 0;">
             ${lista.map(([id,r]) => `<div class="field-row" data-rota-row="${id}" style="align-items:flex-end;">
               <div class="field" style="flex:2;"><label>Nome</label><input type="text" class="rot-nome" value="${escapeHtml(r.nome||"")}"></div>
+              <div class="field" style="max-width:90px;"><label>Saída</label><input type="text" class="rot-horario" value="${escapeHtml(r.horario||"")}" placeholder="8:00"></div>
               <div class="field"><label>Motorista</label><input type="text" class="rot-motorista" value="${escapeHtml(r.motorista_nome||"")}"></div>
               <div class="field"><label>Veículo</label><input type="text" class="rot-veiculo" value="${escapeHtml(r.veiculo||"")}"></div>
               <div class="field" style="flex:0;"><label><input type="checkbox" class="rot-ativo" style="width:auto; display:inline-block; margin-right:4px;" ${r.ativo!==false?"checked":""}> Ativa</label></div>
               <button class="btn small ghost" data-rota-salvar="${id}">Salvar</button>
             </div>`).join("") || "<p class='footnote'>Nenhuma rota cadastrada ainda.</p>"}
           </div>
+          <p class="footnote">"Saída" é o horário usado na impressão "Controle de proteínas e substituições" (ex.: 8:00) — opcional, deixe em branco se não aplicável.</p>
           <div class="field-row" style="align-items:flex-end; border-top:1px solid var(--border); padding-top:10px;">
             <div class="field" style="flex:2;"><label>Nova rota — nome</label><input type="text" id="rot-novo-nome" placeholder="Ex.: Rota 1"></div>
+            <div class="field" style="max-width:90px;"><label>Saída</label><input type="text" id="rot-novo-horario" placeholder="8:00"></div>
             <div class="field"><label>Motorista</label><input type="text" id="rot-novo-motorista"></div>
             <div class="field"><label>Veículo</label><input type="text" id="rot-novo-veiculo"></div>
             <button class="btn small primary" id="rot-novo-criar">Adicionar</button>
@@ -13344,6 +13458,7 @@ function pcpAbrirGerenciarRotas(){
     const row = root.querySelector(`[data-rota-row="${btn.dataset.rotaSalvar}"]`);
     await pcpSalvarRota(btn.dataset.rotaSalvar, {
       nome: row.querySelector(".rot-nome").value.trim(),
+      horario: row.querySelector(".rot-horario").value.trim() || null,
       motorista_nome: row.querySelector(".rot-motorista").value.trim() || null,
       veiculo: row.querySelector(".rot-veiculo").value.trim() || null,
       ativo: row.querySelector(".rot-ativo").checked
@@ -13356,6 +13471,7 @@ function pcpAbrirGerenciarRotas(){
     if(!nome){ showAlert("Informe o nome da rota."); return; }
     await pcpSalvarRota(null, {
       nome,
+      horario: document.getElementById("rot-novo-horario").value.trim() || null,
       motorista_nome: document.getElementById("rot-novo-motorista").value.trim() || null,
       veiculo: document.getElementById("rot-novo-veiculo").value.trim() || null,
       ativo: true
@@ -15223,7 +15339,15 @@ function pcpSubstituicoesHtml(listaRes, unidadeFiltro){
         ${[...resumoSemana.porFicha.entries()].map(([fid,v]) => `<tr><td>${escapeHtml(fichas.get(fid)?.nome || fid)}</td><td class="num-cell">${fmtNum(v.pessoas,0)}</td><td class="num-cell">${fmtMoney(v.custo)}</td></tr>`).join("")}
       </tbody></table></div>
     </div></div>` : "";
-  return composicoesDetails + gerenciar + banner + resumoHtml +
+  // "Controle de proteínas e substituições" (09/11/2026, pedido do time de PCP) — formato em matriz
+  // cliente×tipo, separado da "lista de substituições" acima (não substitui, é um 2º formato de impressão).
+  // Campo de texto não é salvo em lugar nenhum — é só pra digitar antes de clicar em imprimir; se precisar
+  // ficar registrado (não só no papel), avisar que dá pra persistir por dia/turno depois.
+  const controleProteinasHtml = `<div class="panel" style="margin-bottom:14px;"><div class="panel-body" style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+      <input type="text" id="pcp-ctrl-func" placeholder="Nome de quem faz o filé hoje (aparece no rodapé da impressão)" style="flex:1 1 320px; min-width:220px;">
+      <button type="button" class="btn small primary" data-subst-imprimir-controle="1">🖨 Imprimir controle de proteínas</button>
+    </div></div>`;
+  return composicoesDetails + gerenciar + banner + controleProteinasHtml + resumoHtml +
     `<div class="panel" style="margin-bottom:14px;"><div class="panel-body" style="display:flex; align-items:center; justify-content:flex-end; gap:12px; flex-wrap:wrap;">
       <button type="button" class="btn small primary" id="pcp-subst-salvar" data-subst-salvar="1">Salvar substituições</button>
     </div></div>
@@ -15337,6 +15461,8 @@ function pcpSubstituicoesBind(content, semana, dia, unidade, listaRes){
   content.addEventListener("click", async e => {
     const btnImprimirLista = e.target.closest("button[data-subst-imprimir-lista]");
     if(btnImprimirLista){ pcpImprimirListaSubstituicoes(listaRes); return; }
+    const btnImprimirControle = e.target.closest("button[data-subst-imprimir-controle]");
+    if(btnImprimirControle){ pcpImprimirControleProteinas(listaRes, document.getElementById("pcp-ctrl-func")?.value || ""); return; }
     const btnRevisado = e.target.closest("button[data-subst-marcar-revisado]");
     if(btnRevisado){ await pcpMarcarSubstituicoesRevisadas(semana, dia, unidade); renderPCP(); return; }
     const btnItemAdd = e.target.closest("button[data-subst-item-add]");
