@@ -626,9 +626,10 @@ const VIEWS = {
 };
 
 // Conteúdo do botão "Orientações" (topbar, ao lado do título) — um texto por tela.
-// Pilotando só na tela "painel" (09/11/2026); telas sem entrada aqui simplesmente não mostram o botão,
-// até serem migradas uma a uma. Aqui entra explicação de método/fórmula e observação de comportamento —
-// alerta, pendência e aviso operacional continuam na própria tela, nunca só aqui.
+// 09/11/2026: estendido pra todo o sistema (era só a tela "painel", piloto inicial) — o texto que
+// ficava sempre visível abaixo do título (page-desc) de cada tela foi pra aqui. Aqui entra explicação
+// de método/fórmula/propósito da tela — alerta, pendência e aviso operacional continuam na própria
+// tela, nunca só aqui.
 const ORIENTACOES_POR_VIEW = {
   painel: `
     <p>Visão do negócio por Grupo/Matriz/Filial (realizado × planejado), pendências, e detalhe de faturamento, custo, CMV real, Orçamento e Estoque.</p>
@@ -643,6 +644,24 @@ const ORIENTACOES_POR_VIEW = {
     <p>A pedido do Marcelo (05/10/2026): evolução semanal, análise por cliente, orçado×comprado por bloco, CMV de formulação, Refeição×Café/Extras, pratos mais caros e proteínas mais baratas. "Divergência vs. planilha" do sistema antigo não foi portada (sem dado equivalente aqui); "fechar mês" foi substituído por exportação simples.</p>
     <p>Ainda falta a "Visão do negócio" segmentada por operação (RB · Cardápio 1 / Clientes do Cardápio 2 dentro da Matriz) — bloqueado porque a base de contratos não guarda essa sub-operação (só Matriz/Filial).</p>
   `,
+  insumos: `
+    <p><strong>Cadastro (Insumos):</strong> cadastro único de custo — toda ficha técnica lê o custo daqui, ninguém digita custo direto na ficha.</p>
+    <p><strong>Estoque:</strong> controle de estoque (entrada por pedido, movimentação, baixa e contagem) — alimenta o cálculo do CMV real.</p>
+  `,
+  cardapio: `<p>Edição direto na tabela — refeição, marmita e café da manhã.</p>`,
+  contratos: `<p>Visão do negócio por cliente, cadastro de contratos, cardápio de referência e itens contratados.</p>`,
+  eventos: `<p>Produção pontual faturada fora do cardápio padrão — faixa de custo estimada quando não há apuração item a item.</p>`,
+  ajuda: `<p>Orientações, treinamento e dúvidas da equipe sobre o Ficha Viva.</p>`,
+  incidencia: `<p>Mapa de carnes: quantos pratos de cada tipo de proteína cada perfil espera por semana do mês — e a classificação de proteína de cada ficha técnica.</p>`,
+  fichas: `<p>Cada ficha calcula o custo sozinha a partir do cadastro de insumos.</p>`,
+  vendas: `<p>Lançamento de vendas realizadas por contrato/semana — quantidade vendida por item, custo e receita calculados.</p>`,
+  faturamento: `<p>Receita e custo realmente apurados a partir do que foi lançado em Vendas e Eventos — recalculado ao vivo (sem fechamento de mês nesta versão).</p>`,
+  compras: `
+    <p><strong>Lista de compra:</strong> escolha os clientes e a semana, ajuste a previsão de consumo e gere a lista de insumos a comprar.</p>
+    <p><strong>Pedidos:</strong> histórico de compras por fornecedor — registre, duplique pedidos antigos e confira o recebimento.</p>
+  `,
+  fornecedores: `<p>Cadastro de fornecedores — CNPJ, prazo de pagamento, departamento de fornecimento e histórico de compras.</p>`,
+  orcamento: `<p>Orçado (demanda de insumo) × Comprado (pedidos) × Utilização (baixa real no estoque), por bloco de compra e semana.</p>`,
 };
 function abrirOrientacoesTela(){
   const conteudo = ORIENTACOES_POR_VIEW[currentView];
@@ -1895,9 +1914,7 @@ let estoqueSubTab = "contagem"; // "contagem" | "entradas" | "movimentar" | "bai
 
 function renderInsumos(){
   document.getElementById("page-title").textContent = "Insumos";
-  document.getElementById("page-desc").textContent = insumoTabSel === "estoque"
-    ? "Controle de estoque (entrada por pedido, movimentação, baixa e contagem) — alimenta o cálculo do CMV real"
-    : "Cadastro único de custo — toda ficha vai ler daqui, ninguém digita custo na ficha";
+  document.getElementById("page-desc").textContent = "";
   document.getElementById("topbar-actions").innerHTML = insumoTabSel === "cadastro" ? `<button class="btn primary" id="btn-novo-insumo">+ Novo insumo</button>` : "";
   if(insumoTabSel === "cadastro") document.getElementById("btn-novo-insumo").addEventListener("click", () => openInsumoModal(null));
 
@@ -3250,7 +3267,7 @@ function abrirSugestaoSemanaModal(grupo, num, semanaAtual){
 
 function renderCardapio(){
   document.getElementById("page-title").textContent = "Cardápio";
-  document.getElementById("page-desc").textContent = "Edição direto na tabela — refeição, marmita e café da manhã";
+  document.getElementById("page-desc").textContent = "";
 
   const grupo = cardapioTabSel; // "refeicao" | "marmita" | "cafe"
   const numerosPorGrupo = numerosPorGrupoAtual(grupo);
@@ -4565,7 +4582,7 @@ function apurarContratoVigenciaTotal(id, ct, almocoIdx, cafeIdx){
 
 function renderContratos(){
   document.getElementById("page-title").textContent = "Contratos";
-  document.getElementById("page-desc").textContent = "Visão do negócio por cliente, cadastro de contratos, cardápio de referência e itens contratados";
+  document.getElementById("page-desc").textContent = "";
   document.getElementById("topbar-actions").innerHTML = `<button class="btn primary" id="btn-novo-contrato">+ Novo contrato</button>`;
   document.getElementById("btn-novo-contrato").addEventListener("click", () => openContratoModal(null));
 
@@ -5202,7 +5219,7 @@ function margemEvento(e){
 
 function renderEventos(){
   document.getElementById("page-title").textContent = "Eventos";
-  document.getElementById("page-desc").textContent = "Produção pontual faturada fora do cardápio padrão — faixa de custo estimada quando não há apuração item a item";
+  document.getElementById("page-desc").textContent = "";
   document.getElementById("topbar-actions").innerHTML = `<button class="btn primary" id="btn-novo-evento">+ Novo evento</button>`;
   document.getElementById("btn-novo-evento").addEventListener("click", () => openEventoModal(null));
 
@@ -5372,7 +5389,7 @@ let ajudaFiltroStatus = "aberta";
 
 function renderAjuda(){
   document.getElementById("page-title").textContent = "Ajuda";
-  document.getElementById("page-desc").textContent = "Orientações, treinamento e dúvidas da equipe sobre o Ficha Viva";
+  document.getElementById("page-desc").textContent = "";
   document.getElementById("topbar-actions").innerHTML = ajudaSubTab === "orientacoes"
     ? `<button class="btn primary" id="btn-nova-orientacao">+ Nova orientação</button>`
     : "";
@@ -5700,7 +5717,7 @@ function contratosDoPerfil(perfilId){
 
 function renderIncidencia(){
   document.getElementById("page-title").textContent = "Tabela de incidência";
-  document.getElementById("page-desc").textContent = "Mapa de carnes: quantos pratos de cada tipo de proteína cada perfil espera por semana do mês — e a classificação de proteína de cada ficha técnica";
+  document.getElementById("page-desc").textContent = "";
   document.getElementById("topbar-actions").innerHTML = `<button class="btn primary" id="btn-novo-perfil">+ Novo perfil</button>`;
   document.getElementById("btn-novo-perfil").addEventListener("click", () => openPerfilModal(null));
 
@@ -5924,7 +5941,7 @@ function renderPerfilModal(id, draft, onSaved){
 
 function renderFichas(){
   document.getElementById("page-title").textContent = "Fichas técnicas";
-  document.getElementById("page-desc").textContent = "Cada ficha calcula o custo sozinha a partir do cadastro de insumos";
+  document.getElementById("page-desc").textContent = "";
   document.getElementById("topbar-actions").innerHTML = `<button class="btn primary" id="btn-nova-ficha">+ Nova ficha</button>`;
   document.getElementById("btn-nova-ficha").addEventListener("click", () => openFichaModal(null));
 
@@ -6777,7 +6794,7 @@ function linhaClienteVenda(id, c, mesId, almocoIdx, cafeIdx){
 
 function renderVendas(){
   document.getElementById("page-title").textContent = "Vendas";
-  document.getElementById("page-desc").textContent = "Lançamento de vendas realizadas por contrato/semana — quantidade vendida por item, custo e receita calculados";
+  document.getElementById("page-desc").textContent = "";
   document.getElementById("topbar-actions").innerHTML = "";
 
   const content = document.getElementById("content");
@@ -7743,7 +7760,7 @@ let ftPeriodoFim = null;
 
 function renderFaturamento(){
   document.getElementById("page-title").textContent = "Faturamento apurado";
-  document.getElementById("page-desc").textContent = "Receita e custo realmente apurados a partir do que foi lançado em Vendas e Eventos — recalculado ao vivo (sem fechamento de mês nesta versão)";
+  document.getElementById("page-desc").textContent = "";
   document.getElementById("topbar-actions").innerHTML = "";
 
   const meses = MESES_REFERENCIA;
@@ -9289,9 +9306,7 @@ function renderComprasLista(content, tabsHtml, wireTabs){
 
 function renderCompras(){
   document.getElementById("page-title").textContent = "Compras";
-  document.getElementById("page-desc").textContent = comprasTab === "pedidos"
-    ? "Histórico de compras por fornecedor: registre, duplique pedidos antigos e confira o recebimento."
-    : "Escolha os clientes e a semana, ajuste a previsão de consumo e gere a lista de insumos a comprar.";
+  document.getElementById("page-desc").textContent = "";
   document.getElementById("topbar-actions").innerHTML = "";
 
   const content = document.getElementById("content");
@@ -10117,7 +10132,7 @@ function pedidosDoFornecedor(fornecedorId){
 }
 function renderFornecedores(){
   document.getElementById("page-title").textContent = "Fornecedores";
-  document.getElementById("page-desc").textContent = "Cadastro de fornecedores — CNPJ, prazo de pagamento, departamento de fornecimento e histórico de compras";
+  document.getElementById("page-desc").textContent = "";
   const content = document.getElementById("content");
   const lista = [...fornecedores.entries()]
     .filter(([,f]) => !fornecedoresFiltro || (f.departamentos||[]).includes(fornecedoresFiltro))
@@ -10412,7 +10427,7 @@ function saldoChip(saldo, orcado){
 
 function renderOrcamento(){
   document.getElementById("page-title").textContent = "Orçamento";
-  document.getElementById("page-desc").textContent = "Orçado (demanda de insumo) × Comprado (pedidos) × Utilização (baixa real no estoque), por bloco de compra e semana";
+  document.getElementById("page-desc").textContent = "";
   document.getElementById("topbar-actions").innerHTML = "";
 
   const meses = MESES_REFERENCIA;
@@ -11255,7 +11270,7 @@ function executarAcaoPendencia(acao){
 
 function renderPainel(){
   document.getElementById("page-title").textContent = "Painel";
-  document.getElementById("page-desc").textContent = "Visão do negócio e pendências";
+  document.getElementById("page-desc").textContent = "";
   document.getElementById("topbar-actions").innerHTML = "";
 
   const meses = MESES_REFERENCIA;
