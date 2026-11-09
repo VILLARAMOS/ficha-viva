@@ -652,16 +652,27 @@ const ORIENTACOES_POR_VIEW = {
   contratos: `<p>Visão do negócio por cliente, cadastro de contratos, cardápio de referência e itens contratados.</p>`,
   eventos: `<p>Produção pontual faturada fora do cardápio padrão — faixa de custo estimada quando não há apuração item a item.</p>`,
   ajuda: `<p>Orientações, treinamento e dúvidas da equipe sobre o Ficha Viva.</p>`,
-  incidencia: `<p>Mapa de carnes: quantos pratos de cada tipo de proteína cada perfil espera por semana do mês — e a classificação de proteína de cada ficha técnica.</p>`,
+  incidencia: `
+    <p>Mapa de carnes: quantos pratos de cada tipo de proteína cada perfil espera por semana do mês — e a classificação de proteína de cada ficha técnica.</p>
+    <p><strong>Perfis:</strong> cada perfil é o mapa de carnes de um grupo de contratos — quantos pratos de cada tipo de proteína entram em cada semana do mês (Semana 1 a 5) e quais dias da semana contam (Geral = seg–sex, RB = seg–sáb, por exemplo). Cada contrato ativo escolhe um perfil (campo "Perfil de incidência", na aba Contratos).</p>
+    <p><strong>Classificação das fichas:</strong> uma lista só — grupo (Base, Guarnição de legumes/massas/secos, Salada, Sobremesa, Suco, Proteína ou Extra) e, só quando é Proteína, o tipo (Bovina/Peixe, Ave, Suína, Embutida). Por padrão só aparece o que ainda está sem classificar — assim que você preenche, a ficha some da lista. Marque "mostrar já classificadas" se precisar corrigir alguma depois. Desde a Nova ficha técnica esses dois campos já vêm pra preencher na hora de cadastrar, então essa lista tende a ficar cada vez mais curta.</p>
+  `,
   fichas: `<p>Cada ficha calcula o custo sozinha a partir do cadastro de insumos.</p>`,
   vendas: `<p>Lançamento de vendas realizadas por contrato/semana — quantidade vendida por item, custo e receita calculados.</p>`,
   faturamento: `<p>Receita e custo realmente apurados a partir do que foi lançado em Vendas e Eventos — recalculado ao vivo (sem fechamento de mês nesta versão).</p>`,
   compras: `
     <p><strong>Lista de compra:</strong> escolha os clientes e a semana, ajuste a previsão de consumo e gere a lista de insumos a comprar.</p>
-    <p><strong>Pedidos:</strong> histórico de compras por fornecedor — registre, duplique pedidos antigos e confira o recebimento.</p>
+    <p><strong>Pedidos:</strong> todo pedido fica salvo com data, fornecedor e itens — é o histórico de compras. Use "duplicar" pra repetir uma compra antiga, e "conferir" pra lançar a quantidade recebida de cada item.</p>
   `,
-  fornecedores: `<p>Cadastro de fornecedores — CNPJ, prazo de pagamento, departamento de fornecimento e histórico de compras.</p>`,
-  orcamento: `<p>Orçado (demanda de insumo) × Comprado (pedidos) × Utilização (baixa real no estoque), por bloco de compra e semana.</p>`,
+  fornecedores: `
+    <p>Cadastro de fornecedores — CNPJ, prazo de pagamento, departamento de fornecimento e histórico de compras.</p>
+    <p>O nome do fornecedor nos pedidos (aba Compras) vem daqui — ao digitar um nome novo num pedido, ele entra automaticamente no cadastro (sem CNPJ/prazo, pra completar depois).</p>
+  `,
+  orcamento: `
+    <p>Orçado (demanda de insumo) × Comprado (pedidos) × Utilização (baixa real no estoque), por bloco de compra e semana.</p>
+    <p><strong>V1 só CMV:</strong> Orçado é o custo de insumo da demanda (mesmo motor da Lista de compra); Comprado é a soma dos Pedidos cuja semana de uso cai neste mês; Utilização é a baixa real gerada no estoque pela Requisição do estoque/Açougue (receita + retirada avulsa) ao imprimir — rastreia o que de fato saiu, não só o que foi comprado. O bloco CAFÉ junta todo insumo consumido pelo cardápio de café (independente do grupo de compra do insumo) — mas como os Pedidos não são lançados separando café de refeição, essa linha só tem Orçado. Ainda sem "fora do CMV" (serviço, limpeza, consumível, escritório) nem embalagem configurável — e sem os recortes menores do sistema antigo (RB, Cardápio 1/2), só Grupo inteiro/Matriz/Filial.</p>
+    <p><strong>Bloco × semana — Saldo:</strong> vermelho = comprou mais que o orçado do bloco; amarelo = sobrou menos de 15%. Utilizado é independente do Saldo (compara com Orçado, não com Comprado).</p>
+  `,
 };
 function abrirOrientacoesTela(){
   const conteudo = ORIENTACOES_POR_VIEW[currentView];
@@ -5740,7 +5751,6 @@ function renderIncidencia(){
   const fichasPendentesTotal = [...fichas.values()].filter(fichaPendente).length;
 
   content.innerHTML = `
-    <div class="footnote" style="margin-bottom:14px;">Cada <strong>perfil</strong> é o mapa de carnes de um grupo de contratos: quantos pratos de cada tipo de proteína entram em cada semana do mês (Semana 1 a 5) e quais dias da semana contam (Geral = seg–sex, RB = seg–sáb, por exemplo). Cada contrato ativo escolhe um perfil (campo "Perfil de incidência", na aba Contratos).</div>
     <div class="panel">
       <div class="panel-head"><h3>Perfis</h3></div>
       <div class="table-wrap">
@@ -5753,7 +5763,6 @@ function renderIncidencia(){
     <div class="panel">
       <div class="panel-head"><h3>Classificação das fichas</h3><span class="hint">${fichasPendentesTotal} sem classificar de ${fichas.size} fichas no total</span></div>
       <div class="panel-body">
-        <div class="footnote" style="margin-bottom:10px;">Uma lista só: grupo (Base, Guarnição de legumes/massas/secos, Salada, Sobremesa, Suco, Proteína ou Extra) e, só quando é Proteína, o tipo (Bovina/Peixe, Ave, Suína, Embutida). Por padrão só aparece o que ainda está <strong>sem classificar</strong> — assim que você preenche, a ficha some da lista. Marque "mostrar já classificadas" se precisar corrigir alguma depois. Desde a <strong>Nova ficha técnica</strong> esses dois campos já vêm pra preencher na hora de cadastrar, então essa lista tende a ficar cada vez mais curta.</div>
         <div class="search-bar">
           <input type="text" id="inc-busca-ficha" placeholder="Buscar ficha…">
           <label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted); white-space:nowrap;"><input type="checkbox" id="inc-mostrar-todas"> mostrar todas, não só as já usadas (${fichasNuncaUsadas.length})</label>
@@ -9344,7 +9353,6 @@ function renderTabPedidos(){
 
     const body = document.getElementById("cp-body");
     body.innerHTML = `
-      <div class="footnote" style="margin-bottom:14px;">Todo pedido fica salvo com data, fornecedor e itens — é o histórico de compras. Use "duplicar" pra repetir uma compra antiga, e "conferir" pra lançar a quantidade recebida de cada item.</div>
       <div class="search-bar">
         <select id="pd-mes-filtro" aria-label="Filtrar por mês">
           <option value="todos" ${pedidosMesFiltro==="todos"?"selected":""}>Todos os meses</option>
@@ -10140,7 +10148,6 @@ function renderFornecedores(){
     .sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
   const departamentos = [...new Set([...fornecedores.values()].flatMap(f => f.departamentos||[]))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
   content.innerHTML = `
-    <div class="footnote" style="margin:16px 0 10px;">O nome do fornecedor nos pedidos vem daqui — ao digitar um nome novo num pedido, ele entra automaticamente no cadastro (sem CNPJ/prazo, pra completar depois).</div>
     <div class="panel">
       <div class="panel-head">
         <h3>Fornecedores (${lista.length})</h3>
@@ -10464,7 +10471,6 @@ function renderOrcamento(){
   }
 
   content.innerHTML = `
-    <div class="footnote" style="margin-bottom:14px;">V1 só CMV: Orçado é o custo de insumo da demanda (mesmo motor da Lista de compra); Comprado é a soma dos Pedidos cuja semana de uso cai neste mês; <strong>Utilização</strong> é a baixa real gerada no estoque pela Requisição do estoque/Açougue (receita + retirada avulsa) ao imprimir — rastreia o que de fato saiu, não só o que foi comprado. O bloco <strong>CAFÉ</strong> junta todo insumo consumido pelo cardápio de café (independente do grupo de compra do insumo) — mas como os Pedidos não são lançados separando café de refeição, essa linha só tem Orçado. Ainda sem "fora do CMV" (serviço, limpeza, consumível, escritório) nem embalagem configurável — e sem os recortes menores do sistema antigo (RB, Cardápio 1/2), só Grupo inteiro/Matriz/Filial.</div>
     <div class="menu-controls">
       <select id="or-mes">${meses.map(m => `<option value="${m.id}" ${m.id===orcamentoMesSel?"selected":""}>${escapeHtml(m.nome)}</option>`).join("")}</select>
       <div class="seg-toggle" id="or-escopo">
@@ -10488,7 +10494,6 @@ function renderOrcamento(){
           ${[["orcado","Orçado"],["comprado","Comprado"],["utilizado","Utilizado"],["saldo","Saldo"]].map(([k,l]) => `<button type="button" data-met="${k}" class="${orcamentoMetricaSel===k?"active":""}">${l}</button>`).join("")}
         </div>
       </div>
-      <div class="footnote" style="margin:0 20px 10px;">Saldo em vermelho = comprou mais que o orçado do bloco; amarelo = sobrou menos de 15%. Utilizado é independente do Saldo (compara com Orçado, não com Comprado).</div>
       <div class="table-wrap">
         <table class="cardapio-table">
           <thead><tr>
