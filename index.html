@@ -519,9 +519,6 @@ table.cardapio-table .autocomplete{position:relative;}
       <button class="nav-btn" data-view="ajuda" title="Ajuda"><i class="ico" data-lucide="help-circle"></i><span class="label">Ajuda</span></button>
     </div>
 
-    <div class="sidebar-foot">
-      Cadastro único de custo dos insumos. Os demais módulos do Ficha Viva ainda serão migrados para cá.
-    </div>
     <button class="collapse-toggle" id="sidebar-toggle" title="Recolher menu"><i class="ico" data-lucide="panel-left-close"></i><span class="collapse-label">Recolher</span></button>
   </nav>
   <div class="main">
@@ -653,14 +650,21 @@ const ORIENTACOES_POR_VIEW = {
     <p><strong>Movimentação interna:</strong> transfere um insumo de uma unidade para outra — gera uma baixa na origem e uma entrada no destino, já aprovadas.</p>
     <p><strong>Baixa manual:</strong> dá baixa manual no estoque (perda, quebra, consumo não previsto, etc.). A baixa por lista de PCP usa o mesmo lançamento quando o módulo de PCP cobrir isso — por enquanto, use a baixa manual.</p>
   `,
-  cardapio: `<p>Edição direto na tabela — refeição, marmita e café da manhã.</p>`,
+  cardapio: `
+    <p>Edição direto na tabela — refeição, marmita e café da manhã.</p>
+    <p><strong>Composições completas da semana:</strong> Prato Especial, Prato Fit, Lanche — ficha única (grupo "Prato Completo") que substitui Proteína+Base+Guarnição juntos quando escolhida no PCP. A estimativa de pessoas/semana alimenta a Lista de compras e a Requisição de insumos enquanto não há histórico real — depois de algumas semanas, passa a sugerir pela mediana. Sem ficha definida, o tipo não aparece na grade de Substituições do PCP.</p>
+  `,
   contratos: `
     <p>Visão do negócio por cliente, cadastro de contratos, cardápio de referência e itens contratados.</p>
     <p><strong>Orçamento do mês</strong> é calculado por cliente a partir da quantidade de atendimento prevista (contratada), do preço de venda e do custo do cardápio planejado (mesmo motor de previsão usado no Painel) — diferente do Orçamento de compras do painel acima, que é por Matriz/Filial/bloco de insumo, não por cliente. "Faturamento do contrato" soma dentro da vigência (data_inicio–data_fim); meses anteriores ao início do sistema (antes de set/2026) usam o valor lançado em "Vendas passadas", dentro do cadastro do cliente.</p>
     <p><strong>Sem unidade definida</strong> não entra nos blocos Matriz/Filial nem na soma de faturamento/orçamento por unidade — só no Grupo.</p>
   `,
   eventos: `<p>Produção pontual faturada fora do cardápio padrão — faixa de custo estimada quando não há apuração item a item.</p>`,
-  ajuda: `<p>Orientações, treinamento e dúvidas da equipe sobre o Ficha Viva.</p>`,
+  ajuda: `
+    <p>Orientações, treinamento e dúvidas da equipe sobre o Ficha Viva.</p>
+    <h4>Sobre o sistema</h4>
+    <p>Cadastro único de custo dos insumos e demais módulos do braço industrial do Grupo Villa Ramos (cardápio, produção, expedição) — substitui os arquivos de Excel anteriores.</p>
+  `,
   incidencia: `
     <p>Mapa de carnes: quantos pratos de cada tipo de proteína cada perfil espera por semana do mês — e a classificação de proteína de cada ficha técnica.</p>
     <p><strong>Perfis:</strong> cada perfil é o mapa de carnes de um grupo de contratos — quantos pratos de cada tipo de proteína entram em cada semana do mês (Semana 1 a 5) e quais dias da semana contam (Geral = seg–sex, RB = seg–sáb, por exemplo). Cada contrato ativo escolhe um perfil (campo "Perfil de incidência", na aba Contratos).</p>
@@ -690,12 +694,15 @@ const ORIENTACOES_POR_VIEW = {
     <p><strong>Bloco × semana — Saldo:</strong> vermelho = comprou mais que o orçado do bloco; amarelo = sobrou menos de 15%. Utilizado é independente do Saldo (compara com Orçado, não com Comprado).</p>
   `,
   pcp: `
-    <p><strong>Volume do dia:</strong> cada cozinha produz só pros seus próprios clientes — os números nunca somam entre Matriz e Filial. Pra imprimir a ordem de produção ou as receitas do dia, escolha uma cozinha só (Matriz ou Filial) acima.</p>
+    <p><strong>Volume do dia:</strong> cada cozinha produz só pros seus próprios clientes — os números nunca somam entre Matriz e Filial. Pra imprimir a ordem de produção ou as receitas do dia, escolha uma cozinha só (Matriz ou Filial) acima. "Itens prontos" são lançados direto no cardápio e não passam pela cozinha (ex. kit talher, marmita avulsa); "Sub-receitas" são fichas usadas como ingrediente de outra receita do dia — preparar antes de montar o prato final.</p>
+    <p><strong>Pontos a revisar antes de imprimir:</strong> marcar um ponto não bloqueia a impressão, é só pra organizar a conferência.</p>
     <p><strong>Requisição do estoque:</strong> mesma conta da lista de compra (peso bruto da ficha × produção). Suco e carnes do açougue não entram aqui (suco é feito na unidade do cliente; carnes saem pela ordem do açougue). O estoque não separa entre um dia e outro: a produção de sexta também cobre o fim de semana sem operação — cada dia tem seu próprio bloco e quantidade, não somada.</p>
-    <p><strong>Substituições:</strong> um pra um — cada pessoa trocada tira 1 porção da proteína do cardápio naquele serviço (e também de Base/Guarnição quando for composição completa — Prato Especial/Fit/Lanche) e soma 1 unidade do item escolhido. O lançamento salvo aparece na Conferência de expedição, na produção e nas etiquetas, e o custo entra no CMV real do mês.</p>
+    <p><strong>Substituições:</strong> um pra um — cada pessoa trocada tira 1 porção da proteína do cardápio naquele serviço (e também de Base/Guarnição quando for composição completa — Prato Especial/Fit/Lanche) e soma 1 unidade do item escolhido. O lançamento salvo aparece na Conferência de expedição, na produção e nas etiquetas, e o custo entra no CMV real do mês (painel "Custo de substituição — fechamento da semana" já soma dentro do CMV real do mês, por contrato).</p>
     <p><strong>Ajustes do dia:</strong> ajuste manual do valor efetivo de uma receita pra um cliente, num serviço específico — ex.: cliente pediu mais, sobra da véspera. O valor digitado substitui o calculado só nesta produção deste dia (não muda custo nem compra) e some se você remover o ajuste. Motivo é obrigatório, observação é livre. Suco e sobremesa não entram aqui, nem em Peso por prato.</p>
-    <p><strong>Romaneio:</strong> atribuição cliente→rota é fixa (cadastrada no contrato) — pra mudar, edite o contrato do cliente. Sem ordem de entrega dentro da rota nesta versão.</p>
+    <p><strong>Romaneio:</strong> atribuição cliente→rota é fixa (cadastrada no contrato) — pra mudar, edite o contrato do cliente. Sem ordem de entrega dentro da rota nesta versão. "Preparo da semana" (corte/receita por dia de utilização, com custo) deixa escolher os dias e imprimir, cada um numa folha.</p>
     <p><strong>Conferência de expedição:</strong> cozinha confirma que produziu/embalou, expedição confirma que carregou. Salva sozinho a cada campo alterado.</p>
+    <p><strong>Etiquetas:</strong> validade, temperatura e peso (açougue) ou data e responsável (saladas/sobremesas) ficam em branco pra anotar na embalagem.</p>
+    <p><strong>Peso por prato / Volume por cliente:</strong> peso é de expedição, só refeição transportada. Volume é líquido por cliente, sem margem — é o que vai pra etiqueta da cuba.</p>
   `,
 };
 function abrirOrientacoesTela(){
@@ -1345,14 +1352,13 @@ function composicoesSemanaPainelHtml(semana){
     </tr>`;
   }).join("");
   return `<div class="panel" style="margin-bottom:14px;"><div class="panel-body">
-    <div class="panel-head" style="border:none; padding:0 0 8px;"><h3 style="font-size:14px;">Composições completas da semana</h3><span class="hint">Prato Especial, Prato Fit, Lanche — ficha única (grupo "Prato Completo") que substitui Proteína+Base+Guarnição juntos quando escolhida no PCP</span></div>
+    <div class="panel-head" style="border:none; padding:0 0 8px;"><h3 style="font-size:14px;">Composições completas da semana</h3></div>
     ${fichasCompletas.length ? "" : `<p class="footnote" style="color:#b45309; margin:0 0 10px;">Nenhuma ficha com grupo "Prato Completo" cadastrada ainda — crie a receita em Fichas técnicas com esse grupo antes de selecionar aqui.</p>`}
     ${tipos.length ? `<div class="table-wrap"><table><thead><tr><th>Tipo</th><th>Ficha desta semana</th><th>Estimativa (pessoas/semana)</th><th></th><th></th></tr></thead><tbody>${linhas}</tbody></table></div>` : `<div class="empty-state">Nenhum tipo configurado — adicione abaixo (ex. Prato Especial).</div>`}
     <div style="display:flex; gap:8px; align-items:center; margin-top:10px;">
       <input type="text" id="comp-tipo-novo" placeholder="Novo tipo (ex. Prato Vegetariano)" style="max-width:260px;">
       <button type="button" class="btn small primary" id="comp-tipo-add">+ Adicionar tipo</button>
     </div>
-    <p class="footnote" style="margin-top:8px;">A estimativa alimenta a Lista de compras e a Requisição de insumos enquanto não há histórico real — depois de algumas semanas, passa a sugerir pela mediana. Sem ficha definida, o tipo não aparece na grade de Substituições do PCP.</p>
   </div></div>`;
 }
 function composicoesSemanaPainelBind(area, semana, onSaved){
@@ -12672,7 +12678,7 @@ function pcpDiretosPanelHtml(diretos){
   if(!diretos.length) return "";
   const linhas = diretos.map(d => `<tr><td class="name-cell">${escapeHtml(d.nome)}</td><td class="num-cell">${fmtNum(d.total,2)} ${escapeHtml(d.unidade||"")}</td><td class="num-cell">${d.porCliente.size}</td><td class="footnote" style="margin:0;">${[...new Set([...d.porCliente.values()].map(p=>p.nome))].join(", ")}</td></tr>`).join("");
   return `<div class="panel">
-      <div class="panel-head"><h3><i class="ico" data-lucide="package"></i>Itens prontos (sem ficha técnica)</h3><span class="hint">lançados direto no cardápio — não passam pela cozinha, ex. kit talher, marmita avulsa</span></div>
+      <div class="panel-head"><h3><i class="ico" data-lucide="package"></i>Itens prontos (sem ficha técnica)</h3></div>
       <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Item</th><th style="text-align:right;">Quantidade</th><th style="text-align:right;">Clientes</th><th>Atende</th></tr></thead><tbody>${linhas}</tbody></table></div></div>
     </div>`;
 }
@@ -12690,7 +12696,7 @@ function pcpSubsPanelHtml(subs, margemPct, unidade){
     return `<tr><td class="name-cell">${escapeHtml(S.nome)}</td><td class="num-cell">${pcpFmtQtd(kg)}</td><td class="footnote" style="margin:0;">${usadaEmTxt}</td><td class="num-cell"><button class="btn small primary" ${attrBtn} title="Imprimir esta sub-receita">${iconeImprimir()}</button></td></tr>`;
   }).join("");
   return `<div class="panel">
-      <div class="panel-head"><h3><i class="ico" data-lucide="layers"></i>Sub-receitas (preparar antes)</h3><span class="hint">fichas usadas como ingrediente de outra receita do dia — preparar antes de montar o prato final</span></div>
+      <div class="panel-head"><h3><i class="ico" data-lucide="layers"></i>Sub-receitas (preparar antes)</h3></div>
       <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Sub-receita</th><th style="text-align:right;">Produzir</th><th>Usada em</th><th></th></tr></thead><tbody>${linhas}</tbody></table></div></div>
     </div>`;
 }
@@ -12989,7 +12995,7 @@ function pcpConferirHtml(res){
   }
   return `
     <div class="panel">
-      <div class="panel-head"><h3><i class="ico" data-lucide="clipboard-check"></i>Pontos a revisar antes de imprimir</h3><span class="hint">${nRevisados}/${total} revisados · marcar não bloqueia a impressão, é só pra organizar a conferência</span></div>
+      <div class="panel-head"><h3><i class="ico" data-lucide="clipboard-check"></i>Pontos a revisar antes de imprimir</h3><span class="hint">${nRevisados}/${total} revisados</span></div>
       <div class="panel-body" style="display:flex; flex-direction:column; gap:2px;">
         ${criticos.length ? `<div class="footnote" style="margin:4px 0 2px; font-weight:600; color:var(--critical);">Críticos — cardápio não montado pro produto vendido</div>` : ""}
         ${criticos.map((a,i) => pcpConferirLinhaHtml("crit", i, a.txt, "critical")).join("")}
@@ -13609,7 +13615,7 @@ function pcpAcgPreparoSemanaHtml(preparoSemana, diasSelState){
   if(![...diasSelState].some(d => disponiveis.includes(d))) disponiveis.forEach(d => diasSelState.add(d));
   [...diasSelState].forEach(d => { if(!disponiveis.includes(d)) diasSelState.delete(d); });
   return `
-    <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="calendar-days"></i>Preparo da semana</h3><span class="hint">Corte (Receita) por dia de utilização, com custo — escolha os dias e imprima, cada um sai numa folha</span></div>
+    <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="calendar-days"></i>Preparo da semana</h3></div>
     <div class="panel" style="margin-bottom:14px;">
       <div class="panel-body" style="display:flex; flex-wrap:wrap; gap:14px; align-items:center;">
         ${preparoSemana.map(d => `<label style="display:flex; align-items:center; gap:6px; font-size:13px;"><input type="checkbox" data-pcp-acgprep-sel="${d.dia}" ${diasSelState.has(d.dia)?"checked":""}> ${escapeHtml(DIA_LABEL[d.dia]||d.dia)}</label>`).join("")}
@@ -13693,7 +13699,7 @@ function pcpImprimirMapaSemana(mapaSemana, semana, unidadeLabel){
 function pcpEtiquetasCarnesHtml(mapaCarnesSemana){
   if(!mapaCarnesSemana.length) return "";
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3>Etiquetas</h3><span class="hint">${mapaCarnesSemana.length} linha${mapaCarnesSemana.length===1?"":"s"} da semana — validade, temperatura e peso em branco pra anotar na embalagem</span><button class="btn small primary" id="pcp-etiquetas-abrir" style="margin-left:auto;">Preparar etiquetas</button></div>
+    <div class="panel-head"><h3>Etiquetas</h3><span class="hint">${mapaCarnesSemana.length} linha${mapaCarnesSemana.length===1?"":"s"} da semana</span><button class="btn small primary" id="pcp-etiquetas-abrir" style="margin-left:auto;">Preparar etiquetas</button></div>
   </div>`;
 }
 // linha pra tela/impressão/PDF: estampado (corte, receita, datas, validade, temperatura) + em branco
@@ -14048,7 +14054,7 @@ function pcpSalSobEtiquetaPreview(l, unidadeLabel){
 function pcpSalSobEtiquetasHtml(linhas){
   if(!linhas.length) return `<div class="panel" style="margin-bottom:14px;"><div class="panel-head"><h3>Etiquetas</h3></div><div class="panel-body"><div class="empty-state">Nada a etiquetar neste dia.</div></div></div>`;
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3>Etiquetas</h3><span class="hint">${linhas.length} linha${linhas.length===1?"":"s"} (prato × cliente) do dia selecionado — data e responsável em branco pra anotar na embalagem</span><button class="btn small primary" id="pcp-salsob-etiquetas-abrir" style="margin-left:auto;">Preparar etiquetas</button></div>
+    <div class="panel-head"><h3>Etiquetas</h3><span class="hint">${linhas.length} linha${linhas.length===1?"":"s"} (prato × cliente) do dia selecionado</span><button class="btn small primary" id="pcp-salsob-etiquetas-abrir" style="margin-left:auto;">Preparar etiquetas</button></div>
   </div>`;
 }
 // PDF em tamanho físico exato (mm) pra impressora de etiqueta térmica de rolo — 1 página por etiqueta, sem
@@ -15173,7 +15179,7 @@ function pcpSubstituicoesHtml(listaRes, unidadeFiltro){
   const blocos = listaRes.map(res => pcpSubstGradeBlocoHtml(res, itens)).join(`<div style="height:22px;"></div>`);
   const resumoSemana = pcpSubstCustoSemana(listaRes);
   const resumoHtml = resumoSemana.pessoas ? `<div class="panel" style="margin-bottom:14px;"><div class="panel-body">
-      <div class="panel-head" style="border:none; padding:0 0 8px;"><h3 style="font-size:14px;">Custo de substituição — fechamento da semana</h3><span class="hint">já soma dentro do CMV real do mês, por contrato</span></div>
+      <div class="panel-head" style="border:none; padding:0 0 8px;"><h3 style="font-size:14px;">Custo de substituição — fechamento da semana</h3></div>
       <div style="display:flex; gap:24px; flex-wrap:wrap; margin-bottom:10px;">
         <div class="stat-block"><div class="label">Pessoas trocadas na semana</div><div class="val">${fmtNum(resumoSemana.pessoas,0)}</div></div>
         <div class="stat-block"><div class="label">Custo extra da semana</div><div class="val">${fmtMoney(resumoSemana.custo)}</div></div>
@@ -15736,7 +15742,7 @@ async function renderPCP(){
         {label:"Ajustes lançados hoje", valor: (pcpAjustesCache.get(pcpDiaSel) || new Map()).size}
       ]) +
       pcpAjustesHtml(res) +
-      `<div class="panel-head" style="margin:24px 0 10px; border:none;"><h3><i class="ico" data-lucide="scale"></i>Peso por prato (por cliente)</h3><span class="hint">peso de expedição — só refeição transportada</span></div>` +
+      `<div class="panel-head" style="margin:24px 0 10px; border:none;"><h3><i class="ico" data-lucide="scale"></i>Peso por prato (por cliente)</h3></div>` +
       pcpPainelAreaHtml((() => {
         const pesoCts = pesoExpClientes(unidadeFiltro);
         const pesoComAjuste = pesoCts.filter(([,ct]) => temPesoExpedicao(ct)).length;
@@ -15783,7 +15789,7 @@ async function renderPCP(){
         <button class="btn small primary" id="pcp-imprimir-cardapios-dia">Cardápios do dia</button>
       </div>` : `<p class="footnote" style="margin:0 0 14px;">Pra imprimir a ordem de produção ou as receitas do dia inteiras, escolha Matriz ou Filial acima — impressão por cozinha, nunca as duas juntas numa folha só. <button class="btn small primary" id="pcp-imprimir-cardapios-dia" style="margin-left:6px;">Cardápios do dia</button></p>`}
       ${ehProducaoAmbas ? pcpProducaoAmbasHtml(listaRes, margemPct) : pcpProducaoHtml(res, margemPct)}
-      <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="scale"></i>Volume por cliente</h3><span class="hint">volume líquido por cliente, sem margem — o que vai pra etiqueta da cuba</span></div>
+      <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="scale"></i>Volume por cliente</h3></div>
       ${ehProducaoAmbas
         ? `<p class="footnote" style="margin:0 0 10px; font-weight:600;">Matriz</p>${pcpVolumeHtml(listaRes[0])}<p class="footnote" style="margin:16px 0 10px; font-weight:600;">Filial</p>${pcpVolumeHtml(listaRes[1])}`
         : pcpVolumeHtml(res)}
