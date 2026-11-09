@@ -908,20 +908,26 @@ document.getElementById('logoutBtn').addEventListener('click', async ()=>{
   showLogin();
 });
 
-// Reconhece um erro de SALVAMENTO causado por sessão caída/expirada (não por falta de
-// permissão de verdade). O onAuthStateChange acima já cobre a maioria dos casos antes
-// da pessoa clicar em Salvar, mas isso é uma segunda camada: se mesmo assim a gravação
-// chegar a ser tentada sem sessão válida, mostra uma mensagem que a pessoa entende, em
-// vez do erro cru do Postgres ("permission denied for function tem_acesso" etc.).
+// Reconhece um erro causado por sessão caída/expirada (não por falta de permissão de
+// verdade). O onAuthStateChange acima já cobre a maioria dos casos antes da pessoa
+// clicar em Salvar/Excluir/etc., mas isso é uma segunda camada: se mesmo assim uma
+// operação for tentada sem sessão válida, mostra uma mensagem que a pessoa entende, em
+// vez do erro cru do Postgres ("permission denied for function tem_acesso" etc., achado
+// 09/11/2026 na tela de Pedido — mesma lógica aplicada em todo o sistema a partir daqui).
 function erroDeSessaoExpirada(e){
   const msg = String((e && (e.message || e.code)) || e || "");
   return /permission denied for function|JWT expired|invalid JWT|PGRST301/i.test(msg);
 }
-const MSG_SESSAO_EXPIRADA = "Sua sessão expirou. Faça login novamente antes de salvar — copie os dados preenchidos antes de recarregar, se puder.";
-function mostrarErroSalvar(e, errEl){
-  const msg = erroDeSessaoExpirada(e) ? MSG_SESSAO_EXPIRADA : "Erro ao salvar: " + (e.message || e.code || e);
-  if (errEl) errEl.textContent = msg; else showAlert(msg);
-  if (erroDeSessaoExpirada(e)) setTimeout(() => { sb.auth.signOut(); showLogin(); }, 50);
+const MSG_SESSAO_EXPIRADA = "Sua sessão expirou. Faça login novamente — copie os dados preenchidos antes de recarregar, se puder.";
+// Usar no lugar de "<prefixo>" + (e.message||e.code||e) dentro de qualquer catch(e).
+// Mantém o prefixo original (Erro ao salvar / Erro ao remover / Erro: / etc.) no caso comum,
+// e troca pela mensagem de sessão expirada (+ desloga e volta ao login) quando é esse o caso.
+function mensagemErro(e, prefixo){
+  if (erroDeSessaoExpirada(e)){
+    setTimeout(() => { sb.auth.signOut(); showLogin(); }, 50);
+    return MSG_SESSAO_EXPIRADA;
+  }
+  return (prefixo||"Erro: ") + (e.message || e.code || e);
 }
 
 /* ===================================================================== HELPERS (portados do Ficha Viva) */
@@ -1710,7 +1716,7 @@ async function salvarContagemEstoque(semana, unidade, insumoId, valorStr){
       if(error) throw error;
     }
     await loadEstoqueContagem();
-  }catch(e){ showAlert("Erro ao salvar contagem de estoque: "+(e.message||e.code||e)); }
+  }catch(e){ showAlert(mensagemErro(e, "Erro ao salvar contagem de estoque: ")); }
 }
 
 /* ---- estoque: kardex (entrada/baixa/movimentação) — saldo real, contagem só audita/ajusta ---- */
@@ -1773,7 +1779,7 @@ async function sincronizarEntradaPendenteDoPedido(pedidoId, unidade, itens){
     for(const a of aAtualizar){ const { error } = await sb.from('estoque_movimentos').update({quantidade:a.quantidade, custo_unitario:a.custo_unitario}).eq('id', a.id); if(error) throw error; }
     if(aInserir.length){ const { error } = await sb.from('estoque_movimentos').insert(aInserir); if(error) throw error; }
     await loadEstoqueMovimentos();
-  }catch(e){ showAlert("Pedido salvo, mas houve erro ao preparar a entrada pendente em estoque: "+(e.message||e.code||e)); }
+  }catch(e){ showAlert(mensagemErro(e, "Pedido salvo, mas houve erro ao preparar a entrada pendente em estoque: ")); }
 }
 async function aprovarEntradaEstoque(movId, quantidade, custoUnitario){
   try{
@@ -1781,7 +1787,7 @@ async function aprovarEntradaEstoque(movId, quantidade, custoUnitario){
     if(error) throw error;
     await loadEstoqueMovimentos();
     return true;
-  }catch(e){ showAlert("Erro ao aprovar entrada em estoque: "+(e.message||e.code||e)); return false; }
+  }catch(e){ showAlert(mensagemErro(e, "Erro ao aprovar entrada em estoque: ")); return false; }
 }
 async function rejeitarEntradaEstoque(movId){
   try{
@@ -1789,7 +1795,7 @@ async function rejeitarEntradaEstoque(movId){
     if(error) throw error;
     await loadEstoqueMovimentos();
     return true;
-  }catch(e){ showAlert("Erro ao rejeitar entrada em estoque: "+(e.message||e.code||e)); return false; }
+  }catch(e){ showAlert(mensagemErro(e, "Erro ao rejeitar entrada em estoque: ")); return false; }
 }
 async function registrarBaixaManual(unidade, insumoId, quantidade, observacao){
   if(!(quantidade > 0)) return false;
@@ -1799,7 +1805,7 @@ async function registrarBaixaManual(unidade, insumoId, quantidade, observacao){
     if(error) throw error;
     await loadEstoqueMovimentos();
     return true;
-  }catch(e){ showAlert("Erro ao registrar baixa de estoque: "+(e.message||e.code||e)); return false; }
+  }catch(e){ showAlert(mensagemErro(e, "Erro ao registrar baixa de estoque: ")); return false; }
 }
 async function registrarMovimentacaoInterna(origemUnidade, destinoUnidade, insumoId, quantidade, observacao){
   if(!(quantidade > 0) || origemUnidade === destinoUnidade) return false;
@@ -1815,7 +1821,7 @@ async function registrarMovimentacaoInterna(origemUnidade, destinoUnidade, insum
     if(error) throw error;
     await loadEstoqueMovimentos();
     return true;
-  }catch(e){ showAlert("Erro ao registrar movimentação interna: "+(e.message||e.code||e)); return false; }
+  }catch(e){ showAlert(mensagemErro(e, "Erro ao registrar movimentação interna: ")); return false; }
 }
 // baixa manual "em lote" a partir de uma lista (ex.: geração futura de lista de PCP) — pronta pra ser chamada quando o módulo de PCP existir
 // `dataYMD` (18/10/2026): opcional, default = hoje (comportamento antigo, inalterado pros outros chamadores
@@ -1836,7 +1842,7 @@ async function registrarBaixaLote(unidade, tipo, itens, observacao, dataYMD){
     if(error) throw error;
     await loadEstoqueMovimentos();
     return linhas.length;
-  }catch(e){ showAlert("Erro ao registrar baixa em lote: "+(e.message||e.code||e)); return -1; }
+  }catch(e){ showAlert(mensagemErro(e, "Erro ao registrar baixa em lote: ")); return -1; }
 }
 async function gerarAjustesContagem(semana, unidade){
   const contagem = contagemPorSemana(semana, unidade);
@@ -1855,7 +1861,7 @@ async function gerarAjustesContagem(semana, unidade){
     if(error) throw error;
     await loadEstoqueMovimentos();
     return ajustes.length;
-  }catch(e){ showAlert("Erro ao gerar ajustes de contagem: "+(e.message||e.code||e)); return -1; }
+  }catch(e){ showAlert(mensagemErro(e, "Erro ao gerar ajustes de contagem: ")); return -1; }
 }
 // contagem mais recente dentro do MÊS (não soma semanas — é uma foto do estoque, não um fluxo). Simplificação
 // consciente: o sistema antigo abate semana a semana; aqui a Lista de compra é mensal, então usa a contagem
@@ -2521,7 +2527,7 @@ function openInsumoModal(id, opts){
       await loadInsumos();
       if(opts.onSaved){ opts.onSaved(novoId); }
       else { root.innerHTML = ""; renderInsumos(); }
-    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+    }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao salvar: "); }
   };
 }
 
@@ -2544,7 +2550,7 @@ async function deleteInsumo(id){
     if(error) throw error;
     await loadInsumos();
     renderInsumos();
-  }catch(e){ showAlert("Erro ao excluir: "+(e.message||e.code||e)); }
+  }catch(e){ showAlert(mensagemErro(e, "Erro ao excluir: ")); }
 }
 
 /* ===================================================================== MOTOR DE CUSTO (portado do Ficha Viva) */
@@ -3315,7 +3321,7 @@ function abrirSugestaoSemanaModal(grupo, num, semanaAtual){
         draftAlmocoOverridePendente = draft;
         resumoSugestaoPendente = stats;
         renderCardapio();
-      }catch(e){ errEl.textContent = "Erro ao gerar sugestão: " + (e.message || e.code || e); }
+      }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao gerar sugestão: "); }
     };
   }
   render();
@@ -3903,7 +3909,7 @@ function montarTabelaAlmoco(num, semana){
       if(error) throw error;
       await loadCardapios();
       montarTabelaAlmoco(num, semana);
-    }catch(e){ showAlert("Erro ao excluir: " + (e.message || e.code || e)); }
+    }catch(e){ showAlert(mensagemErro(e, "Erro ao excluir: ")); }
   }));
 
   document.getElementById("btn-salvar-semana").onclick = async () => {
@@ -3928,7 +3934,7 @@ function montarTabelaAlmoco(num, semana){
       errEl.textContent = "";
       montarTabelaAlmoco(num, semana);
       showAlert("Semana salva com sucesso.");
-    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+    }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao salvar: "); }
   };
 }
 
@@ -4105,7 +4111,7 @@ function montarTabelaCafe(num, semana){
       if(error) throw error;
       await loadCafeSemanas();
       montarTabelaCafe(num, semana);
-    }catch(e){ showAlert("Erro ao excluir: " + (e.message || e.code || e)); }
+    }catch(e){ showAlert(mensagemErro(e, "Erro ao excluir: ")); }
   }));
 
   document.getElementById("btn-salvar-semana").onclick = async () => {
@@ -4133,7 +4139,7 @@ function montarTabelaCafe(num, semana){
       errEl.textContent = "";
       montarTabelaCafe(num, semana);
       showAlert("Semana salva com sucesso.");
-    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+    }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao salvar: "); }
   };
 }
 
@@ -4154,7 +4160,7 @@ async function excluirSemanaCompleta(grupo, num, semana){
     cardapioSemanaSel = null;
     renderCardapio();
     showAlert("Semana excluída.");
-  }catch(e){ showAlert("Erro ao excluir: " + (e.message || e.code || e)); }
+  }catch(e){ showAlert(mensagemErro(e, "Erro ao excluir: ")); }
 }
 
 async function copiarSemanaCardapio(grupo, srcNum, srcSemana, destNum, destSemana){
@@ -4307,7 +4313,7 @@ function abrirCopiarSemanaModal(grupo, destNum, destSemana){
           root.innerHTML = "";
           showAlert("Semana copiada com sucesso.");
           renderCardapio();
-        }catch(e){ showAlert("Erro ao copiar: " + (e.message || e.code || e)); }
+        }catch(e){ showAlert(mensagemErro(e, "Erro ao copiar: ")); }
       };
     }
   }
@@ -4354,7 +4360,7 @@ function abrirMetaModal(grupo, num, mesId, onSaved){
     document.getElementById("mt-excluir").onclick = async () => {
       if(!(await confirmDialog("Excluir a meta deste cardápio neste mês?"))) return;
       try{ await excluirMetaCardapio(grupo, num, mesId); root.innerHTML = ""; onSaved && onSaved(); }
-      catch(e){ showAlert("Erro ao excluir: " + (e.message || e.code || e)); }
+      catch(e){ showAlert(mensagemErro(e, "Erro ao excluir: ")); }
     };
   }
   document.getElementById("mt-salvar").onclick = async () => {
@@ -4367,7 +4373,7 @@ function abrirMetaModal(grupo, num, mesId, onSaved){
       await salvarMetaCardapio(grupo, num, mesId, tipo, valor);
       root.innerHTML = "";
       onSaved && onSaved();
-    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+    }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao salvar: "); }
   };
 }
 
@@ -4414,7 +4420,7 @@ function abrirEstruturaCardapioModal(grupo, num, onSaved){
     document.getElementById("es-excluir").onclick = async () => {
       if(!(await confirmDialog("Excluir a estrutura deste cardápio? O motor volta a preencher todas as vagas da grade, sem limite."))) return;
       try{ await excluirEstruturaCardapio(grupo, num); root.innerHTML = ""; onSaved && onSaved(); }
-      catch(e){ showAlert("Erro ao excluir: " + (e.message || e.code || e)); }
+      catch(e){ showAlert(mensagemErro(e, "Erro ao excluir: ")); }
     };
   }
   document.getElementById("es-salvar").onclick = async () => {
@@ -4442,7 +4448,7 @@ function abrirEstruturaCardapioModal(grupo, num, onSaved){
       });
       root.innerHTML = "";
       onSaved && onSaved();
-    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+    }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao salvar: "); }
   };
 }
 
@@ -5256,7 +5262,7 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
       await Promise.all([loadContratos(), loadContratoItens()]);
       root.innerHTML = "";
       renderContratos();
-    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+    }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao salvar: "); }
   };
 }
 
@@ -5395,7 +5401,7 @@ function renderEventoModal(id, draft){
       await loadEventos();
       root.innerHTML="";
       renderEventos();
-    }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
+    }catch(e){ showAlert(mensagemErro(e, "Erro: ")); }
   };
 
   document.getElementById("save-m").onclick = async () => {
@@ -5431,7 +5437,7 @@ function renderEventoModal(id, draft){
       await loadEventos();
       root.innerHTML = "";
       renderEventos();
-    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+    }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao salvar: "); }
   };
 }
 
@@ -5561,7 +5567,7 @@ function renderAjudaConteudoModal(id, draft){
       await loadAjudaConteudo();
       root.innerHTML="";
       renderAjuda();
-    }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
+    }catch(e){ showAlert(mensagemErro(e, "Erro: ")); }
   };
 
   document.getElementById("save-m").onclick = async () => {
@@ -5590,7 +5596,7 @@ function renderAjudaConteudoModal(id, draft){
       await loadAjudaConteudo();
       root.innerHTML = "";
       renderAjuda();
-    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+    }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao salvar: "); }
   };
 }
 
@@ -5644,7 +5650,7 @@ function renderAjudaDuvidas(){
       if(error) throw error;
       await loadAjudaDuvidas();
       renderAjuda();
-    }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
+    }catch(e){ showAlert(mensagemErro(e, "Erro: ")); }
   }));
   body.querySelectorAll("[data-reabrir]").forEach(btn => btn.addEventListener("click", async () => {
     try{
@@ -5652,7 +5658,7 @@ function renderAjudaDuvidas(){
       if(error) throw error;
       await loadAjudaDuvidas();
       renderAjuda();
-    }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
+    }catch(e){ showAlert(mensagemErro(e, "Erro: ")); }
   }));
 }
 
@@ -5698,7 +5704,7 @@ function openAjudaResponderModal(id){
       await loadAjudaDuvidas();
       root.innerHTML = "";
       renderAjuda();
-    }catch(e){ document.getElementById("aj-resp-err").textContent = "Erro ao salvar: " + (e.message||e.code||e); }
+    }catch(e){ document.getElementById("aj-resp-err").textContent = mensagemErro(e, "Erro ao salvar: "); }
   };
 }
 
@@ -5750,7 +5756,7 @@ function openDuvidaFlutuanteModal(){
       await loadAjudaDuvidas();
       root.innerHTML = "";
       showAlert("Dúvida enviada! A equipe vai responder na aba Ajuda.");
-    }catch(e){ document.getElementById("dv-err").textContent = "Erro ao enviar: " + (e.message||e.code||e); }
+    }catch(e){ document.getElementById("dv-err").textContent = mensagemErro(e, "Erro ao enviar: "); }
   };
 }
 
@@ -5953,7 +5959,7 @@ function renderPerfilModal(id, draft, onSaved){
       await loadPerfisIncidencia();
       root.innerHTML="";
       onSaved();
-    }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
+    }catch(e){ showAlert(mensagemErro(e, "Erro: ")); }
   };
 
   document.getElementById("save-m").onclick = async () => {
@@ -5986,7 +5992,7 @@ function renderPerfilModal(id, draft, onSaved){
       await loadPerfisIncidencia();
       root.innerHTML = "";
       onSaved();
-    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+    }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao salvar: "); }
   };
 }
 
@@ -6527,7 +6533,7 @@ function renderFichaModal(id, draft){
       await loadFichas();
       root.innerHTML="";
       renderFichas();
-    }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
+    }catch(e){ showAlert(mensagemErro(e, "Erro: ")); }
   };
   document.getElementById("save-m").onclick = async () => {
     const errEl = document.getElementById("err-msg");
@@ -6585,7 +6591,7 @@ function renderFichaModal(id, draft){
       await loadFichas();
       root.innerHTML = "";
       renderFichas();
-    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+    }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao salvar: "); }
   };
 }
 
@@ -7285,7 +7291,7 @@ function renderGradeLancamento(){
       await Promise.all([loadVendas(), loadAjustesMinimo(), loadVendasSemanaEstado()]);
       showAlert("Semana salva.");
       renderGradeLancamento();
-    }catch(e){ showAlert("Erro ao salvar: " + (e.message || e.code || e)); }
+    }catch(e){ showAlert(mensagemErro(e, "Erro ao salvar: ")); }
     finally{ btn.disabled = false; btn.textContent = "Salvar semana"; }
   });
 
@@ -8423,7 +8429,7 @@ async function comprasSalvarAlteracoes(){
     refeicoesFuncDraft = new Map();
     showAlert("Alterações salvas.");
     return true;
-  }catch(e){ showAlert("Erro ao salvar: " + (e.message || e.code || e)); return false; }
+  }catch(e){ showAlert(mensagemErro(e, "Erro ao salvar: ")); return false; }
   finally{ comprasSalvando = false; renderCompras(); }
 }
 /* ---- rascunho do ajuste de segurança (mesmo padrão salvo>rascunho que a previsão, mas sem sugestão automática — padrão 0) ---- */
@@ -8583,7 +8589,7 @@ function abrirSalvarConjuntoCompra(selIds, conjAtivo){
       await loadConjuntosCompra();
       fechar();
       renderCompras();
-    }catch(e){ btn.disabled = false; document.getElementById("err-msg").textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+    }catch(e){ btn.disabled = false; document.getElementById("err-msg").textContent = mensagemErro(e, "Erro ao salvar: "); }
   };
   document.getElementById("cj-ok").onclick = salvar;
   inp.addEventListener("keydown", e => { if(e.key === "Enter") salvar(); });
@@ -9322,7 +9328,7 @@ function renderComprasLista(content, tabsHtml, wireTabs){
       if(error) throw error;
       await loadConjuntosCompra();
       renderCompras();
-    }catch(e){ showAlert("Erro ao excluir: " + (e.message||e.code||e)); }
+    }catch(e){ showAlert(mensagemErro(e, "Erro ao excluir: ")); }
   }));
   content.querySelectorAll(".cp-cli-chip").forEach(b => b.addEventListener("click", () => {
     const id = b.dataset.id;
@@ -9487,7 +9493,7 @@ function renderTabPedidos(){
           if(error) throw error;
           await loadPedidos();
           updateTable();
-        }catch(e){ showAlert("Erro: " + (e.message||e.code||e)); }
+        }catch(e){ showAlert(mensagemErro(e, "Erro: ")); }
       }));
     }
     updateTable();
@@ -10005,7 +10011,7 @@ function openPedidoModal(id, opts){
       await loadPedidos();
       root.innerHTML="";
       renderCompras();
-    }catch(e){ mostrarErroSalvar(e); }
+    }catch(e){ showAlert(mensagemErro(e, "Erro: ")); }
   };
 
   document.getElementById("save-m").onclick = async () => {
@@ -10061,7 +10067,7 @@ function openPedidoModal(id, opts){
       if(atualizarCustos && itensCusto.length) await atualizarCustosInsumosDoPedido(itensCusto, data_pedido);
       root.innerHTML = "";
       renderCompras();
-    }catch(e){ mostrarErroSalvar(e, errEl); }
+    }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao salvar: "); }
   };
 }
 
@@ -10166,7 +10172,7 @@ function openPedidoDetalhe(id){
       await sincronizarEntradaPendenteDoPedido(id, pedidoUnidade(p), itensFinal);
       root.innerHTML = "";
       renderCompras();
-    }catch(e){ document.getElementById("cf-err").textContent = "Erro ao salvar: " + (e.message||e.code||e); }
+    }catch(e){ document.getElementById("cf-err").textContent = mensagemErro(e, "Erro ao salvar: "); }
   };
 }
 
@@ -10310,7 +10316,7 @@ function openFornecedorModal(id, opts){
         if(error) throw error;
         await loadFornecedores();
         renderAnexos();
-      }catch(e){ document.getElementById("fn-anexo-err").textContent = "Erro ao remover: "+(e.message||e.code||e); }
+      }catch(e){ document.getElementById("fn-anexo-err").textContent = mensagemErro(e, "Erro ao remover: "); }
     }));
   }
   renderAnexos();
@@ -10331,7 +10337,7 @@ function openFornecedorModal(id, opts){
         await loadFornecedores();
         fileEl.value = "";
         renderAnexos();
-      }catch(e){ errEl.textContent = "Erro ao anexar: "+(e.message||e.code||e); }
+      }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao anexar: "); }
     });
   }
 
@@ -10346,7 +10352,7 @@ function openFornecedorModal(id, opts){
       await loadFornecedores();
       fechar();
       renderFornecedores();
-    }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
+    }catch(e){ showAlert(mensagemErro(e, "Erro: ")); }
   };
 
   document.getElementById("save-m").onclick = async () => {
@@ -10371,7 +10377,7 @@ function openFornecedorModal(id, opts){
       await loadFornecedores();
       fechar();
       renderFornecedores();
-    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+    }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao salvar: "); }
   };
 }
 
