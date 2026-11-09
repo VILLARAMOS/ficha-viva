@@ -3420,6 +3420,7 @@ function renderCardapio(){
       <button class="btn primary" id="btn-salvar-semana">Salvar semana</button>
       <button class="btn" id="btn-copiar-semana">⧉ Copiar semana</button>
       <button class="btn" id="btn-imprimir-cardapio-completo">Imprimir completo</button>
+      <button class="btn" id="btn-imprimir-cardapio-simples" title="Imprime só os nomes dos pratos da semana, sem peso nem custo">Imprimir só cardápio</button>
       <button class="btn danger" id="btn-excluir-semana">Excluir semana</button>
     </div>
     <div id="card-cmv-panel"></div>
@@ -3441,6 +3442,7 @@ function renderCardapio(){
   document.getElementById("btn-copiar-semana").addEventListener("click", () => abrirCopiarSemanaModal(grupo, cardapioNumSel, cardapioSemanaSel));
   document.getElementById("btn-excluir-semana").addEventListener("click", () => excluirSemanaCompleta(grupo, cardapioNumSel, cardapioSemanaSel));
   document.getElementById("btn-imprimir-cardapio-completo").addEventListener("click", () => imprimirCardapioCompleto(grupo, cardapioNumSel, cardapioSemanaSel));
+  document.getElementById("btn-imprimir-cardapio-simples").addEventListener("click", () => imprimirCardapioCompleto(grupo, cardapioNumSel, cardapioSemanaSel, true));
 
   if(cardapioTabSel === "cafe") montarTabelaCafe(cardapioNumSel, cardapioSemanaSel);
   else montarTabelaAlmoco(cardapioNumSel, cardapioSemanaSel);
@@ -4503,12 +4505,15 @@ function abrirEstruturaCardapioModal(grupo, num, onSaved){
   };
 }
 
-function imprimirCardapioCompleto(grupo, num, semana){
-  const titulo = `Cardápio completo — ${labelNumeroCardapio(grupo, num)} — ${rotuloSemana(semana)}`;
+function imprimirCardapioCompleto(grupo, num, semana, semCustos){
+  const titulo = semCustos
+    ? `Cardápio — ${labelNumeroCardapio(grupo, num)} — ${rotuloSemana(semana)}`
+    : `Cardápio completo — ${labelNumeroCardapio(grupo, num)} — ${rotuloSemana(semana)}`;
   const totais = {}; DIAS_ORDEM.forEach(dia => totais[dia] = 0);
   let linhasHtml = "";
   const celTxt = (it) => {
     if(!it || !it.nome) return `<td class="vazio">—</td>`;
+    if(semCustos) return {custo: 0, html: `<td>${escapeHtml(it.nome)}</td>`};
     const custo = custoLinhaCardapio(it);
     const gramTxt = it.gramagem_kg!=null ? `${Number(it.gramagem_kg).toLocaleString('pt-BR',{maximumFractionDigits:3})} kg` : "";
     return {custo, html: `<td><div>${escapeHtml(it.nome)}</div><div class="sub">${[gramTxt, custo?fmtMoney(custo):""].filter(Boolean).join(" · ")}</div></td>`};
@@ -4546,11 +4551,11 @@ function imprimirCardapioCompleto(grupo, num, semana){
       if(algumPreenchido) linhasHtml += `<tr><td>${escapeHtml(cat)}</td>${celulas}</tr>`;
     });
   }
-  const linhaPreco = grupo !== "cafe" ? (() => {
+  const linhaPreco = (!semCustos && grupo !== "cafe") ? (() => {
     const porDia = new Map([...cardapiosAlmoco.values()].filter(r => r.cardapio_num === num && r.semana === semana).map(r => [r.dia, r]));
     return `<tr class="tot"><td>Preço de venda</td>${DIAS_ORDEM.map(dia => `<td class="num">${fmtMoney(porDia.get(dia)?.preco_venda_planejado||0)}</td>`).join("")}</tr>`;
   })() : "";
-  const linhaTotal = `<tr class="tot"><td>Custo total do dia</td>${DIAS_ORDEM.map(dia => `<td class="num">${fmtMoney(totais[dia])}</td>`).join("")}</tr>`;
+  const linhaTotal = semCustos ? "" : `<tr class="tot"><td>Custo total do dia</td>${DIAS_ORDEM.map(dia => `<td class="num">${fmtMoney(totais[dia])}</td>`).join("")}</tr>`;
   const somaSemana = Object.values(totais).reduce((a,b)=>a+b,0);
   const resumoSemana = grupo === "cafe" ? custoPlanejadoCafeSemana(num, semana) : cmvPlanejadoSemana(num, semana);
   const resumoSemanaHtml = grupo === "cafe"
@@ -4562,18 +4567,18 @@ function imprimirCardapioCompleto(grupo, num, semana){
     @page{ size: landscape; margin: 6mm; }
     *{ box-sizing:border-box; }
     html, body{ height:100%; }
-    body{font-family:Arial,Helvetica,sans-serif; color:#111; margin:0; font-size:9px;}
-    h1{font-size:13px; margin:0 0 2px;}
-    .meta{color:#555; font-size:9px; margin-bottom:6px;}
+    body{font-family:Arial,Helvetica,sans-serif; color:#111; margin:0; font-size:11px;}
+    h1{font-size:16px; margin:0 0 2px;}
+    .meta{color:#555; font-size:11px; margin-bottom:6px;}
     table{width:100%; border-collapse:collapse; table-layout:fixed;}
     table col.col-cat{width:10%;}
-    td, th{border:1px solid #ccc; padding:2px 3px; text-align:left; vertical-align:top; font-size:7.8px; line-height:1.2; overflow:hidden;}
-    th{background:#f3f0ea; font-size:7.2px; text-transform:uppercase; letter-spacing:.02em; padding:3px 3px;}
-    td .sub{color:#666; font-size:6.8px; margin-top:1px;}
+    td, th{border:1px solid #ccc; padding:3px 4px; text-align:left; vertical-align:top; font-size:10px; line-height:1.25; overflow:hidden;}
+    th{background:#f3f0ea; font-size:9.5px; text-transform:uppercase; letter-spacing:.02em; padding:4px 4px;}
+    td .sub{color:#666; font-size:8.5px; margin-top:1px;}
     td.vazio{color:#aaa;}
     tr.tot td{background:#f3f0ea; font-weight:700;}
     td.num{text-align:right; font-family:'Courier New',monospace;}
-    .resumo{margin-top:6px; font-size:9px;}
+    .resumo{margin-top:6px; font-size:11px;}
     table, tr{ page-break-inside:avoid; }
     ${printHeadStyle()}
     .print-head{margin-bottom:6px; padding-bottom:6px;}
@@ -4585,15 +4590,18 @@ function imprimirCardapioCompleto(grupo, num, semana){
     <div class="meta">${escapeHtml(intervaloSemana(semana))}</div>
     <table><colgroup><col class="col-cat">${DIAS_ORDEM.map(()=>`<col>`).join("")}</colgroup><thead><tr><th>${grupo==="cafe"?"Item":"Categoria"}</th>${DIAS_ORDEM.map(dia => `<th>${DIA_LABEL[dia]}</th>`).join("")}</tr></thead>
     <tbody>${linhasHtml}${linhaPreco}${linhaTotal}</tbody></table>
-    <div class="resumo"><strong>Custo total da semana:</strong> ${fmtMoney(somaSemana)} &nbsp;·&nbsp; ${resumoSemanaHtml}</div>
+    ${semCustos ? "" : `<div class="resumo"><strong>Custo total da semana:</strong> ${fmtMoney(somaSemana)} &nbsp;·&nbsp; ${resumoSemanaHtml}</div>`}
     <script>
-      // encolhe a página inteira (zoom) se o conteúdo não couber na altura útil de uma folha A4 paisagem
-      // (210mm - 2×6mm de margem ≈ 748px a 96dpi), pra garantir impressão numa folha só mesmo com semanas bem preenchidas.
+      // ajusta o zoom da página inteira pra ocupar o máximo possível da altura útil de uma folha A4
+      // paisagem (210mm - 2×6mm de margem ≈ 748px a 96dpi) sem passar disso — encolhe se não coubesse
+      // numa folha só e AMPLIA (letras maiores) quando o cardápio da semana tem espaço de sobra.
       (function(){
         function ajustarEImprimir(){
           var alvo = 748;
           var atual = document.body.scrollHeight;
-          if(atual > alvo){ document.body.style.zoom = String(Math.max(0.45, alvo / atual)); }
+          var escala = atual > 0 ? (alvo / atual) : 1;
+          escala = Math.max(0.45, Math.min(1.7, escala));
+          document.body.style.zoom = String(escala);
           setTimeout(function(){ window.print(); }, 80);
         }
         if(document.readyState === "complete") ajustarEImprimir();
