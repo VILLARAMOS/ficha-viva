@@ -605,6 +605,19 @@ const LS_MANTER_CONECTADO = 'fv-manter-conectado';
 let currentUser = null;
 let currentView = "insumos";
 
+// Detecta em tempo real quando a sessão cai (token não pôde ser renovado — ex. expirou,
+// foi revogado, ou "Sair" foi clicado em outra aba). Sem isso, a tela ficava "logada"
+// visualmente mesmo sem sessão válida: a pessoa continuava preenchendo um formulário
+// normalmente e só descobria no "Salvar", com um erro técnico do banco sem sentido pra ela
+// (achado 09/11/2026: compradora teve "permission denied for function tem_acesso" ao
+// salvar um pedido — a sessão já tinha caído, a gravação foi como usuário não logado).
+sb.auth.onAuthStateChange((event, session) => {
+  if (event === 'SIGNED_OUT' && currentUser){
+    showAlert('Sua sessão expirou e você foi desconectado. Se estava no meio de um cadastro, copie os dados preenchidos antes de continuar — depois de fazer login de novo, a tela volta ao normal.');
+    showLogin();
+  }
+});
+
 const VIEWS = {
   painel: renderPainel,
   insumos: renderInsumos,
@@ -894,6 +907,22 @@ document.getElementById('logoutBtn').addEventListener('click', async ()=>{
   await sb.auth.signOut();
   showLogin();
 });
+
+// Reconhece um erro de SALVAMENTO causado por sessão caída/expirada (não por falta de
+// permissão de verdade). O onAuthStateChange acima já cobre a maioria dos casos antes
+// da pessoa clicar em Salvar, mas isso é uma segunda camada: se mesmo assim a gravação
+// chegar a ser tentada sem sessão válida, mostra uma mensagem que a pessoa entende, em
+// vez do erro cru do Postgres ("permission denied for function tem_acesso" etc.).
+function erroDeSessaoExpirada(e){
+  const msg = String((e && (e.message || e.code)) || e || "");
+  return /permission denied for function|JWT expired|invalid JWT|PGRST301/i.test(msg);
+}
+const MSG_SESSAO_EXPIRADA = "Sua sessão expirou. Faça login novamente antes de salvar — copie os dados preenchidos antes de recarregar, se puder.";
+function mostrarErroSalvar(e, errEl){
+  const msg = erroDeSessaoExpirada(e) ? MSG_SESSAO_EXPIRADA : "Erro ao salvar: " + (e.message || e.code || e);
+  if (errEl) errEl.textContent = msg; else showAlert(msg);
+  if (erroDeSessaoExpirada(e)) setTimeout(() => { sb.auth.signOut(); showLogin(); }, 50);
+}
 
 /* ===================================================================== HELPERS (portados do Ficha Viva) */
 let usuarioId = null;
@@ -9976,7 +10005,7 @@ function openPedidoModal(id, opts){
       await loadPedidos();
       root.innerHTML="";
       renderCompras();
-    }catch(e){ showAlert("Erro: "+(e.message||e.code||e)); }
+    }catch(e){ mostrarErroSalvar(e); }
   };
 
   document.getElementById("save-m").onclick = async () => {
@@ -10032,7 +10061,7 @@ function openPedidoModal(id, opts){
       if(atualizarCustos && itensCusto.length) await atualizarCustosInsumosDoPedido(itensCusto, data_pedido);
       root.innerHTML = "";
       renderCompras();
-    }catch(e){ errEl.textContent = "Erro ao salvar: " + (e.message || e.code || e); }
+    }catch(e){ mostrarErroSalvar(e, errEl); }
   };
 }
 
