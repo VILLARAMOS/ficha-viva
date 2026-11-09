@@ -57,6 +57,16 @@
 .theme-toggle{display:flex; align-items:center; justify-content:center; width:30px; height:30px; flex:none; background:none; border:1px solid var(--border); border-radius:8px; color:var(--text-muted); cursor:pointer;}
 .theme-toggle:hover{background:var(--surface-alt); color:var(--text);}
 .theme-toggle .ico{width:16px; height:16px;}
+.btn-orientacoes{display:flex; align-items:center; gap:6px; height:30px; padding:0 11px; flex:none; background:none; border:1px solid var(--border); border-radius:8px; color:var(--text-muted); cursor:pointer; font-size:13px; font-family:inherit;}
+.btn-orientacoes:hover{background:var(--surface-alt); color:var(--text);}
+.btn-orientacoes .ico{width:15px; height:15px; flex:none;}
+.btn-orientacoes[hidden]{display:none;}
+#orientacoes-root .modal{max-width:560px;}
+#orientacoes-root .modal-body{font-size:13.5px; line-height:1.6;}
+#orientacoes-root .modal-body h4{margin:18px 0 6px; font-size:13px; font-family:'IBM Plex Sans',system-ui,sans-serif;}
+#orientacoes-root .modal-body h4:first-child{margin-top:0;}
+#orientacoes-root .modal-body p{margin:0 0 10px;}
+#orientacoes-root .modal-body ul{margin:0 0 10px; padding-left:20px;}
 *{box-sizing:border-box;}
 body{margin:0;background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',system-ui,sans-serif;}
 h1,h2,h3{font-family:'Fraunces',Georgia,serif; text-wrap:balance;}
@@ -519,6 +529,7 @@ table.cardapio-table .autocomplete{position:relative;}
         <div class="desc" id="page-desc">Cadastro único de custo</div>
       </div>
       <div class="topbar-right">
+        <button class="btn-orientacoes" id="btn-orientacoes" title="Orientações desta tela" hidden><i class="ico" data-lucide="info"></i><span>Orientações</span></button>
         <div id="topbar-actions"></div>
         <button class="theme-toggle" id="themeToggle" title="Alternar tema claro/escuro"><i class="ico" data-lucide="moon"></i></button>
         <div class="topbar-account">
@@ -537,6 +548,7 @@ table.cardapio-table .autocomplete{position:relative;}
 <div id="modal-root"></div>
 <div id="picker-root"></div>
 <div id="confirm-root"></div>
+<div id="orientacoes-root"></div>
 
 <p class="toast-err" id="bootErr" hidden>A biblioteca de conexão com o banco não carregou. Recarregue a página.</p>
 
@@ -611,11 +623,49 @@ const VIEWS = {
   ajuda: renderAjuda,
 };
 
+// Conteúdo do botão "Orientações" (topbar, ao lado do título) — um texto por tela.
+// Pilotando só na tela "painel" (09/11/2026); telas sem entrada aqui simplesmente não mostram o botão,
+// até serem migradas uma a uma. Aqui entra explicação de método/fórmula e observação de comportamento —
+// alerta, pendência e aviso operacional continuam na própria tela, nunca só aqui.
+const ORIENTACOES_POR_VIEW = {
+  painel: `
+    <h4>Visão do Negócio e Painel de pendências</h4>
+    <p>Quadros por Grupo/Matriz/Filial com realizado × planejado. O "Planejado" usa a quantidade lançada no dia; se o dia ainda não tem Vendas gravada, cai em cascata: mediana do mês → ciclo de 2 meses → quantidade contratada. Corrigido em 05/11/2026 para não inflar com venda "fantasma" de item opcional não pedido num dia específico.</p>
+    <h4>CMV real (compras)</h4>
+    <p>Comprado ÷ Faturamento, com estoque inicial/final = 0 por ora (ainda não contabilizados). Quando entrarem, a fórmula vira (estoque inicial + Comprado − estoque final) ÷ Faturamento. Esse Comprado exclui o bloco Limpeza e descartáveis — na planilha financeira (DRE) esse bloco é despesa fixa rateada, não CMV; incluir deixava o CMV Real artificialmente mais alto (~5 p.p. a mais na Matriz). Os cards de "Comprado"/"Saldo do Orçamento" continuam somando tudo, incluindo limpeza — ali é controle de compra, não CMV.</p>
+    <p>Refeição e Café são aproximados: como os Pedidos não separam destino, o Comprado é rateado entre as duas categorias na mesma proporção do custo teórico de receita apurado em Vendas — não é rastreio real de qual insumo comprado foi para cada lado.</p>
+    <h4>Pendências</h4>
+    <p>Esse painel olha sempre Matriz + Filial juntas (Grupo), independente do seletor Grupo/Matriz/Filial do resto da página — é um painel de controle, não deveria esconder pendência de uma unidade só porque o resto da tela está filtrado.</p>
+    <h4>O que foi retirado do Painel (fica no código, não aparece aqui)</h4>
+    <p>A pedido do Marcelo (05/10/2026): evolução semanal, análise por cliente, orçado×comprado por bloco, CMV de formulação, Refeição×Café/Extras, pratos mais caros e proteínas mais baratas. "Divergência vs. planilha" do sistema antigo não foi portada (sem dado equivalente aqui); "fechar mês" foi substituído por exportação simples.</p>
+    <p>Ainda falta a "Visão do negócio" segmentada por operação (RB · Cardápio 1 / Clientes do Cardápio 2 dentro da Matriz) — bloqueado porque a base de contratos não guarda essa sub-operação (só Matriz/Filial).</p>
+  `,
+};
+function abrirOrientacoesTela(){
+  const conteudo = ORIENTACOES_POR_VIEW[currentView];
+  if(!conteudo) return;
+  const root = document.getElementById("orientacoes-root");
+  root.innerHTML = `
+    <div class="modal-overlay" id="or-ov">
+      <div class="modal">
+        <div class="modal-head"><h2>Orientações — ${escapeHtml(document.getElementById("page-title").textContent)}</h2><button class="close-x" id="or-close">&times;</button></div>
+        <div class="modal-body">${conteudo}</div>
+        <div class="modal-foot" style="justify-content:flex-end;"><button class="btn primary" id="or-ok">Entendi</button></div>
+      </div>
+    </div>`;
+  const close = () => { root.innerHTML = ""; };
+  document.getElementById("or-close").onclick = close;
+  document.getElementById("or-ok").onclick = close;
+  document.getElementById("or-ov").addEventListener("click", e => { if(e.target.id==="or-ov") close(); });
+}
+document.getElementById("btn-orientacoes").addEventListener("click", abrirOrientacoesTela);
+
 function goToView(view){
   if(!VIEWS[view]) return;
   if(!possoVerView(view)){ view = primeiraViewPermitida(); if(!view) return; }
   currentView = view;
   document.querySelectorAll(".nav-btn[data-view]").forEach(b => b.classList.toggle("active", b.dataset.view === view));
+  document.getElementById("btn-orientacoes").hidden = !ORIENTACOES_POR_VIEW[view];
   VIEWS[view]();
 }
 
@@ -11258,10 +11308,6 @@ function renderPainel(){
   const pendencias = pendenciasDoMes(painelMesSel, resumoTodos.linhas, orfaos, duplicadas);
 
   content.innerHTML = `
-    <details class="painel-notas">
-      <summary>Notas técnicas desta versão</summary>
-      <div class="footnote">Visão do Negócio em quadros (Grupo/Matriz/Filial, realizado × planejado) e Painel de pendências. O "Planejado" da Visão do Negócio usa quantidadePlanejadaReceita (lançado no dia, com ausência = 0 se o dia já tem Vendas gravada > mediana do mês > ciclo de 2 meses > quantidade contratada) multiplicado pelo preço do contrato — corrigido em 05/11/2026 pra não inflar com venda "fantasma" de item opcional não pedido num dia específico. <strong>CMV real (compras)</strong>, pedido do Marcelo em 05/11/2026: Comprado ÷ Faturamento, com estoque inicial/final = 0 (ainda não contabilizados — quando entrarem, a fórmula vira (estoque inicial + Comprado − estoque final) ÷ Faturamento). Ajustado em 06/11/2026: esse Comprado <strong>exclui o bloco LIMPEZA E DESCARTÁVEIS</strong> — comparando com a planilha financeira (DRE Matriz/Filial de Setembro), esse bloco lá entra como Despesa Fixa rateada, não como CMV; incluir deixava o CMV Real do sistema artificialmente mais alto (~5 p.p. a mais na Matriz). O "Comprado"/"Saldo do Orçamento" nos cards ao lado continuam somando tudo, incluindo limpeza — ali é controle de compra, não CMV. O total (CMV Total) é exato, porque esse Comprado (sem limpeza) já é a soma de todos os pedidos relevantes do mês. Refeição e Café são <strong>aproximados</strong>: os Pedidos não são lançados separando destino (mesma limitação já registrada na aba Orçamento), então o Comprado é rateado entre as duas categorias na mesma proporção do custo teórico de receita apurado em Vendas — não é rastreio real de qual insumo comprado foi pra cada lado. Checagem de órfãos/fichas duplicadas e insights automáticos continuam abaixo. Retirados do Painel a pedido do Marcelo (05/10/2026): evolução semanal, análise por cliente, orçado×comprado por bloco, CMV de formulação, Refeição×Café/Extras, pratos mais caros e proteínas mais baratas — o código continua no sistema, só não é mais exibido aqui, caso precisem voltar. "Divergência vs. planilha" do sistema antigo não foi portada (sem dado equivalente aqui) e "fechar mês" foi substituído por uma exportação simples. O que ainda falta do Painel antigo, e por que: a "Visão do negócio" segmentada por operação (RB · Cardápio 1 / Clientes do Cardápio 2 dentro da Matriz) — bloqueado estruturalmente, porque a tabela de contratos desta base não guarda essa sub-operação (só Matriz/Filial); decidir isso é um passo separado, de esquema, não desta rodada.</div>
-    </details>
     <div class="menu-controls">
       <select id="pn-mes">${meses.map(m => `<option value="${m.id}" ${m.id===painelMesSel?"selected":""}>${escapeHtml(m.nome)}</option>`).join("")}</select>
       <div class="seg-toggle" id="pn-escopo">
@@ -11276,7 +11322,6 @@ function renderPainel(){
     <div class="panel">
       <div class="panel-head"><h3><i class="ico" data-lucide="list-checks"></i>Pendências</h3><span class="${pendencias.length ? "pend-count alerta" : "pend-count"}">${pendencias.length} ${pendencias.length===1?"item":"itens"}</span></div>
       <div class="panel-body">${pendenciasHtml(pendencias)}</div>
-      <div class="footnote" style="padding:0 20px 16px;">Olha sempre Matriz + Filial juntas (Grupo), independente do seletor acima — é um painel de controle, não deveria esconder pendência de uma unidade só porque o resto da página está filtrado.</div>
     </div>
     <div class="panel">
       <div class="panel-head"><h3><i class="ico" data-lucide="sparkles"></i>Insights automáticos</h3></div>
