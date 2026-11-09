@@ -654,6 +654,37 @@ themeToggleBtn.addEventListener("click", () => {
 });
 atualizarIconeTema();
 
+// 09/11/2026: Enter pula pro próximo campo, em qualquer tela/modal do sistema — pedido do Marcelo
+// pra agilizar lançamento. Regras:
+// - Só input/select contam (textarea mantém Enter = quebra de linha, senão não dá pra escrever observação).
+// - Se o próprio campo já tem um comportamento específico de Enter (autocomplete de insumo/ficha, "Enter
+//   desce coluna" na grade de vendas, etc.) e ele chamou preventDefault, este listener não entra em ação —
+//   quem está mais perto do campo decide primeiro.
+// - Roda depois (setTimeout 0) pra deixar handlers sem preventDefault (ex.: "Enter salva e fecha o modal")
+//   terminarem antes de eu tentar focar o próximo campo — se o campo já saiu do DOM nesse meio tempo
+//   (modal fechou), não faço nada.
+// - Escopo é o modal aberto, se houver, senão a tela principal — nunca pula pra fora de onde o usuário está.
+const CAMPOS_ENTER_SELECTOR = 'input:not([type=hidden]):not([type=button]):not([type=submit]):not([type=reset]):not([disabled]):not([readonly]), select:not([disabled])';
+document.addEventListener("keydown", e => {
+  if(e.key !== "Enter" || e.defaultPrevented) return;
+  const el = e.target;
+  if(!(el instanceof HTMLElement)) return;
+  if(el.tagName !== "INPUT" && el.tagName !== "SELECT") return;
+  e.preventDefault();
+  setTimeout(() => {
+    if(!el.isConnected) return;
+    const modalAberto = document.querySelector("#modal-root .modal");
+    const escopo = modalAberto || document.getElementById("app");
+    if(!escopo || !escopo.contains(el)) return;
+    const campos = [...escopo.querySelectorAll(CAMPOS_ENTER_SELECTOR)].filter(c => c.offsetParent !== null);
+    const i = campos.indexOf(el);
+    if(i === -1 || i === campos.length - 1) return;
+    const proximo = campos[i+1];
+    proximo.focus();
+    if(typeof proximo.select === "function" && proximo.tagName === "INPUT") proximo.select();
+  }, 0);
+});
+
 async function showApp(user){
   currentUser = user;
   usuarioId = user.email;
