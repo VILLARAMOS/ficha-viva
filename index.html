@@ -5950,14 +5950,26 @@ function _fichaMetaTxt(draft){
   ].filter(Boolean).join(" · ");
 }
 
+// 09/11/2026: achado do Marcelo — 208 fichas (1109 linhas) importadas direto no banco em lotes
+// anteriores ficaram com insumo_id/ficha_id preenchido mas `nome` vazio (vincularLinha só roda quem
+// passa pela tela; carga direta via SQL não passa). Corrigido o dado existente, mas o CÓDIGO também passa
+// a resolver o nome pelo vínculo quando `nome` estiver vazio — pra uma próxima carga em lote com a mesma
+// lacuna não voltar a esconder ingredientes na tela, na impressão ou (pior) no salvamento da ficha.
+function nomeResolvidoLinha(l){
+  if(l.nome) return l.nome;
+  if(l.insumo_id) return insumos.get(l.insumo_id)?.nome || "";
+  if(l.ficha_id) return fichas.get(l.ficha_id)?.nome || "";
+  return "";
+}
+
 /* Ficha de produção pra cozinha: nome, ingredientes com peso (padrão e escalado pro volume do dia), modo de preparo — sem custo/preço. */
 function imprimirFichaProducao(draft){
   const fator = fatorVolumeDia(draft);
-  const linhas = (draft.ingredientes||[]).filter(l => (l.nome||"").trim()).map(l => {
+  const linhas = (draft.ingredientes||[]).filter(l => nomeResolvidoLinha(l).trim()).map(l => {
     const peso = (l.peso_liquido!==null && l.peso_liquido!==undefined && l.peso_liquido!=="") ? l.peso_liquido : l.peso_bruto;
     const pesoTxt = (peso===null || peso===undefined || peso==="") ? "—" : `${Number(peso).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg`;
     const qtdDiaTxt = (fator!==null && peso!==null && peso!==undefined && peso!=="") ? `${(Number(peso)*fator).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg` : "—";
-    return `<tr><td>${escapeHtml(l.nome||"")}</td><td class="peso">${pesoTxt}</td><td class="peso destaque">${qtdDiaTxt}</td></tr>`;
+    return `<tr><td>${escapeHtml(nomeResolvidoLinha(l))}</td><td class="peso">${pesoTxt}</td><td class="peso destaque">${qtdDiaTxt}</td></tr>`;
   }).join("") || `<tr><td colspan="3" class="vazio">Nenhum ingrediente cadastrado.</td></tr>`;
 
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>Ficha de produção — ${escapeHtml(draft.nome||"")}</title>
@@ -5996,14 +6008,15 @@ function imprimirFichaProducao(draft){
 function imprimirFichaCompleta(draft, id){
   const cc = computeFicha(draft, id);
   const fator = fatorVolumeDia(draft);
-  const linhas = (draft.ingredientes||[]).filter(l => (l.nome||"").trim()).map((l, i) => {
-    const line = cc.lines[i];
-    const peso = (l.peso_liquido!==null && l.peso_liquido!==undefined && l.peso_liquido!=="") ? l.peso_liquido : l.peso_bruto;
-    const pesoTxt = (peso===null || peso===undefined || peso==="") ? "—" : `${Number(peso).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg`;
-    const qtdDiaTxt = (fator!==null && peso!==null && peso!==undefined && peso!=="") ? `${(Number(peso)*fator).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg` : "—";
-    const custoTxt = line ? fmtMoney(line.custo_linha) : "—";
-    return `<tr><td>${escapeHtml(l.nome||"")}</td><td class="peso">${pesoTxt}</td><td class="peso">${qtdDiaTxt}</td><td class="peso">${custoTxt}</td></tr>`;
-  }).join("") || `<tr><td colspan="4" class="vazio">Nenhum ingrediente cadastrado.</td></tr>`;
+  const linhas = (draft.ingredientes||[]).map((l, i) => ({ l, line: cc.lines[i] }))
+    .filter(({l}) => nomeResolvidoLinha(l).trim())
+    .map(({l, line}) => {
+      const peso = (l.peso_liquido!==null && l.peso_liquido!==undefined && l.peso_liquido!=="") ? l.peso_liquido : l.peso_bruto;
+      const pesoTxt = (peso===null || peso===undefined || peso==="") ? "—" : `${Number(peso).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg`;
+      const qtdDiaTxt = (fator!==null && peso!==null && peso!==undefined && peso!=="") ? `${(Number(peso)*fator).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg` : "—";
+      const custoTxt = line ? fmtMoney(line.custo_linha) : "—";
+      return `<tr><td>${escapeHtml(nomeResolvidoLinha(l))}</td><td class="peso">${pesoTxt}</td><td class="peso">${qtdDiaTxt}</td><td class="peso">${custoTxt}</td></tr>`;
+    }).join("") || `<tr><td colspan="4" class="vazio">Nenhum ingrediente cadastrado.</td></tr>`;
 
   const porUnidade = fichaServidaPorUnidade(draft);
   const totaisLinhas = [
@@ -6225,7 +6238,7 @@ function renderFichaModal(id, draft){
       return `
       <div class="ing-line ${problema ? 'ing-line-missing' : ''}" data-i="${i}">
         <div class="autocomplete">
-          <input type="text" class="ing-name search-input" value="${escapeHtml(l.nome||"")}" autocomplete="off">
+          <input type="text" class="ing-name search-input" value="${escapeHtml(nomeResolvidoLinha(l))}" autocomplete="off">
           <button type="button" class="ing-search-btn" data-search="${i}" title="Buscar na lista de insumos"><i class="ico" data-lucide="search"></i></button>
         </div>
         <div class="num ing-ckg">${custoRefLinha(l, line)}</div>
@@ -6332,7 +6345,7 @@ function renderFichaModal(id, draft){
       tipo_proteina: document.getElementById("ff-tipo-proteina").value || null,
       cuba_nome: document.getElementById("ff-cuba-nome").value.trim() || null,
       cuba_kg_por_un: document.getElementById("ff-cuba-kg").value===""?null:parseFloat(document.getElementById("ff-cuba-kg").value),
-      ingredientes: draft.ingredientes.filter(l => l.nome),
+      ingredientes: draft.ingredientes.filter(l => l.nome || l.insumo_id || l.ficha_id),
     };
   }
 
@@ -6403,10 +6416,10 @@ function renderFichaModal(id, draft){
     const nn = _nk(nome);
     const igual = [...fichas.entries()].find(([fid,f]) => fid !== id && _nk(f.nome||"") === nn);
     if(igual){ errEl.textContent = `Já existe uma ficha chamada "${igual[1].nome}". Use outro nome antes de salvar.`; document.getElementById("ff-nome").focus(); return; }
-    const ingredientesFinal = draft.ingredientes.filter(l => l.nome).map(l => ({
+    const ingredientesFinal = draft.ingredientes.filter(l => l.nome || l.insumo_id || l.ficha_id).map(l => ({
       insumo_id: l.insumo_id || null,
       ficha_id: l.ficha_id || null,
-      nome: l.nome,
+      nome: nomeResolvidoLinha(l) || l.nome || "",
       peso_bruto: l.peso_bruto || 0,
       peso_liquido: l.peso_liquido ?? null,
       fator_correcao: (l.peso_liquido && l.peso_liquido > 0) ? (l.peso_bruto||0)/l.peso_liquido : (l.fator_correcao ?? null)
@@ -12676,11 +12689,11 @@ function pcpFatorFicha(fichaId, kgAlvo){
 function pcpReceitaBlocoHtml(fichaId, nome, kgAlvo){
   const f = fichaId ? fichas.get(fichaId) : null;
   const fator = pcpFatorFicha(fichaId, kgAlvo);
-  const linhas = (f && f.ingredientes || []).filter(l => (l.nome||"").trim()).map(l => {
+  const linhas = (f && f.ingredientes || []).filter(l => nomeResolvidoLinha(l).trim()).map(l => {
     const peso = (l.peso_liquido!==null && l.peso_liquido!==undefined && l.peso_liquido!=="") ? l.peso_liquido : l.peso_bruto;
     const pesoTxt = (peso===null || peso===undefined || peso==="") ? "—" : `${Number(peso).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg`;
     const qtdTxt = (fator!==null && peso!==null && peso!==undefined && peso!=="") ? `${(Number(peso)*fator).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg` : "—";
-    return `<tr><td>${escapeHtml(l.nome||"")}</td><td class="peso">${pesoTxt}</td><td class="peso destaque">${qtdTxt}</td></tr>`;
+    return `<tr><td>${escapeHtml(nomeResolvidoLinha(l))}</td><td class="peso">${pesoTxt}</td><td class="peso destaque">${qtdTxt}</td></tr>`;
   }).join("") || `<tr><td colspan="3" class="vazio">${f ? "Nenhum ingrediente cadastrado." : "Ficha técnica não encontrada — confira o cadastro."}</td></tr>`;
   return `<div style="page-break-inside:avoid; margin-bottom:28px;">
     <h1>${escapeHtml(nome)}</h1>
