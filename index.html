@@ -3377,7 +3377,7 @@ function renderCardapio(){
     <div id="card-orientacao-panel"></div>
   `;
 
-  document.getElementById("card-num").addEventListener("change", e => { cardapioNumSel = Number(e.target.value); cardapioSemanaSel = null; cardapioSemanaNovaPendente = null; renderCardapio(); });
+  document.getElementById("card-num").addEventListener("change", e => { cardapioNumSel = Number(e.target.value); cardapioSemanaNovaPendente = null; renderCardapio(); });
   document.getElementById("card-semana").addEventListener("change", e => { cardapioSemanaSel = Number(e.target.value); renderCardapio(); });
   content.querySelectorAll(".seg-toggle button").forEach(b => b.addEventListener("click", () => { cardapioTabSel = b.dataset.tab; cardapioNumSel = null; cardapioSemanaSel = null; cardapioSemanaNovaPendente = null; renderCardapio(); }));
 
