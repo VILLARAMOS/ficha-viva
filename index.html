@@ -699,10 +699,11 @@ const ORIENTACOES_POR_VIEW = {
     <p><strong>Requisição do estoque:</strong> mesma conta da lista de compra (peso bruto da ficha × produção). Suco e carnes do açougue não entram aqui (suco é feito na unidade do cliente; carnes saem pela ordem do açougue). O estoque não separa entre um dia e outro: a produção de sexta também cobre o fim de semana sem operação — cada dia tem seu próprio bloco e quantidade, não somada.</p>
     <p><strong>Substituições:</strong> um pra um — cada pessoa trocada tira 1 porção da proteína do cardápio naquele serviço (e também de Base/Guarnição quando for composição completa — Prato Especial/Fit/Lanche) e soma 1 unidade do item escolhido. O lançamento salvo aparece na Conferência de expedição, na produção e nas etiquetas, e o custo entra no CMV real do mês (painel "Custo de substituição — fechamento da semana" já soma dentro do CMV real do mês, por contrato).</p>
     <p><strong>Ajustes do dia:</strong> ajuste manual do valor efetivo de uma receita pra um cliente, num serviço específico — ex.: cliente pediu mais, sobra da véspera. O valor digitado substitui o calculado só nesta produção deste dia (não muda custo nem compra) e some se você remover o ajuste. Motivo é obrigatório, observação é livre. Suco e sobremesa não entram aqui, nem em Peso por prato.</p>
-    <p><strong>Romaneio:</strong> atribuição cliente→rota é fixa (cadastrada no contrato) — pra mudar, edite o contrato do cliente. Sem ordem de entrega dentro da rota nesta versão. "Preparo da semana" (corte/receita por dia de utilização, com custo) deixa escolher os dias e imprimir, cada um numa folha.</p>
+    <p><strong>Romaneio:</strong> atribuição cliente→rota é fixa (cadastrada no contrato) — pra mudar, edite o contrato do cliente. Sem ordem de entrega dentro da rota nesta versão. "Preparo da semana" (corte/receita por dia de utilização, com custo) deixa escolher os dias e imprimir, cada um numa folha. "Mapa da semana" (açougue): peça grande congelada, use essa visão pra tirar do freezer com antecedência (48–72h antes do dia de preparo).</p>
     <p><strong>Conferência de expedição:</strong> cozinha confirma que produziu/embalou, expedição confirma que carregou. Salva sozinho a cada campo alterado.</p>
     <p><strong>Etiquetas:</strong> validade, temperatura e peso (açougue) ou data e responsável (saladas/sobremesas) ficam em branco pra anotar na embalagem.</p>
-    <p><strong>Peso por prato / Volume por cliente:</strong> peso é de expedição, só refeição transportada. Volume é líquido por cliente, sem margem — é o que vai pra etiqueta da cuba.</p>
+    <p><strong>Volume por cliente:</strong> volume líquido por cliente, sem margem de produção — é o que vai pra etiqueta da cuba. "Cubas" só aparece pras fichas com cadastro de cuba (Fichas técnicas).</p>
+    <p><strong>Peso por prato (por cliente):</strong> peso por pessoa que a expedição manda pra cada cliente, item a item (igual ao Volume por cliente/etiquetas e à Lista de compra) — só refeição transportada. Em branco segue o cardápio; <strong>±</strong> soma ou tira gramas do cardápio do dia (ex.: +20 no arroz); <strong>=</strong> fixa o peso por pessoa em qualquer cardápio (ex.: = 180), vale pra todos os dias/turnos do cliente. O cardápio e o custo/preço dele não mudam.</p>
   `,
 };
 function abrirOrientacoesTela(){
@@ -13032,7 +13033,7 @@ function pcpVolumeHtml(res){
       <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Item</th><th style="text-align:right;">Quantidade</th><th style="text-align:right;">Cubas</th></tr></thead><tbody>${linhas.map(l => `<tr><td class="name-cell">${escapeHtml(l.nome)}</td><td class="num-cell">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd)}</td><td class="num-cell">${l.fichaId ? pcpCubaTxt(l.fichaId, l.qtd) : "—"}</td></tr>`).join("")}</tbody></table></div></div>
     </div>`;
   }).join("");
-  return `<p class="footnote" style="margin:0 0 14px;">Volume <b>líquido</b> por cliente, sem margem de produção — é o que vai pra etiqueta da cuba. "Cubas" só aparece pras fichas com cadastro de cuba (Fichas técnicas).</p>${cards}`;
+  return cards;
 }
 
 // ---------- Impressão "Volume por cliente" × "Etiquetas" (15/10/2026) ----------
@@ -13671,7 +13672,6 @@ function pcpMapaSemanaHtml(mapaSemana, unidadeLabel){
     <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Corte</th>${cab}<th style="text-align:right;">Total</th></tr></thead><tbody>
       ${mapaSemana.cortes.map(c => `<tr><td class="name-cell">${escapeHtml(c.nome)}</td>${c.porDia.map(q => `<td class="num-cell">${q ? fmtNum(q,2) : "—"}</td>`).join("")}<td class="num-cell"><strong>${fmtNum(c.total,2)} ${escapeHtml(c.unidade)}</strong></td></tr>`).join("")}
     </tbody></table></div>
-    <p class="footnote" style="margin-top:10px;">Peça grande congelada: use esta visão pra tirar do freezer com antecedência (48–72h antes do dia de preparo).</p>
     </div>
   </div>`;
 }
@@ -15515,8 +15515,7 @@ function pcpPesosHtml(unidadeFiltro, semana){
       </div>
     </div>`;
   }).join("");
-  return `<div class="panel" style="margin-bottom:14px;"><div class="panel-body"><p class="footnote" style="margin:0;">Peso por pessoa que a <b>expedição</b> manda pra cada cliente, item a item (igual ao Volume por cliente/etiquetas e à Lista de compra). Em branco = segue o cardápio. <b>±</b> soma ou tira gramas do cardápio do dia (ex.: +20 no arroz); <b>=</b> fixa o peso por pessoa em qualquer cardápio (ex.: = 180). Vale pra todos os dias/turnos do cliente. <b>O cardápio e o custo/preço dele não mudam.</b> Só refeição transportada.</p></div></div>
-    <div style="display:flex; align-items:center; gap:10px; margin-bottom:14px;">${sel}</div>
+  return `<div style="display:flex; align-items:center; gap:10px; margin-bottom:14px;">${sel}</div>
     ${cards}`;
 }
 async function salvarPesosCliente(contratoId, content){
