@@ -978,15 +978,20 @@ async function loadCatalogoItens(){
   (data || []).forEach(row => { const { id, ...rest } = row; catalogoItens.set(id, rest); });
 }
 
+// 09/11/2026: quem não tem acesso à área "contratos" (PCP, Compras, líder de unidade, auxiliares)
+// carrega a versão sem preço/valor de contrato (contratos_operacional / contrato_itens_operacional)
+// em vez da tabela cheia — mesmo Map, mesmo resto do código, só sem os campos comerciais.
 async function loadContratos(){
-  const { data, error } = await sb.from('contratos').select('*').order('nome_cliente');
+  const tabela = temAcesso('contratos', 'leitura') ? 'contratos' : 'contratos_operacional';
+  const { data, error } = await sb.from(tabela).select('*').order('nome_cliente');
   contratos = new Map();
   if (error){ showAlert('Erro ao carregar contratos: ' + error.message); return; }
   (data || []).forEach(row => { const { id, ...rest } = row; contratos.set(id, rest); });
 }
 
 async function loadContratoItens(){
-  const { data, error } = await sb.from('contrato_itens').select('*').order('ordem');
+  const tabela = temAcesso('contratos', 'leitura') ? 'contrato_itens' : 'contrato_itens_operacional';
+  const { data, error } = await sb.from(tabela).select('*').order('ordem');
   contratoItens = new Map();
   if (error){ showAlert('Erro ao carregar itens contratados: ' + error.message); return; }
   (data || []).forEach(row => { const { id, ...rest } = row; contratoItens.set(id, rest); });
@@ -11314,7 +11319,7 @@ async function pcpSalvarPesoExpedicao(contratoId, mudancas){
   if(!ct) return false;
   const pe = {...(ct.peso_expedicao || {})};
   Object.entries(mudancas).forEach(([fid, val]) => { if(val === null) delete pe[fid]; else pe[fid] = val; });
-  const { error } = await sb.from('contratos').update({ peso_expedicao: pe }).eq('id', contratoId);
+  const { error } = await sb.rpc('pcp_definir_peso_expedicao', { p_contrato_id: contratoId, p_peso_expedicao: pe });
   if(error){ showAlert("Erro ao salvar peso de expedição: " + error.message); return false; }
   ct.peso_expedicao = pe; // mantém o cache local (contratos) sincronizado sem precisar recarregar
   return true;
@@ -14586,7 +14591,7 @@ function pcpCafeBind(content, unidadeFiltro, ymd, diaLabel, semana){
   content.querySelectorAll(".cafe-horario").forEach(inp => inp.addEventListener("change", async () => {
     const contratoId = inp.dataset.cafeHorario;
     const valor = inp.value.trim() || null;
-    const { error } = await sb.from('contratos').update({cafe_horario_entrega: valor}).eq('id', contratoId);
+    const { error } = await sb.rpc('pcp_definir_cafe_horario', { p_contrato_id: contratoId, p_horario: valor });
     if(error){ showAlert("Erro ao salvar horário: " + error.message); return; }
     const c = contratos.get(contratoId); if(c) c.cafe_horario_entrega = valor;
   }));
@@ -14630,7 +14635,7 @@ function pcpCafeBind(content, unidadeFiltro, ymd, diaLabel, semana){
     const ok = await pcpCafeSalvarItem({contrato_id: contratoId, fornecedor_id: fornecedorId, produto: "Pão francês", grupo: "variavel", valor_padrao: null, ordem: 0});
     if(ok){
       const c = contratos.get(contratoId);
-      if(c && !c.cafe_terceirizado){ await sb.from('contratos').update({cafe_terceirizado: true}).eq('id', contratoId); c.cafe_terceirizado = true; }
+      if(c && !c.cafe_terceirizado){ await sb.rpc('pcp_definir_cafe_terceirizado', { p_contrato_id: contratoId, p_valor: true }); c.cafe_terceirizado = true; }
       renderPCP();
     }
   });
