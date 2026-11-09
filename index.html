@@ -694,7 +694,7 @@ async function showApp(user){
   await carregarMeusAcessos();
   aplicarMenuPorPerfil();
   if(!possoVerView(currentView)) currentView = primeiraViewPermitida() || currentView;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadRotas(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadFornecedores(), loadConjuntosCompra(), loadAjusteSeguranca(), loadRefeicoesFuncionarios(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas(), loadPcpConfig(), loadPcpSubstituicoesTudo(), loadAjudaConteudo(), loadAjudaDuvidas()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadRotas(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadFornecedores(), loadConjuntosCompra(), loadAjusteSeguranca(), loadRefeicoesFuncionarios(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas(), loadPcpConfig(), loadPcpSubstituicoesTudo(), loadComposicoesTipos(), loadComposicoesSemana(), loadAjudaConteudo(), loadAjudaDuvidas()]);
   renderBotaoDuvidaFlutuante();
   goToView(currentView);
 }
@@ -834,7 +834,11 @@ function blocosCadastro(){
 }
 // categorias de receita — mesma família de grupos usada na grade de cardápio (Proteína/Base/Guarnição/Salada/Sobremesa/Suco/Extra).
 // Suco dividido em SIMPLES/NATURAL em 07/10/2026 (12 fichas reclassificadas) — antes era um grupo único "SUCO".
-const GRUPOS_FICHA_BASE = ["PROTEÍNA","BASE","BASE ARROZ","BASE FEIJÃO","GUARNIÇÃO DE LEGUMES","GUARNIÇÃO DE MASSAS","GUARNIÇÃO DE SECOS","SALADA","SOBREMESA","SUCO SIMPLES","SUCO NATURAL","EXTRA"];
+// "PRATO COMPLETO" (09/11/2026): ficha que já é a composição inteira (Proteína+Base+Guarnição juntos, ex.
+// Baião de Dois, tropeiro, yakissoba) — usada pelas "Composições completas da semana" (ver
+// pcpComposicoesTipos). Marca pra pcpAcumularDia saber que o desconto de efetivo da substituição precisa
+// cobrir as 3 categorias, não só Proteína (ver pcpDescontaComposicaoCompleta).
+const GRUPOS_FICHA_BASE = ["PROTEÍNA","BASE","BASE ARROZ","BASE FEIJÃO","GUARNIÇÃO DE LEGUMES","GUARNIÇÃO DE MASSAS","GUARNIÇÃO DE SECOS","SALADA","SOBREMESA","SUCO SIMPLES","SUCO NATURAL","PRATO COMPLETO","EXTRA"];
 function gruposFichaCadastro(){
   const extras = [...new Set([...fichas.values()].map(f => f.grupo).filter(g => g && !GRUPOS_FICHA_BASE.includes(g)))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
   return [...GRUPOS_FICHA_BASE, ...extras];
@@ -1132,6 +1136,142 @@ function custoSubstituicoesContratoMes(contratoId, mesId, semanasMes){
     pessoas += s.pessoas || 0;
   });
   return { custo, pessoas };
+}
+
+/* ---------- "Composições completas da semana" (09/11/2026, pedido do Marcelo) ----------
+   Generaliza o caso da ficha "PRATO ESPECIAL" (achado crítico da auditoria de 20/10/2026 — cadastrada
+   sem ingrediente, custo R$0, mas com >100 escolhas/semana e geralmente mais caro que a opção do dia).
+   Em vez de 1 ficha fixa, uma lista de "tipos" (Prato Especial, Prato Fit, Lanche — extensível pela tela,
+   mesmo espírito de pcp_itens_substitutos) aponta pra uma ficha DIFERENTE a cada semana
+   (pcp_composicoes_semana). A ficha escolhida precisa ter grupo="PRATO COMPLETO": ela desconta
+   Proteína+Base+Guarnição juntos do efetivo (ver fichaEhComposicaoCompleta/pcpPessoasSubstituidas),
+   diferente da substituição comum (ovo, omelete, filé) que só desconta Proteína.
+   Carregada 1x no boot (tabela pequena: poucos tipos × semanas) pra estar disponível em qualquer aba —
+   Cardápio (dono do cadastro), PCP/Substituições (acesso rápido, pedido do Marcelo) e Compras (estimativa
+   manual na Lista de compras) — sem cada uma precisar do seu próprio reload. */
+let composicoesTipos = new Map(); // id -> {id, nome, ordem, ativo, multiplicador}
+async function loadComposicoesTipos(){
+  const { data, error } = await sb.from('pcp_composicoes_tipos').select('*').order('ordem');
+  composicoesTipos = new Map();
+  if(error){ showAlert('Erro ao carregar tipos de composição completa: ' + error.message); return; }
+  (data || []).forEach(row => composicoesTipos.set(row.id, row));
+}
+let composicoesSemanaCache = new Map(); // "tipoId|semana" -> row (ficha_id, estimativa_pessoas, ...)
+async function loadComposicoesSemana(){
+  const { data, error } = await sb.from('pcp_composicoes_semana').select('*');
+  composicoesSemanaCache = new Map();
+  if(error){ showAlert('Erro ao carregar composições da semana: ' + error.message); return; }
+  (data || []).forEach(row => composicoesSemanaCache.set(`${row.tipo_id}|${row.semana}`, row));
+}
+function composicaoTiposAtivos(){
+  return [...composicoesTipos.values()].filter(t => t.ativo !== false).sort((a,b) => a.ordem - b.ordem);
+}
+function composicaoDaSemana(tipoId, semana){ return composicoesSemanaCache.get(`${tipoId}|${semana}`) || null; }
+async function salvarComposicaoSemana(tipoId, semana, fichaId, estimativaPessoas){
+  const row = { tipo_id: tipoId, semana, ficha_id: fichaId || null, estimativa_pessoas: (estimativaPessoas === "" || estimativaPessoas == null) ? null : Number(estimativaPessoas), alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
+  const { data, error } = await sb.from('pcp_composicoes_semana').upsert(row, { onConflict: 'tipo_id,semana' }).select().single();
+  if(error){ showAlert("Erro ao salvar composição da semana: " + error.message); return false; }
+  composicoesSemanaCache.set(`${tipoId}|${semana}`, data);
+  return true;
+}
+async function adicionarTipoComposicao(nome){
+  const n = (nome || "").trim();
+  if(!n){ showAlert("Dê um nome pro tipo (ex. Prato Vegetariano)."); return false; }
+  const vals = composicaoTiposAtivos();
+  const ordem = vals.length ? Math.max(...vals.map(t => t.ordem)) + 1 : 0;
+  const { data, error } = await sb.from('pcp_composicoes_tipos').insert({ nome: n, ordem }).select().single();
+  if(error){ showAlert("Erro ao adicionar tipo: " + error.message); return false; }
+  composicoesTipos.set(data.id, data);
+  return true;
+}
+async function removerTipoComposicao(id){
+  // mantém o histórico (pcp_composicoes_semana e pcp_substituicoes já lançados continuam valendo), só
+  // tira o tipo da lista de colunas/configuração pra NOVAS semanas — mesmo espírito de pcpRemoverItemSubstituto.
+  const { data, error } = await sb.from('pcp_composicoes_tipos').update({ ativo: false }).eq('id', id).select().single();
+  if(error){ showAlert("Erro ao remover tipo: " + error.message); return false; }
+  composicoesTipos.set(id, data);
+  return true;
+}
+// true se a ficha é uma composição completa (Proteína+Base+Guarnição juntos) — decide o desconto de
+// efetivo estendido (ver pcpPessoasSubstituidas), independente de estar apontada por um tipo semanal ou
+// lançada direto como item substituto comum (pcpItensSubstitutos também pode apontar pra uma ficha
+// PRATO COMPLETO, sem passar pelo cadastro de tipos).
+function fichaEhComposicaoCompleta(fichaId){
+  return pcpGrupoFicha(fichas.get(fichaId)) === "PRATO COMPLETO";
+}
+// mescla os tipos semanais (resolvidos pra ficha da semana pedida) com a lista fixa de itens substitutos
+// — usado só pra montar as COLUNAS da grade de lançamento do PCP; o motor de cálculo não depende disso
+// (mesma régua de pcpItensSubstitutos/16-10). Tipo sem ficha definida na semana não entra na grade (fica
+// só no alerta de configuração pendente, ver composicoesSemanaPendentes).
+function itensGradeSemana(semana){
+  const doTipo = composicaoTiposAtivos().map(t => {
+    const row = composicaoDaSemana(t.id, semana);
+    if(!row || !row.ficha_id) return null;
+    const f = fichas.get(row.ficha_id);
+    // nome com a ficha PRIMEIRO (ex. "Baião de Dois (Prato Especial)") — o rótulo curto da coluna na grade
+    // (pcpSubstGradeBlocoHtml corta na 1ª palavra) fica no prato, não em "Prato"/"Prato" repetido pros 3 tipos.
+    return { id: "comp-" + t.id, fichaId: row.ficha_id, nome: `${f ? f.nome : row.ficha_id} (${t.nome})`, ordem: -1000 + t.ordem, multiplicador: Number(t.multiplicador) || 1 };
+  }).filter(Boolean);
+  return [...doTipo, ...pcpItensSubstitutos].sort((a,b) => a.ordem - b.ordem);
+}
+function composicoesSemanaPendentes(semana){
+  return composicaoTiposAtivos().filter(t => !composicaoDaSemana(t.id, semana)?.ficha_id);
+}
+// painel compartilhado: aparece dentro da aba Cardápio (dono do cadastro) E dentro da aba PCP/Substituições
+// (acesso rápido, pedido do Marcelo em 09/11/2026 — "quero dentro da aba cardápio mas com acesso pela aba
+// pcp também"). Cada chamador decide como recarregar depois de salvar (`onSaved`).
+function composicoesSemanaPainelHtml(semana){
+  const fichasCompletas = [...fichas.entries()].filter(([,f]) => pcpGrupoFicha(f) === "PRATO COMPLETO").sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+  const tipos = composicaoTiposAtivos();
+  const linhas = tipos.map(t => {
+    const row = composicaoDaSemana(t.id, semana);
+    const semFicha = !row || !row.ficha_id;
+    return `<tr data-comp-tipo="${t.id}">
+      <td class="name-cell">${escapeHtml(t.nome)}</td>
+      <td><select class="comp-ficha" data-comp-ficha="${t.id}" style="min-width:220px;">
+        <option value="">— não definido —</option>
+        ${fichasCompletas.map(([id,f]) => `<option value="${id}" ${row && row.ficha_id===id ? "selected" : ""}>${escapeHtml(f.nome)}</option>`).join("")}
+      </select></td>
+      <td><input type="number" min="0" step="1" class="comp-estimativa" data-comp-estimativa="${t.id}" value="${row && row.estimativa_pessoas != null ? row.estimativa_pessoas : ""}" placeholder="pessoas/semana" style="width:120px;"></td>
+      <td>${semFicha ? `<span class="chip" style="background:#fff3cd; color:#7a5c00;">não definido — custa R$0 se escolhido</span>` : ""}</td>
+      <td><button type="button" class="btn small ghost" data-comp-remover-tipo="${t.id}" title="Remover este tipo da configuração (lançamentos já feitos continuam valendo)">✕</button></td>
+    </tr>`;
+  }).join("");
+  return `<div class="panel" style="margin-bottom:14px;"><div class="panel-body">
+    <div class="panel-head" style="border:none; padding:0 0 8px;"><h3 style="font-size:14px;">Composições completas da semana</h3><span class="hint">Prato Especial, Prato Fit, Lanche — ficha única (grupo "Prato Completo") que substitui Proteína+Base+Guarnição juntos quando escolhida no PCP</span></div>
+    ${fichasCompletas.length ? "" : `<p class="footnote" style="color:#b45309; margin:0 0 10px;">Nenhuma ficha com grupo "Prato Completo" cadastrada ainda — crie a receita em Fichas técnicas com esse grupo antes de selecionar aqui.</p>`}
+    ${tipos.length ? `<div class="table-wrap"><table><thead><tr><th>Tipo</th><th>Ficha desta semana</th><th>Estimativa (pessoas/semana)</th><th></th><th></th></tr></thead><tbody>${linhas}</tbody></table></div>` : `<div class="empty-state">Nenhum tipo configurado — adicione abaixo (ex. Prato Especial).</div>`}
+    <div style="display:flex; gap:8px; align-items:center; margin-top:10px;">
+      <input type="text" id="comp-tipo-novo" placeholder="Novo tipo (ex. Prato Vegetariano)" style="max-width:260px;">
+      <button type="button" class="btn small primary" id="comp-tipo-add">+ Adicionar tipo</button>
+    </div>
+    <p class="footnote" style="margin-top:8px;">A estimativa alimenta a Lista de compras e a Requisição de insumos enquanto não há histórico real — depois de algumas semanas, passa a sugerir pela mediana. Sem ficha definida, o tipo não aparece na grade de Substituições do PCP.</p>
+  </div></div>`;
+}
+function composicoesSemanaPainelBind(area, semana, onSaved){
+  area.addEventListener("change", async e => {
+    const sel = e.target.closest("select.comp-ficha");
+    const inp = e.target.closest("input.comp-estimativa");
+    const tipoId = sel ? sel.dataset.compFicha : (inp ? inp.dataset.compEstimativa : null);
+    if(!tipoId) return;
+    const linha = e.target.closest("tr[data-comp-tipo]");
+    const fichaSel = linha.querySelector("select.comp-ficha");
+    const estInp = linha.querySelector("input.comp-estimativa");
+    const ok = await salvarComposicaoSemana(tipoId, semana, fichaSel.value || null, estInp.value);
+    if(ok) onSaved();
+  });
+  area.addEventListener("click", async e => {
+    if(e.target.closest("#comp-tipo-add")){
+      const inp = area.querySelector("#comp-tipo-novo") || document.getElementById("comp-tipo-novo");
+      if(await adicionarTipoComposicao(inp.value)) onSaved();
+      return;
+    }
+    const btnDel = e.target.closest("button[data-comp-remover-tipo]");
+    if(btnDel){
+      const ok = await confirmDialog("Remover este tipo da lista? Composições e substituições já lançadas com ele continuam valendo na produção/custo, só sai da configuração pra novas semanas.");
+      if(ok && await removerTipoComposicao(btnDel.dataset.compRemoverTipo)) onSaved();
+    }
+  });
 }
 
 /* ---- ajuste de mínimo (por contrato/semana — entra só na receita apurada, sem custo/compra/PCP) ---- */
@@ -3100,6 +3240,7 @@ function renderCardapio(){
       <button class="btn danger" id="btn-excluir-semana">Excluir semana</button>
     </div>
     <div id="card-cmv-panel"></div>
+    <div id="card-composicoes-panel"></div>
     <div id="card-week"></div>
     <div id="card-orientacao-panel"></div>
   `;
@@ -3121,6 +3262,7 @@ function renderCardapio(){
   if(cardapioTabSel === "cafe") montarTabelaCafe(cardapioNumSel, cardapioSemanaSel);
   else montarTabelaAlmoco(cardapioNumSel, cardapioSemanaSel);
   montarPainelCmv(grupo, cardapioNumSel, cardapioSemanaSel);
+  montarPainelComposicoesSemana(cardapioSemanaSel);
 }
 
 /* ===== Painel de CMV (planejado + real) e incidência de proteína — topo da aba Cardápio =====
@@ -3221,6 +3363,15 @@ function perfisUsadosPorCardapio(grupo, num){
     if(ct[campoNum] === num || usaEspecial) ids.add(ct.perfil_incidencia_id);
   });
   return [...ids];
+}
+// "Composições completas da semana" (09/11/2026) — pedido do Marcelo: cadastro mora na aba Cardápio
+// (independente do número/grupo de cardápio selecionado, é a MESMA composição pra toda a semana, Refeição
+// e Marmita juntas), com o mesmo painel replicado dentro de PCP/Substituições (ver pcpSubstituicoesHtml).
+function montarPainelComposicoesSemana(semana){
+  const area = document.getElementById("card-composicoes-panel");
+  if(!area || semana == null) return;
+  area.innerHTML = composicoesSemanaPainelHtml(semana);
+  composicoesSemanaPainelBind(area, semana, () => montarPainelComposicoesSemana(semana));
 }
 function montarPainelCmv(grupo, num, semana){
   const host = document.getElementById("card-cmv-panel");
@@ -8641,6 +8792,36 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale, ca
       porDia.set(dia, accDia);
     });
   });
+  // "Composições completas da semana" (09/11/2026, estimativa manual — pedido do Marcelo: "pode alimentar
+  // a lista de compras com estimativa manual"). Sem histórico real ainda (evolui pra mediana depois, ver
+  // composicoesSemanaPainelHtml), a estimativa é 1 número só pra semana inteira, não por dia — distribuída
+  // em partes iguais pelos dias ativos da semana, pra entrar no abate de estoque dia a dia como as outras
+  // demandas. Ponto cego aceito por ora: aloca tudo na Matriz (mesma régua de "refeições de funcionários"
+  // acima) — revisar se algum tipo passar a ser majoritariamente da Filial.
+  const diasAtivosComp = DIAS_ORDEM.filter(d => comprasDiaAtivo(d));
+  if(diasAtivosComp.length){
+    composicaoTiposAtivos().forEach(t => {
+      const rowComp = composicaoDaSemana(t.id, semana);
+      if(!rowComp || !rowComp.ficha_id || !(rowComp.estimativa_pessoas > 0)) return;
+      const gramagemComp = pcpGramagemSubstituicao(fichas.get(rowComp.ficha_id));
+      if(gramagemComp == null) return; // sem rendimento cadastrado na ficha — mesmo aviso já cobre isso no PCP
+      const pessoasPorDiaComp = rowComp.estimativa_pessoas / diasAtivosComp.length;
+      diasAtivosComp.forEach(dia => {
+        const porItem = insumosParaKgNecessario(rowComp.ficha_id, gramagemComp * pessoasPorDiaComp);
+        mergeInsumosInto(totalInsumos, porItem);
+        porItem.forEach((kg, insumoId) => {
+          const acc = porUnidadeInsumo.get(insumoId) || {matriz:0, filial:0};
+          acc.matriz += kg;
+          porUnidadeInsumo.set(insumoId, acc);
+          if(!demandaPorDiaInsumo.has(insumoId)) demandaPorDiaInsumo.set(insumoId, new Map());
+          const porDia = demandaPorDiaInsumo.get(insumoId);
+          const accDia = porDia.get(dia) || {matriz:0, filial:0};
+          accDia.matriz += kg;
+          porDia.set(dia, accDia);
+        });
+      });
+    });
+  }
   // abate a contagem de Estoque mais recente da semana, cada unidade só abatendo a própria (igual sistema antigo),
   // distribuída dia a dia: a contagem abate a necessidade dos primeiros dias da semana primeiro (segunda em diante)
   // até se esgotar — assim o que aparece nos dias finais já é o que de fato precisa ser comprado.
@@ -11479,16 +11660,30 @@ function pcpListaSubstituicoes(dia, contratoId){
 }
 // total do dia inteiro (os 3 serviços somados) — usado pela Requisição do estoque/Açougue, que não são
 // recortados por serviço (compra/corte é pro dia inteiro, não faz sentido separar por almoço/jantar/ceia).
+// 09/11/2026, pedido do Marcelo ("Composições completas da semana"): deixou de ser 1 número só. Toda
+// substituição desconta Proteína (`proteina`); só quando a ficha escolhida é uma composição completa
+// (grupo "PRATO COMPLETO" — Prato Especial/Fit/Lanche, ver fichaEhComposicaoCompleta) é que também
+// desconta Base e Guarnição (`completa`), porque aí a pessoa não comeu nenhum dos 3, não só a proteína.
 function pcpPessoasSubstituidas(dia, contratoId){
-  return pcpListaSubstituicoes(dia, contratoId).reduce((s,x) => s + x.pessoas, 0);
+  const out = { proteina: 0, completa: 0 };
+  pcpListaSubstituicoes(dia, contratoId).forEach(s => {
+    out.proteina += s.pessoas;
+    if(fichaEhComposicaoCompleta(s.fichaId)) out.completa += s.pessoas;
+  });
+  return out;
 }
 // por serviço — usado pela Produção/Volume por cliente, que PRECISA saber em qual serviço descontar a
 // proteína (16/10/2026: antes a substituição só existia pro almoço; agora cada lançamento escolhe o
 // serviço, então o desconto de efetivo tem que ser por serviço também, senão uma troca no jantar também
-// reduziria (errado) a proteína do almoço do mesmo cliente/dia).
+// reduziria (errado) a proteína do almoço do mesmo cliente/dia). Mesma régua de pcpPessoasSubstituidas
+// acima (proteina/completa) desde 09/11/2026, só que quebrado por turno.
 function pcpPessoasSubstituidasPorTurno(dia, contratoId){
-  const out = { almoco: 0, jantar: 0, ceia: 0 };
-  pcpListaSubstituicoes(dia, contratoId).forEach(s => { out[s.servico || "almoco"] += s.pessoas; });
+  const out = { almoco: {proteina:0, completa:0}, jantar: {proteina:0, completa:0}, ceia: {proteina:0, completa:0} };
+  pcpListaSubstituicoes(dia, contratoId).forEach(s => {
+    const turno = s.servico || "almoco";
+    out[turno].proteina += s.pessoas;
+    if(fichaEhComposicaoCompleta(s.fichaId)) out[turno].completa += s.pessoas;
+  });
   return out;
 }
 // gramagem por pessoa da ficha substituta: rendimento_kg / rendimento_und (mesma régua de "quanto cada
@@ -11499,9 +11694,14 @@ function pcpGramagemSubstituicao(ficha){
 }
 // multiplicador configurado do item (pcpItensSubstitutos) — 1 se o item não estiver mais na lista de
 // colunas (ex. removido depois de já ter lançamento antigo, ver pcpRemoverItemSubstituto) ou sem valor salvo.
+// 09/11/2026: também olha o multiplicador do TIPO de composição completa, se a ficha for uma delas
+// (ver composicaoTiposAtivos/composicoesSemanaCache) — mesma ideia, catálogo separado.
 function pcpMultiplicadorSubstituicao(fichaId){
   const it = pcpItensSubstitutos.find(x => x.fichaId === fichaId);
-  return (it && it.multiplicador > 0) ? it.multiplicador : 1;
+  if(it && it.multiplicador > 0) return it.multiplicador;
+  const semanaRow = [...composicoesSemanaCache.values()].find(r => r.ficha_id === fichaId);
+  const tipo = semanaRow ? composicoesTipos.get(semanaRow.tipo_id) : null;
+  return (tipo && tipo.multiplicador > 0) ? Number(tipo.multiplicador) : 1;
 }
 // 21/10/2026, pedido do Marcelo: unidades DE VERDADE a produzir/custear de 1 lançamento — pessoas ×
 // multiplicador do item (ex. omelete leva 3 ovos por pessoa) + 1 de amostra, por LANÇAMENTO (cada linha
@@ -11617,7 +11817,12 @@ function pcpAcumularDia(dayDoc, numPessoas, contratoId, nomeCliente, produtoId, 
     // 16/10/2026: substituição agora tem serviço próprio (ver pcpPessoasSubstituidasPorTurno) — quem chama
     // pcpAcumularDia já manda em `pessoasSubstituidas` só o que foi trocado NESTE `turno`, então aqui não
     // precisa mais checar turno==="almoco" (era a trava de quando só existia troca de almoço).
-    const pessoasEf = (pessoasSubstituidas > 0 && categoriaBase(it.categoria) === "Proteína") ? Math.max(0, numPessoas - pessoasSubstituidas) : numPessoas;
+    // 09/11/2026: `pessoasSubstituidas` deixou de ser 1 número — é {proteina, completa} (ver
+    // pcpPessoasSubstituidasPorTurno). Proteína desconta sempre; Base/Guarnição só descontam quando a
+    // troca foi por uma composição completa (Prato Especial/Fit/Lanche), que substitui o prato inteiro.
+    const catBasePcp = categoriaBase(it.categoria);
+    const descontoCatPcp = pessoasSubstituidas ? (catBasePcp === "Proteína" ? pessoasSubstituidas.proteina : ((catBasePcp === "Base" || catBasePcp === "Guarnição") ? pessoasSubstituidas.completa : 0)) : 0;
+    const pessoasEf = descontoCatPcp > 0 ? Math.max(0, numPessoas - descontoCatPcp) : numPessoas;
     const r = pcpItemProducao(it, pessoasEf, ct);
     if(!r) return;
     achouAlgo = true;
@@ -11701,6 +11906,13 @@ function pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro){
   const receitas = new Map(), diretos = new Map(), avisos = [], clientes = new Map(), semProducao = [];
   let pessoasTot = 0;
 
+  // 09/11/2026: tipo de composição completa ativo sem ficha definida nesta semana — risco de custo R$0
+  // silencioso (mesmo problema da ficha "PRATO ESPECIAL" vazia que motivou tudo isso), vale avisar em
+  // qualquer sub-aba do PCP, não só em Substituições (ver composicoesSemanaPendentes).
+  composicoesSemanaPendentes(semana).forEach(t => {
+    avisos.push({ tipo: "warn", txt: `Composição completa "${t.nome}" sem ficha definida nesta semana — se for escolhida no PCP, entra com custo R$0. Defina em Cardápio ou na aba Substituições.` });
+  });
+
   [...contratos.entries()]
     .filter(([, ct]) => ct.ativo !== false)
     .filter(([, ct]) => !unidadeFiltro || unidadeFiltro === "todos" || ct.unidade === unidadeFiltro)
@@ -11734,7 +11946,7 @@ function pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro){
         cli.porServico[turnoItem] = (cli.porServico[turnoItem] || 0) + qtd;
         clientes.set(contratoId, cli);
         pessoasTot += qtd;
-        pcpProducaoUnidadeItem(almocoIdx, ci.produto_id, ct, contratoId, ct.nome_cliente, semana, dia, qtd, receitas, diretos, avisos, substPorTurno[turnoItem] || 0);
+        pcpProducaoUnidadeItem(almocoIdx, ci.produto_id, ct, contratoId, ct.nome_cliente, semana, dia, qtd, receitas, diretos, avisos, substPorTurno[turnoItem]);
       });
       // uma chamada por serviço em que o contrato realmente produziu — sem isso, um cliente só de almoço
       // nunca aplicaria substituição de jantar (não existe produção de jantar pra "trocar"), e um cliente
@@ -11808,7 +12020,11 @@ function pcpSubReceitasDoDia(receitasTopo){
 function pcpAcumularInsumosDia(dayDoc, numPessoas, acougueSet, buckets, pessoasSubstituidas, coletor, dia, ct){
   if(!dayDoc) return;
   (dayDoc.itens || []).forEach(it => {
-    const pessoasEf = (pessoasSubstituidas > 0 && categoriaBase(it.categoria) === "Proteína") ? Math.max(0, numPessoas - pessoasSubstituidas) : numPessoas;
+    // 09/11/2026: mesma régua de pcpAcumularDia — `pessoasSubstituidas` é {proteina, completa} desde a
+    // generalização das "Composições completas da semana" (ver pcpPessoasSubstituidas).
+    const catBaseReq = categoriaBase(it.categoria);
+    const descontoCatReq = pessoasSubstituidas ? (catBaseReq === "Proteína" ? pessoasSubstituidas.proteina : ((catBaseReq === "Base" || catBaseReq === "Guarnição") ? pessoasSubstituidas.completa : 0)) : 0;
+    const pessoasEf = descontoCatReq > 0 ? Math.max(0, numPessoas - descontoCatReq) : numPessoas;
     const r = pcpItemProducao(it, pessoasEf, ct);
     if(!r) return;
     let setor, porInsumo, nomeReceita = null;
@@ -14845,10 +15061,21 @@ function pcpSubstGradeBlocoHtml(res, itens){
     <div class="table-wrap" data-subst-tabela="${res.unidade}"><table><thead>${cab1}${cab2}</thead><tbody>${linhas}</tbody><tfoot>${rodape}</tfoot></table></div>`;
 }
 function pcpSubstituicoesHtml(listaRes, unidadeFiltro){
-  const itens = pcpItensSubstitutos;
+  const semana = listaRes[0].semana;
+  // 09/11/2026: colunas da grade = itens fixos (ovo/omelete/filé) + composições completas da semana
+  // (Prato Especial/Fit/Lanche, resolvidas pra ficha desta semana — ver itensGradeSemana).
+  const itens = itensGradeSemana(semana);
   const gerenciar = pcpSubstGerenciarItensHtml();
+  // cadastro mora na aba Cardápio (pedido do Marcelo), replicado aqui só pra acesso rápido — mesmo painel,
+  // mesma função de bind (composicoesSemanaPainelBind, ligado em pcpSubstituicoesBind). Fica aberto por
+  // padrão quando há tipo sem ficha definida, pra não repassar o aviso só pro banner.
+  const pendentesComp = composicoesSemanaPendentes(semana);
+  const composicoesDetails = `<details class="integrity-detail" style="margin-bottom:14px;" ${pendentesComp.length ? "open" : ""}>
+    <summary>Composições completas da semana (${composicaoTiposAtivos().length})${pendentesComp.length ? ` — ⚠ ${pendentesComp.length} sem ficha definida, custa R$0 se escolhida` : ""}</summary>
+    ${composicoesSemanaPainelHtml(semana)}
+  </details>`;
   if(!itens.length){
-    return gerenciar + `<div class="empty-state">Configure ao menos 1 item substituto acima pra liberar a grade de lançamento.</div>`;
+    return composicoesDetails + gerenciar + `<div class="empty-state">Configure ao menos 1 item substituto ou 1 composição completa (acima) pra liberar a grade de lançamento.</div>`;
   }
   const dia = listaRes[0].dia;
   const pendentes = pcpSubstituicoesPendentes(dia, unidadeFiltro);
@@ -14873,9 +15100,9 @@ function pcpSubstituicoesHtml(listaRes, unidadeFiltro){
         ${[...resumoSemana.porFicha.entries()].map(([fid,v]) => `<tr><td>${escapeHtml(fichas.get(fid)?.nome || fid)}</td><td class="num-cell">${fmtNum(v.pessoas,0)}</td><td class="num-cell">${fmtMoney(v.custo)}</td></tr>`).join("")}
       </tbody></table></div>
     </div></div>` : "";
-  return gerenciar + banner + resumoHtml +
+  return composicoesDetails + gerenciar + banner + resumoHtml +
     `<div class="panel" style="margin-bottom:14px;"><div class="panel-body" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-      <p class="footnote" style="margin:0;">Um pra um: cada pessoa trocada tira 1 porção da proteína do cardápio naquele serviço e soma 1 unidade do item escolhido — digite direto na grade e clique em Salvar. O lançamento salvo aparece na Conferência de expedição, na produção e nas etiquetas, e o custo entra no CMV real do mês (painel acima, "fechamento da semana").</p>
+      <p class="footnote" style="margin:0;">Um pra um: cada pessoa trocada tira 1 porção da proteína do cardápio naquele serviço (e também de Base/Guarnição quando for composição completa — Prato Especial/Fit/Lanche) e soma 1 unidade do item escolhido — digite direto na grade e clique em Salvar. O lançamento salvo aparece na Conferência de expedição, na produção e nas etiquetas, e o custo entra no CMV real do mês (painel acima, "fechamento da semana").</p>
       <button type="button" class="btn small primary" id="pcp-subst-salvar" data-subst-salvar="1">Salvar substituições</button>
     </div></div>
     <div class="panel"><div class="panel-body">${blocos}</div></div>`;
@@ -14932,6 +15159,10 @@ function pcpSubstMarcarSuja(inp){
   inp.style.fontWeight = suja ? "600" : "";
 }
 function pcpSubstituicoesBind(content, semana, dia, unidade, listaRes){
+  // 09/11/2026: liga o painel de "Composições completas da semana" (mesmo HTML/bind da aba Cardápio,
+  // ver composicoesSemanaPainelBind) — delegado no mesmo `content`, então os seletores/inputs do painel
+  // (dentro do <details> montado por pcpSubstituicoesHtml) funcionam igual aqui.
+  composicoesSemanaPainelBind(content, semana, () => renderPCP());
   // 21/10/2026, pedido do Marcelo: editar o multiplicador (×) de cada item substituto direto no chip —
   // listener separado do resto da grade pra não mexer na lógica já existente dos inputs subst-grid-cel.
   content.addEventListener("change", async e => {
