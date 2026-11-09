@@ -67,6 +67,8 @@
 #orientacoes-root .modal-body h4:first-child{margin-top:0;}
 #orientacoes-root .modal-body p{margin:0 0 10px;}
 #orientacoes-root .modal-body ul{margin:0 0 10px; padding-left:20px;}
+a{color:var(--accent); text-decoration:none;}
+a:hover{text-decoration:underline;}
 *{box-sizing:border-box;}
 body{margin:0;background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',system-ui,sans-serif;}
 h1,h2,h3{font-family:'Fraunces',Georgia,serif; text-wrap:balance;}
@@ -629,6 +631,7 @@ const VIEWS = {
 // alerta, pendência e aviso operacional continuam na própria tela, nunca só aqui.
 const ORIENTACOES_POR_VIEW = {
   painel: `
+    <p>Visão do negócio por Grupo/Matriz/Filial (realizado × planejado), pendências, e detalhe de faturamento, custo, CMV real, Orçamento e Estoque.</p>
     <h4>Visão do Negócio e Painel de pendências</h4>
     <p>Quadros por Grupo/Matriz/Filial com realizado × planejado. O "Planejado" usa a quantidade lançada no dia; se o dia ainda não tem Vendas gravada, cai em cascata: mediana do mês → ciclo de 2 meses → quantidade contratada. Corrigido em 05/11/2026 para não inflar com venda "fantasma" de item opcional não pedido num dia específico.</p>
     <h4>CMV real (compras)</h4>
@@ -11252,7 +11255,7 @@ function executarAcaoPendencia(acao){
 
 function renderPainel(){
   document.getElementById("page-title").textContent = "Painel";
-  document.getElementById("page-desc").textContent = "Visão do Negócio (Grupo/Matriz/Filial, realizado × planejado), pendências, e detalhe de faturamento, custo, CMV real, Orçamento e Estoque";
+  document.getElementById("page-desc").textContent = "Visão do negócio e pendências";
   document.getElementById("topbar-actions").innerHTML = "";
 
   const meses = MESES_REFERENCIA;
@@ -11348,7 +11351,7 @@ function renderPainel(){
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h3><i class="ico" data-lucide="wallet"></i>Orçamento do mês</h3><span class="hint"><a href="#" id="pn-ir-orcamento">ver detalhe por bloco/semana →</a></span></div>
+      <div class="panel-head"><h3><i class="ico" data-lucide="wallet"></i>Orçamento do mês</h3><button class="btn ghost small" id="pn-ir-orcamento">Ver detalhe por bloco/semana →</button></div>
       <div class="panel-body two-col-num">
         <div class="stat-block"><div class="label">Orçado (CMV)</div><div class="val">${fmtMoney(orcadoMes)}</div></div>
         <div class="stat-block"><div class="label">Comprado (pedidos)</div><div class="val">${fmtMoney(compradoMesVal)}</div></div>
@@ -11356,7 +11359,7 @@ function renderPainel(){
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h3><i class="ico" data-lucide="boxes"></i>Estoque — última contagem</h3><span class="hint"><a href="#" id="pn-ir-estoque">abrir Estoque →</a></span></div>
+      <div class="panel-head"><h3><i class="ico" data-lucide="boxes"></i>Estoque — última contagem</h3><button class="btn ghost small" id="pn-ir-estoque">Abrir Estoque →</button></div>
       <div class="panel-body two-col-num">
         ${estoqueLinha("Matriz", estoqueMatriz)}
         ${estoqueLinha("Filial", estoqueFilial)}
