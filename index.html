@@ -685,7 +685,7 @@ const ORIENTACOES_POR_VIEW = {
   `,
   cardapio: `
     <p>Edição direto na tabela — refeição, marmita e café da manhã.</p>
-    <p><strong>Pratos especiais:</strong> Prato Especial, Prato Fit, Lanche — ficha única que substitui Proteína+Base+Guarnição juntos quando escolhida no PCP. O custo/produção sai pelo peso do prato cadastrado aqui (padrão 850g por pessoa, editável por tipo/semana) × custo/kg da ficha escolhida — qualquer ficha serve, não precisa ter rendimento por unidade cadastrado. Só quando a ficha é do grupo "Prato Completo" o desconto de efetivo na produção tira Proteína+Base+Guarnição juntos; senão tira só a Proteína (aviso "⚠ não é Prato completo" avisa disso, não bloqueia nada). A estimativa de pessoas/semana alimenta a Lista de compras e a Requisição de insumos enquanto não há histórico real — depois de algumas semanas, passa a sugerir pela mediana. Sem ficha definida, o tipo não aparece na grade de Substituições do PCP.</p>
+    <p><strong>Pratos especiais:</strong> Prato Especial, Prato Fit, Lanche — ficha única que substitui Proteína+Base+Guarnição juntos quando escolhida no PCP. Qualquer ficha serve (sem exigir classificação nem rendimento por unidade cadastrado) — o custo mostrado na própria linha sai do peso do prato cadastrado aqui (padrão 850g por pessoa, editável por tipo/semana) × custo/kg da ficha escolhida. A estimativa de pessoas/semana alimenta a Lista de compras e a Requisição de insumos enquanto não há histórico real — depois de algumas semanas, passa a sugerir pela mediana. Sem ficha definida, o tipo não aparece na grade de Substituições do PCP.</p>
   `,
   contratos: `
     <p>Visão do negócio por cliente, cadastro de contratos, cardápio de referência e itens contratados.</p>
@@ -1335,14 +1335,16 @@ function custoSubstituicoesContratoMes(contratoId, mesId, semanasMes){
   return { custo, pessoas };
 }
 
-/* ---------- "Composições completas da semana" (09/11/2026, pedido do Marcelo) ----------
+/* ---------- "Pratos especiais" (09/11/2026, pedido do Marcelo; grupo "Prato Completo" removido em
+   10/11/2026) ----------
    Generaliza o caso da ficha "PRATO ESPECIAL" (achado crítico da auditoria de 20/10/2026 — cadastrada
    sem ingrediente, custo R$0, mas com >100 escolhas/semana e geralmente mais caro que a opção do dia).
    Em vez de 1 ficha fixa, uma lista de "tipos" (Prato Especial, Prato Fit, Lanche — extensível pela tela,
    mesmo espírito de pcp_itens_substitutos) aponta pra uma ficha DIFERENTE a cada semana
-   (pcp_composicoes_semana). A ficha escolhida precisa ter grupo="PRATO COMPLETO": ela desconta
-   Proteína+Base+Guarnição juntos do efetivo (ver fichaEhComposicaoCompleta/pcpPessoasSubstituidas),
-   diferente da substituição comum (ovo, omelete, filé) que só desconta Proteína.
+   (pcp_composicoes_semana), com peso do prato (gramagem_g, padrão 850g) editável junto. Qualquer ficha
+   serve — sem exigir classificação nem rendimento por unidade cadastrado (ver pcpGramagemItemSubstituicao
+   e fichaEhComposicaoCompleta logo abaixo: ela desconta Proteína+Base+Guarnição juntos do efetivo, ver
+   pcpPessoasSubstituidas, diferente da substituição comum — ovo, omelete, filé — que só desconta Proteína).
    Carregada 1x no boot (tabela pequena: poucos tipos × semanas) pra estar disponível em qualquer aba —
    Cardápio (dono do cadastro), PCP/Substituições (acesso rápido, pedido do Marcelo) e Compras (estimativa
    manual na Lista de compras) — sem cada uma precisar do seu próprio reload. */
@@ -1369,11 +1371,10 @@ function composicaoDaSemana(tipoId, semana){ return composicoesSemanaCache.get(`
 // add_gramagem_g_pcp_composicoes_semana), editável por tipo/semana. Antes o custo/produção desse tipo só
 // saía se a ficha escolhida tivesse rendimento_und cadastrado (pcpGramagemSubstituicao = rendimento_kg/
 // rendimento_und) — ficha normal (ex. galinhada, sem cadastro "por unidade") ficava sem custo. Com o peso
-// aqui, o custo sai sempre: peso × custo/kg da ficha (computeFicha), independente de rendimento_und e
-// independente do grupo da ficha ser "PRATO COMPLETO" ou não (ver pcpGramagemItemSubstituicao). O grupo
-// "PRATO COMPLETO" continua decidindo só uma coisa DIFERENTE: se o desconto de efetivo na produção tira
-// Proteína+Base+Guarnição juntos ou só a Proteína (fichaEhComposicaoCompleta) — o aviso "⚠ não é Prato
-// completo" no painel é sobre ISSO, não é mais sobre custo/produção.
+// aqui, o custo sai sempre: peso × custo/kg da ficha (computeFicha), pra qualquer ficha (ver
+// pcpGramagemItemSubstituicao). Mesmo dia, pedido seguinte: tirada também a exigência de a ficha ter
+// grupo="PRATO COMPLETO" cadastrado — ver fichaEhComposicaoCompleta, que agora só olha se a ficha está
+// apontada aqui, não mais o grupo dela.
 async function salvarComposicaoSemana(tipoId, semana, fichaId, estimativaPessoas, gramagemG){
   const row = { tipo_id: tipoId, semana, ficha_id: fichaId || null, estimativa_pessoas: (estimativaPessoas === "" || estimativaPessoas == null) ? null : Number(estimativaPessoas), gramagem_g: (gramagemG === "" || gramagemG == null || isNaN(Number(gramagemG))) ? 850 : Number(gramagemG), alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
   const { data, error } = await sb.from('pcp_composicoes_semana').upsert(row, { onConflict: 'tipo_id,semana' }).select().single();
@@ -1410,11 +1411,14 @@ async function removerTipoComposicao(id){
   return true;
 }
 // true se a ficha é uma composição completa (Proteína+Base+Guarnição juntos) — decide o desconto de
-// efetivo estendido (ver pcpPessoasSubstituidas), independente de estar apontada por um tipo semanal ou
-// lançada direto como item substituto comum (pcpItensSubstitutos também pode apontar pra uma ficha
-// PRATO COMPLETO, sem passar pelo cadastro de tipos).
+// efetivo estendido (ver pcpPessoasSubstituidas). 10/11/2026, pedido do Marcelo ("pode tirar esse grupo
+// prato completo... qualquer receita pode ser escolhida pro prato especial"): deixou de depender do
+// grupo cadastrado na ficha (classificação manual, trava de verdade — era o motivo da galinhada não
+// servir) — agora é só "esta ficha está apontada por algum tipo de Pratos especiais nesta semana?" (mesma
+// pesquisa de pcpGramagemItemSubstituicao/pcpMultiplicadorSubstituicao). Qualquer ficha escolhida no
+// painel de Pratos especiais passa a descontar Proteína+Base+Guarnição juntos, não só a Proteína.
 function fichaEhComposicaoCompleta(fichaId){
-  return pcpGrupoFicha(fichas.get(fichaId)) === "PRATO COMPLETO";
+  return [...composicoesSemanaCache.values()].some(r => r.ficha_id === fichaId);
 }
 // mescla os tipos semanais (resolvidos pra ficha da semana pedida) com a lista fixa de itens substitutos
 // — usado só pra montar as COLUNAS da grade de lançamento do PCP; o motor de cálculo não depende disso
@@ -1442,11 +1446,15 @@ function composicoesSemanaPainelHtml(semana, titulo){
   const linhas = tipos.map(t => {
     const row = composicaoDaSemana(t.id, semana);
     const fichaSel = row && row.ficha_id ? fichas.get(row.ficha_id) : null;
-    const naoPratoCompleto = fichaSel && pcpGrupoFicha(fichaSel) !== "PRATO COMPLETO";
     // 10/11/2026: peso do prato (g/pessoa) — padrão 850 (default do banco), editável por tipo/semana;
     // é o que vira custo/produção agora (ver pcpGramagemItemSubstituicao), não depende mais de a ficha ter
-    // rendimento_und cadastrado nem de ser classificada "PRATO COMPLETO".
+    // rendimento_und cadastrado nem de ser classificada "PRATO COMPLETO" (grupo removido desta tela —
+    // pedido do Marcelo, "qualquer receita pode ser escolhida pro prato especial").
     const gramagemG = row && row.gramagem_g != null ? row.gramagem_g : 850;
+    // custo do prato = peso (kg) × custo/kg da própria ficha (computeFicha, mesma conta de qualquer ficha
+    // técnica) — no lugar do antigo aviso "não é Prato completo", que travava a leitura sem dizer o custo.
+    const custoKgSel = fichaSel ? computeFicha(fichaSel, row.ficha_id).custoKg : null;
+    const custoPrato = (custoKgSel != null) ? (gramagemG / 1000) * custoKgSel : null;
     return `<tr data-comp-tipo="${t.id}">
       <td class="name-cell">${escapeHtml(t.nome)}</td>
       <td>
@@ -1457,13 +1465,13 @@ function composicoesSemanaPainelHtml(semana, titulo){
       </td>
       <td><input type="number" min="0" step="1" class="comp-estimativa" data-comp-estimativa="${t.id}" value="${row && row.estimativa_pessoas != null ? row.estimativa_pessoas : ""}" placeholder="pessoas/semana" style="width:120px;"></td>
       <td><input type="number" min="1" step="1" class="comp-gramagem" data-comp-gramagem="${t.id}" value="${gramagemG}" title="Peso do prato por pessoa — usado pra calcular o custo (peso × custo/kg da ficha)" style="width:80px;"> g</td>
-      <td>${naoPratoCompleto ? `<span class="chip" style="background:#fde2e1; color:#9a2a2a;" title="Esta ficha não é 'Prato completo' — o custo/produção já sai normalmente pelo peso ao lado; só o desconto de efetivo na produção fica diferente: tira só a Proteína, não a refeição (Proteína+Base+Guarnição) inteira.">⚠ não é Prato completo</span>` : ""}</td>
+      <td class="num-cell">${fichaSel ? (custoPrato != null ? `${fmtMoney(custoPrato)}<span class="footnote"> /pessoa</span>` : `<span class="footnote" title="Ficha sem ingredientes/custo cadastrado — revise em Fichas técnicas">— sem custo</span>`) : ""}</td>
       <td><button type="button" class="btn small ghost" data-comp-remover-tipo="${t.id}" title="Remover este tipo da configuração (lançamentos já feitos continuam valendo)">✕</button></td>
     </tr>`;
   }).join("");
   return `<div class="panel" style="margin-bottom:14px;"><div class="panel-body">
     <div class="panel-head" style="border:none; padding:0 0 8px;"><h3 style="font-size:14px;">${escapeHtml(titulo || "Pratos especiais")}</h3></div>
-    ${tipos.length ? `<div class="table-wrap"><table><thead><tr><th>Tipo</th><th>Ficha desta semana</th><th>Estimativa (pessoas/semana)</th><th>Peso do prato</th><th></th><th></th></tr></thead><tbody>${linhas}</tbody></table></div>` : `<div class="empty-state">Nenhum tipo configurado — adicione abaixo (ex. Prato Especial).</div>`}
+    ${tipos.length ? `<div class="table-wrap"><table><thead><tr><th>Tipo</th><th>Ficha desta semana</th><th>Estimativa (pessoas/semana)</th><th>Peso do prato</th><th>Custo do prato</th><th></th></tr></thead><tbody>${linhas}</tbody></table></div>` : `<div class="empty-state">Nenhum tipo configurado — adicione abaixo (ex. Prato Especial).</div>`}
     <div style="display:flex; gap:8px; align-items:center; margin-top:10px;">
       <input type="text" id="comp-tipo-novo" placeholder="Novo tipo (ex. Prato Vegetariano)" style="max-width:260px;">
       <button type="button" class="btn small primary" id="comp-tipo-add">+ Adicionar tipo</button>
@@ -1495,10 +1503,9 @@ function composicoesSemanaPainelBind(area, semana, onSaved){
       if(matches.length){
         optsEl = document.createElement("div");
         optsEl.className = "options";
-        optsEl.innerHTML = matches.map(([fid,f]) => {
-          const aviso = pcpGrupoFicha(f) !== "PRATO COMPLETO" ? ` <span class="footnote" style="color:#9a2a2a;">· não é Prato completo</span>` : "";
-          return `<div data-pick-ficha="${fid}">${escapeHtml(f.nome)}${aviso}</div>`;
-        }).join("");
+        // 10/11/2026: tirado o aviso "não é Prato completo" da busca — qualquer ficha serve agora (ver
+        // fichaEhComposicaoCompleta), o custo de cada uma já aparece na linha depois de escolhida.
+        optsEl.innerHTML = matches.map(([fid,f]) => `<div data-pick-ficha="${fid}">${escapeHtml(f.nome)}</div>`).join("");
         inp.parentElement.appendChild(optsEl);
         optsEl.querySelectorAll("[data-pick-ficha]").forEach(opt => opt.addEventListener("mousedown", e => { e.preventDefault(); escolher(opt.dataset.pickFicha); }));
       }
@@ -12338,10 +12345,11 @@ function pcpListaSubstituicoes(dia, contratoId){
 }
 // total do dia inteiro (os 3 serviços somados) — usado pela Requisição do estoque/Açougue, que não são
 // recortados por serviço (compra/corte é pro dia inteiro, não faz sentido separar por almoço/jantar/ceia).
-// 09/11/2026, pedido do Marcelo ("Composições completas da semana"): deixou de ser 1 número só. Toda
-// substituição desconta Proteína (`proteina`); só quando a ficha escolhida é uma composição completa
-// (grupo "PRATO COMPLETO" — Prato Especial/Fit/Lanche, ver fichaEhComposicaoCompleta) é que também
-// desconta Base e Guarnição (`completa`), porque aí a pessoa não comeu nenhum dos 3, não só a proteína.
+// 09/11/2026, pedido do Marcelo ("Pratos especiais"): deixou de ser 1 número só. Toda substituição
+// desconta Proteína (`proteina`); só quando a ficha escolhida é uma composição completa (apontada por
+// algum tipo de Pratos especiais nesta semana — Prato Especial/Fit/Lanche, ver fichaEhComposicaoCompleta)
+// é que também desconta Base e Guarnição (`completa`), porque aí a pessoa não comeu nenhum dos 3, não só
+// a proteína.
 function pcpPessoasSubstituidas(dia, contratoId){
   const out = { proteina: 0, completa: 0 };
   pcpListaSubstituicoes(dia, contratoId).forEach(s => {
