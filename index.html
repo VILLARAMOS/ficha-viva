@@ -10487,17 +10487,16 @@ function openPedidoModal(id, opts){
             <div class="field"><label for="pd-entrega">Entrega prevista (opcional)</label><input type="date" id="pd-entrega" value="${draft.data_entrega_prevista}"></div>
           </div>
           <div class="field-row">
-            <div class="field"><label for="pd-unidade">Unidade da compra (quem recebe e debita o orçamento)</label>
+            <div class="field"><label for="pd-unidade" style="display:block; min-height:32px;">Unidade da compra (quem recebe e debita o orçamento)</label>
               <select id="pd-unidade">${UNIDADES_COMPRA.map(u => `<option value="${u.id}" ${u.id===draft.unidade?"selected":""}>${u.nome}</option>`).join("")}</select>
             </div>
-            <div class="field"><label for="pd-destino">Destino (clientes que motivaram a compra)</label>
+            <div class="field"><label for="pd-destino" style="display:block; min-height:32px;">Destino (clientes que motivaram a compra)</label>
               <select id="pd-destino">${destinos.map((d,i) => `<option value="${i}" ${d.rotulo===draft.destino_rotulo?"selected":""}>${escapeHtml(d.rotulo)}</option>`).join("")}</select>
             </div>
-            <div class="field"><label for="pd-semref">Semana de uso (opcional — padrão: semana da data do pedido)</label>
+            <div class="field"><label for="pd-semref" style="display:block; min-height:32px;">Semana de uso (opcional — padrão: semana da data do pedido)</label>
               <select id="pd-semref"><option value="">Mesma da data do pedido</option>${[1,2,3,4,5,6,7,8].map(off => semanaDaData(draft.data_pedido) ? semanaDaData(draft.data_pedido)+off-4 : null).filter(w=>w>=1).map(w => `<option value="${w}" ${draft.semana_referencia===w?"selected":""}>${escapeHtml(rotuloSemana(w))}</option>`).join("")}</select>
             </div>
           </div>
-          <div class="footnote" style="margin:-6px 0 10px;">O pedido debita o orçamento da unidade escolhida e conta na lista de compra da semana de uso. Simplificação em relação ao sistema antigo: destino aqui é Grupo inteiro/Matriz/Filial — não há "conjuntos de compra" salvos nem autocomplete com cadastro de produto embutido (cadastre o insumo em Insumos antes, se faltar).</div>
           <h3 style="font-size:14px; margin:14px 0 6px;">Itens</h3>
           <datalist id="pd-insumo-list">${insumosOrdenados.map(([iid,ins]) => `<option value="${escapeHtml(ins.nome)}" data-id="${iid}"></option>`).join("")}</datalist>
           <div id="pd-lines"></div>
@@ -10563,16 +10562,30 @@ function openPedidoModal(id, opts){
   // ente da embalagem, mortadela fatiada em grama…): só sabe quanto pesa a embalagem e quanto pagou por ela.
   // Então agora só existe 1 jeito de lançar: Custo da embalagem (o que pagou) ÷ Peso/qtd. na embalagem =
   // Custo por kg/L/un, sempre calculado, nunca digitado — elimina de vez a ambiguidade de "campo certo".
+  // 10/11/2026, pedido do Marcelo: filtro de "Grupo" por linha pra achar o insumo mais rápido (843 insumos
+  // numa lista só, sem categoria, era lento de buscar) — não é um dado do pedido, só estreita as opções do
+  // datalist de Produto antes de escolher; l._grupoFiltro é transiente (fora da lista de campos do payload).
+  // Sem grupo escolhido, usa o datalist global (todos os insumos); com grupo, usa um datalist só daquele
+  // bloco, próprio da linha (ids únicos por linha porque cada uma pode filtrar um grupo diferente).
   function linhaHtml(l,i){
     const ins = l.insumo_id ? insumos.get(l.insumo_id) : null;
     const baseLabel = ins ? unidadeCustoInsumo(ins) : "—";
     const custoBase = (l.insumo_id && l.preco_unitario != null) ? precoBaseItem(l) : null;
     const outraVisivel = l.embalagem_tipo === "Outra";
+    const grupoFiltro = l._grupoFiltro || "";
+    const datalistId = grupoFiltro ? `pd-insumo-list-${i}` : "pd-insumo-list";
+    const datalistFiltradaHtml = grupoFiltro ? `<datalist id="${datalistId}">${insumosOrdenados.filter(([,ins2]) => (ins2.grupo_compra||"SEM GRUPO") === grupoFiltro).map(([iid,ins2]) => `<option value="${escapeHtml(ins2.nome)}" data-id="${iid}"></option>`).join("")}</datalist>` : "";
     return `
       <div class="pd-line" data-i="${i}" style="border:1px solid var(--border); border-radius:10px; padding:12px 12px 8px; margin-bottom:10px;">
         <div class="footnote" style="font-weight:600; margin-bottom:4px; opacity:.7;">O que comprou</div>
         <div class="field-row" style="margin-bottom:8px;">
-          <div class="field" style="grid-column:span 2;"><label>Produto</label><input type="text" class="pd-nome" list="pd-insumo-list" autocomplete="off" value="${escapeHtml(l.nome||"")}" placeholder="Buscar insumo…"><div class="footnote" style="margin-top:2px;">${l.insumo_id ? escapeHtml(blocoDoInsumo(l.insumo_id)) : (l.nome ? '<span style="color:var(--critical);">insumo não encontrado — escolha da lista</span>' : "")}</div><div class="footnote pd-ultimo" style="margin-top:2px;"></div></div>
+          <div class="field"><label>Grupo (filtro de busca)</label>
+            <select class="pd-grupo">
+              <option value="">Todos os grupos</option>
+              ${blocosCadastro().map(g => `<option value="${escapeHtml(g)}" ${grupoFiltro===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field" style="grid-column:span 2;"><label>Produto</label><input type="text" class="pd-nome" list="${datalistId}" autocomplete="off" value="${escapeHtml(l.nome||"")}" placeholder="Buscar insumo…">${datalistFiltradaHtml}<div class="footnote" style="margin-top:2px;">${l.insumo_id ? escapeHtml(blocoDoInsumo(l.insumo_id)) : (l.nome ? '<span style="color:var(--critical);">insumo não encontrado — escolha da lista</span>' : "")}</div><div class="footnote pd-ultimo" style="margin-top:2px;"></div></div>
           <div class="field"><label>Qtd. de embalagens</label><input type="number" step="0.001" min="0" class="pd-qtd" value="${l.quantidade!=null?l.quantidade:""}"></div>
           <div class="field"><label>Embalagem</label>
             <select class="pd-embtipo">
@@ -10639,6 +10652,10 @@ function openPedidoModal(id, opts){
         const base = (l.preco_unitario != null && fator > 0) ? l.preco_unitario / fator : null;
         if(custoBaseEl) custoBaseEl.textContent = base != null ? fmtMoney(base) : "—";
       }
+      // 10/11/2026: filtro de Grupo só estreita o datalist do Produto — não zera o insumo já escolhido
+      // (trocar o filtro depois de já ter selecionado o produto não deveria obrigar a reescolher).
+      const grupoEl = row.querySelector(".pd-grupo");
+      if(grupoEl) grupoEl.addEventListener("change", e => { l._grupoFiltro = e.target.value || null; renderLines(); });
       row.querySelector(".pd-nome").addEventListener("change", e => {
         const texto = e.target.value;
         const match = insumosOrdenados.find(([,ins]) => normalizeText(ins.nome) === normalizeText(texto));
