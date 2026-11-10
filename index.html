@@ -391,6 +391,18 @@ textarea{font:inherit;color:var(--text);background:var(--bg);border:1px solid va
 .seg-toggle{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;}
 .seg-toggle button{border:none;background:var(--surface);padding:8px 14px;font-size:12.5px;cursor:pointer;color:var(--text-muted);}
 .seg-toggle button.active{background:var(--accent);color:#fff;}
+/* PCP > Produção da cozinha: mesmo bloco visual do seg-toggle de dia, mas cada segmento combina 2 controles
+   independentes — clique no texto do dia troca o dia exibido na tela (igual ao seg-toggle puro usado nas
+   outras sub-áreas do PCP); o checkbox, à parte, marca o dia pra entrar junto na próxima impressão em lote
+   (Composição principal/Saladas/Sobremesas/Receitas/Cardápios do dia). Ver pcpDiaSel vs pcpProdDiasSel. */
+.pcp-dia-combo-row{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;}
+.pcp-dia-combo{display:flex;align-items:center;border-left:1px solid var(--border);}
+.pcp-dia-combo:first-child{border-left:none;}
+.pcp-dia-combo.active{background:var(--accent);}
+.pcp-dia-combo-chk{display:flex;align-items:center;padding:0 2px 0 9px;cursor:pointer;}
+.pcp-dia-combo-chk input{cursor:pointer; margin:0;}
+.pcp-dia-combo-lbl{border:none;background:none;padding:8px 10px 8px 5px;font-size:12.5px;cursor:pointer;color:var(--text-muted);}
+.pcp-dia-combo.active .pcp-dia-combo-lbl{color:#fff;font-weight:600;}
 .week-grid{display:grid;grid-template-columns:repeat(7,minmax(190px,1fr));gap:12px;overflow-x:auto;padding-bottom:4px;}
 .day-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);display:flex;flex-direction:column;min-width:190px;}
 .day-card .day-head{padding:10px 14px;border-bottom:1px solid var(--border);background:var(--surface-alt);border-radius:var(--radius) var(--radius) 0 0;}
@@ -16311,7 +16323,7 @@ async function renderPCP(){
     <div class="menu-controls" style="margin-bottom:16px;">
       <div class="seg-toggle" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" data-pcpuni="${u.id}" class="${pcpUnidadeSel===u.id?"active":""}">${u.nome}${u.id !== "todos" ? ` <span style="opacity:.65; font-size:10.5px;">${pcpContagemUnidade(u.id)} clientes</span>` : ""}</button>`).join("")}</div>
       <select id="pcp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===pcpSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
-      <div class="seg-toggle" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" data-pcpdia="${d}" class="${pcpDiaSel===d?"active":""}">${DIA_LABEL[d].slice(0,3)}</button>`).join("")}</div>
+      ${ehProducao && !ehProducaoAmbas ? `<div class="pcp-dia-combo-row" id="pcp-dia-tabs" title="Clique no dia pra ver na tela; marque o checkbox pra incluir na próxima impressão em lote">${DIAS_ORDEM.map(d => `<div class="pcp-dia-combo ${pcpDiaSel===d?"active":""}"><label class="pcp-dia-combo-chk"><input type="checkbox" class="pcp-proddia-chk" data-dia="${d}" ${pcpProdDiasSel.has(d)?"checked":""}></label><button type="button" class="pcp-dia-combo-lbl" data-pcpdia="${d}">${DIA_LABEL[d].slice(0,3)}</button></div>`).join("")}</div>` : `<div class="seg-toggle" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" data-pcpdia="${d}" class="${pcpDiaSel===d?"active":""}">${DIA_LABEL[d].slice(0,3)}</button>`).join("")}</div>`}
       <span class="chip neutral" style="height:auto; padding:6px 12px; font-weight:600;" title="Dia de operação em que esta aba está trabalhando">${diaSemanaExtenso(pcpDiaSel)} · ${fmtDataCompleta(dataDoDia(pcpSemanaSel, pcpDiaSel))}</span>
       ${servicosAplicavel ? `<div id="pcp-serv-tabs" style="display:flex; gap:12px; align-items:center;">${PCP_TURNOS.filter(t=>t.id!=="todos").map(t => `<label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted); white-space:nowrap;"><input type="checkbox" data-pcp-serv="${t.id}" ${pcpServicosSel.has(t.id)?"checked":""}> ${t.nome}</label>`).join("")}</div>` : ""}
     </div>
@@ -16411,13 +16423,7 @@ async function renderPCP(){
       ${res.servicos.length > 1 ? `<div class="es-kpis inner" style="margin-bottom:16px;">
         ${res.servicos.map(id => `<div class="vn-card"><div class="vn-label">${PCP_TURNOS.find(t=>t.id===id).nome}</div><div class="vn-value">${fmtNum(res.receitas.reduce((s,r)=>pcpGrupoForaDoPeso(r.grupo)?s:s+(r.porTurno[id]||0),0),1)} kg</div></div>`).join("")}
       </div>` : ""}
-      ${!ehProducaoAmbas ? `<div class="panel" style="margin-bottom:14px;">
-        <div class="panel-body" style="display:flex; flex-wrap:wrap; gap:14px; align-items:center;">
-          <span class="footnote" style="margin:0; font-weight:600;">Dias para gerar a lista:</span>
-          <div class="kk-dias-chips">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia pcp-proddia-chip ${pcpProdDiasSel.has(d)?"on":""}" data-dia="${d}">${DIA_LABEL[d].slice(0,3)}</button>`).join("")}</div>
-        </div>
-      </div>
-      <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px;">
+      ${!ehProducaoAmbas ? `<div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px;">
         <span class="footnote" style="margin:0;">Imprimir${pcpProdDiasSel.size>1?` (${pcpProdDiasSel.size} dias marcados)`:""}:</span>
         <button class="btn small primary" data-pcp-ordem="cozinha">Composição principal</button>
         <button class="btn small primary" data-pcp-ordem="saladas">Saladas</button>
@@ -16461,10 +16467,10 @@ async function renderPCP(){
       btn.addEventListener("click", () => pcpImprimirReceitaUnica(resUni, margemPct, fichaId));
     });
   } else if(ehProducao){
-    content.querySelectorAll(".pcp-proddia-chip").forEach(b => {
-      b.addEventListener("click", () => {
-        const dia = b.dataset.dia;
-        if(pcpProdDiasSel.has(dia)) pcpProdDiasSel.delete(dia); else pcpProdDiasSel.add(dia);
+    content.querySelectorAll(".pcp-proddia-chk").forEach(chk => {
+      chk.addEventListener("change", () => {
+        const dia = chk.dataset.dia;
+        if(chk.checked) pcpProdDiasSel.add(dia); else pcpProdDiasSel.delete(dia);
         renderPCP();
       });
     });
