@@ -282,6 +282,23 @@ tbody tr:hover{background:var(--surface-alt);}
 .es-kpis.inner{margin-bottom:16px;}
 .es-kpis.inner .vn-card{background:var(--surface-alt); border:none; box-shadow:none;}
 .es-kpis .vn-card .vn-value{font-size:21px;}
+/* kpi-row (10/11/2026, PCP Produção): grupos de KPI em bloco único com sub-bordas internas, em vez de
+   cartões soltos — pedido do Marcelo pra caber tudo numa linha só, separado por grupo lógico (ex.: Pessoas
+   previstas/Kg/Receitas/Clientes num bloco, Almoço/Jantar/Ceia em outro). flex-grow proporcional à
+   quantidade de itens mantém a largura de cada grupo coerente com o nº de métricas dentro dele. */
+.kpi-row{display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px;}
+.kpi-row .kpi-group{display:flex; flex:1 1 260px; background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:var(--shadow); overflow:hidden;}
+.kpi-row .kpi-group .kpi-item{flex:1; min-width:0; padding:12px 14px; border-right:1px solid var(--border);}
+.kpi-row .kpi-group .kpi-item:last-child{border-right:none;}
+.kpi-row .kpi-group .kpi-item .vn-label{font-size:10px; text-transform:uppercase; letter-spacing:.05em; color:var(--text-faint); margin-bottom:5px;}
+.kpi-row .kpi-group .kpi-item .vn-value{font-size:19px; font-weight:600; font-family:'IBM Plex Mono',monospace; line-height:1.15;}
+.kpi-row .kpi-group .kpi-item .vn-sub{font-size:11px; color:var(--text-muted); margin-top:6px; line-height:1.45;}
+@media (max-width:720px){ .kpi-row .kpi-group{flex-wrap:wrap;} .kpi-row .kpi-group .kpi-item{flex:1 1 45%; border-right:none; border-bottom:1px solid var(--border);} }
+/* grid2-box "exposta mas inativa" (10/11/2026, PCP Produção/Clientes): mostra a lista da unidade que não
+   está selecionada no momento (só informativo, chips desabilitados) ao lado da unidade ativa — pedido do
+   Marcelo pra deixar Matriz e Filial sempre visíveis, cada uma na sua caixa, igual Compras. */
+.grid2-box-dim{opacity:.55;}
+.grid2-box-dim .chip-dia{cursor:default;}
 .es-nav{display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:10px;}
 .es-wrap .seg-toggle button{display:inline-flex; align-items:center; gap:7px; height:36px; padding:0 15px; font-weight:600;}
 .es-wrap .seg-toggle button + button{border-left:1px solid var(--border);}
@@ -16262,8 +16279,13 @@ async function renderPCP(){
   const prodContratosUnidade = ehProducao && !ehProducaoAmbas
     ? [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === unidadeFiltro).sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)))
     : [];
-  const idsMatrizProd = ehProducao && !ehProducaoAmbas ? [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === "matriz").map(([id]) => id) : [];
-  const idsFilialProd = ehProducao && !ehProducaoAmbas ? [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === "filial").map(([id]) => id) : [];
+  // 10/11/2026: listas completas por unidade (não só a ativa) — o painel Clientes passou a expor Matriz e
+  // Filial sempre, cada uma na sua caixa (pedido do Marcelo, mesmo padrão grid2 de Compras); a caixa da
+  // unidade que não está selecionada aparece só informativa (chips desabilitados).
+  const contratosMatrizProd = ehProducao && !ehProducaoAmbas ? [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === "matriz").sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente))) : [];
+  const contratosFilialProd = ehProducao && !ehProducaoAmbas ? [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === "filial").sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente))) : [];
+  const idsMatrizProd = contratosMatrizProd.map(([id]) => id);
+  const idsFilialProd = contratosFilialProd.map(([id]) => id);
   const prodIdsTodos = prodContratosUnidade.map(([id]) => id);
   const prodSelIds = pcpProdClientesSel === null ? prodIdsTodos : prodIdsTodos.filter(id => pcpProdClientesSel.has(id));
   const prodClienteFiltro = new Set(prodSelIds);
@@ -16447,6 +16469,22 @@ async function renderPCP(){
           </div>
         </div>
       </div>`;
+      // 10/11/2026: cada unidade ganha sua própria caixa (grid2-box, mesmo componente de Compras); só a
+      // caixa da unidade ativa (pcpUnidadeSel) é clicável — a outra fica exposta, só pra consulta, com chips
+      // desabilitados e opacidade reduzida (classe grid2-box-dim), já que a tabela de produção só calcula
+      // uma unidade por vez.
+      const grupoClientesProdHtml = (titulo, lista, unidadeKey) => {
+        const ativa = pcpUnidadeSel === unidadeKey;
+        return `<div class="grid2-box ${ativa?"":"grid2-box-dim"}">
+          <div class="footnote" style="margin:0 0 8px; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
+            <span>${titulo} (${lista.length})</span>
+            ${ativa ? `<span class="hint" style="margin:0;">${prodSelIds.length} de ${prodIdsTodos.length} selecionados</span>` : `<span class="hint" style="margin:0;">não selecionada</span>`}
+          </div>
+          ${lista.length ? `<div class="kk-dias-chips" style="flex-wrap:wrap;">
+            ${lista.map(([id,c]) => `<button type="button" class="chip-dia ${ativa?"pcp-prod-cli-chip":""} ${ativa && prodClienteFiltro.has(id)?"on":""}" data-id="${id}" ${ativa?"":"disabled"}>${escapeHtml(c.nome_cliente)}</button>`).join("")}
+          </div>` : `<div class="footnote">Nenhum contrato ativo.</div>`}
+        </div>`;
+      };
       const clientesPanel = `
       <div class="panel" style="margin-bottom:14px;">
         <div class="panel-head">
@@ -16460,8 +16498,9 @@ async function renderPCP(){
             <button type="button" class="chip-dia ${pcpUnidadeSel==="filial"?"on":""}" data-prod-atalho="filial">Filial (${idsFilialProd.length})</button>
             <button type="button" class="btn small ghost" id="pcp-prod-cli-limpar" ${pcpProdClientesSel===null?"disabled":""} style="margin-left:6px;">Limpar seleção</button>
           </div>
-          <div class="kk-dias-chips" style="flex-wrap:wrap;">
-            ${prodContratosUnidade.length ? prodContratosUnidade.map(([id,c]) => `<button type="button" class="chip-dia pcp-prod-cli-chip ${prodClienteFiltro.has(id)?"on":""}" data-id="${id}">${escapeHtml(c.nome_cliente)}</button>`).join("") : `<div class="footnote">Nenhum contrato ativo nesta unidade.</div>`}
+          <div class="grid2">
+            ${grupoClientesProdHtml("Matriz", contratosMatrizProd, "matriz")}
+            ${grupoClientesProdHtml("Filial", contratosFilialProd, "filial")}
           </div>
         </div>
       </div>`;
@@ -16477,16 +16516,21 @@ async function renderPCP(){
       const multiDia = prodDiasAtivos.length > 1;
       const subDias = (campo) => prodDiasAtivos.map((d,i) => `${DIA_LABEL[d].slice(0,3)} ${fmtNum(prodResList[i][campo],campo==="pessoasTot"?0:1)}`).join(" · ");
       const servicosUniao = PCP_TURNOS.filter(t => t.id!=="todos" && prodResList.some(r => r.servicos.includes(t.id))).map(t=>t.id);
+      // 10/11/2026: as duas linhas de cartão soltos viraram 1 linha só (kpi-row), com cada grupo lógico
+      // numa caixa própria com sub-bordas internas (pedido do Marcelo) — flex-grow proporcional ao nº de
+      // itens de cada grupo (4 vs. 3) mantém a largura coerente.
       return diasPanel + clientesPanel + gerarBtn + `
-      <div class="es-kpis" style="margin-bottom:16px;">
-        <div class="vn-card"><div class="vn-label">Pessoas previstas</div><div class="vn-value">${fmtNum(pessoasSum,0)}</div>${multiDia ? `<div class="vn-sub">${subDias("pessoasTot")}</div>` : ""}</div>
-        <div class="vn-card"><div class="vn-label">Kg a produzir</div><div class="vn-value">${fmtNum(kgSum,1)}</div>${multiDia ? `<div class="vn-sub">${subDias("kgTotal")}</div>` : ""}</div>
-        <div class="vn-card"><div class="vn-label">Receitas</div><div class="vn-value">${receitasSum}</div></div>
-        <div class="vn-card"><div class="vn-label">Clientes</div><div class="vn-value">${clientesUnicos.size}</div></div>
+      <div class="kpi-row">
+        <div class="kpi-group" style="flex-grow:4;">
+          <div class="kpi-item"><div class="vn-label">Pessoas previstas</div><div class="vn-value">${fmtNum(pessoasSum,0)}</div>${multiDia ? `<div class="vn-sub">${subDias("pessoasTot")}</div>` : ""}</div>
+          <div class="kpi-item"><div class="vn-label">Kg a produzir</div><div class="vn-value">${fmtNum(kgSum,1)}</div>${multiDia ? `<div class="vn-sub">${subDias("kgTotal")}</div>` : ""}</div>
+          <div class="kpi-item"><div class="vn-label">Receitas</div><div class="vn-value">${receitasSum}</div></div>
+          <div class="kpi-item"><div class="vn-label">Clientes</div><div class="vn-value">${clientesUnicos.size}</div></div>
+        </div>
+        ${servicosUniao.length > 1 ? `<div class="kpi-group" style="flex-grow:${servicosUniao.length};">
+          ${servicosUniao.map(id => `<div class="kpi-item"><div class="vn-label">${PCP_TURNOS.find(t=>t.id===id).nome}</div><div class="vn-value">${fmtNum(prodResList.reduce((s,r)=>s+r.receitas.reduce((s2,rr)=>pcpGrupoForaDoPeso(rr.grupo)?s2:s2+(rr.porTurno[id]||0),0),0),1)} kg</div></div>`).join("")}
+        </div>` : ""}
       </div>
-      ${servicosUniao.length > 1 ? `<div class="es-kpis inner" style="margin-bottom:16px;">
-        ${servicosUniao.map(id => `<div class="vn-card"><div class="vn-label">${PCP_TURNOS.find(t=>t.id===id).nome}</div><div class="vn-value">${fmtNum(prodResList.reduce((s,r)=>s+r.receitas.reduce((s2,rr)=>pcpGrupoForaDoPeso(rr.grupo)?s2:s2+(rr.porTurno[id]||0),0),0),1)} kg</div></div>`).join("")}
-      </div>` : ""}
       <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px;">
         <span class="footnote" style="margin:0;">Imprimir${multiDia?` (${prodDiasAtivos.length} dias selecionados)`:""}:</span>
         <button class="btn small primary" data-pcp-ordem="cozinha">Composição principal</button>
