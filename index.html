@@ -989,6 +989,21 @@ function blocosCadastro(){
 // pcpComposicoesTipos). Marca pra pcpAcumularDia saber que o desconto de efetivo da substituição precisa
 // cobrir as 3 categorias, não só Proteína (ver pcpDescontaComposicaoCompleta).
 const GRUPOS_FICHA_BASE = ["PROTEÍNA","BASE","BASE ARROZ","BASE FEIJÃO","GUARNIÇÃO DE LEGUMES","GUARNIÇÃO DE MASSAS","GUARNIÇÃO DE SECOS","SALADA","SOBREMESA","SUCO SIMPLES","SUCO NATURAL","PRATO COMPLETO","EXTRA"];
+// Blocos da Lista de compra impressa (ver imprimirListaCompra) — agrupa por função do prato em vez do
+// grupo de compra do insumo, pra facilitar a conferência da compradora (pedido Marcelo, 10/11/2026).
+// Colapsa as variações finas de GRUPOS_FICHA_BASE nos 5 blocos pedidos; o que não mapeia (Suco, Prato
+// completo, Extra, grupo extra cadastrado, ou insumo sem ficha — embalagem/ajuste de segurança) cai em
+// "Outros", pra nunca sumir um item da lista por falta de categoria.
+const BLOCOS_LISTA_COMPRA = ["PROTEÍNAS","BASE","GUARNIÇÕES","SALADAS","SOBREMESAS","OUTROS"];
+function blocoComprasDoGrupoFicha(grupo){
+  if(!grupo) return "OUTROS";
+  if(grupo === "PROTEÍNA") return "PROTEÍNAS";
+  if(grupo.startsWith("BASE")) return "BASE";
+  if(grupo.startsWith("GUARNIÇÃO")) return "GUARNIÇÕES";
+  if(grupo === "SALADA") return "SALADAS";
+  if(grupo === "SOBREMESA") return "SOBREMESAS";
+  return "OUTROS"; // SUCO SIMPLES/NATURAL, PRATO COMPLETO, EXTRA, grupo extra cadastrado
+}
 function gruposFichaCadastro(){
   const extras = [...new Set([...fichas.values()].map(f => f.grupo).filter(g => g && !GRUPOS_FICHA_BASE.includes(g)))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
   return [...GRUPOS_FICHA_BASE, ...extras];
@@ -8439,15 +8454,27 @@ function mergeInsumosInto(target, source){ source.forEach((v,k) => target.set(k,
    sem alterar o retorno (Map insumo->kg) das funções acima, que outras telas (ex.: Orçamento) já consomem. ---- */
 function criarColetorReceitas(){
   const porInsumo = new Map(); // insumoId -> Map("dia|receita" -> kg)
+  const porInsumoBloco = new Map(); // insumoId -> Map(bloco -> kg) — acha o bloco de maior uso (ver blocoComprasDoGrupoFicha)
   return {
-    add(insumoId, kg, receita, dia){
+    add(insumoId, kg, receita, dia, bloco){
       if(!kg || !receita) return;
       if(!porInsumo.has(insumoId)) porInsumo.set(insumoId, new Map());
       const porReceita = porInsumo.get(insumoId);
       const k = `${dia}|${receita}`;
       porReceita.set(k, (porReceita.get(k)||0) + kg);
+      const b = bloco || "OUTROS";
+      if(!porInsumoBloco.has(insumoId)) porInsumoBloco.set(insumoId, new Map());
+      const bm = porInsumoBloco.get(insumoId);
+      bm.set(b, (bm.get(b)||0) + kg);
     },
-    get(insumoId){ return porInsumo.get(insumoId) || new Map(); }
+    get(insumoId){ return porInsumo.get(insumoId) || new Map(); },
+    // bloco (função do prato) que mais consome este insumo na semana — usado pra decidir em qual bloco
+    // da Lista de compra impressa um insumo compartilhado entre categorias deve aparecer.
+    blocoDominante(insumoId){
+      const bm = porInsumoBloco.get(insumoId);
+      if(!bm || !bm.size) return "OUTROS";
+      return [...bm.entries()].sort((a,b) => b[1]-a[1])[0][0];
+    }
   };
 }
 // `ct` (opcional) é o contrato do cliente — quando informado, aplica o peso de expedição dele (ver
@@ -8491,7 +8518,10 @@ function insumosDoDiaRefeicaoCompra(dayDoc, numPessoas, dia, coletor, ct){
     mergeInsumosInto(total, porItem);
     if(coletor){
       const nome = nomeReceitaDoItemCardapio(it);
-      if(nome) porItem.forEach((kg, insumoId) => coletor.add(insumoId, kg, nome, dia));
+      if(nome){
+        const bloco = it.ficha_id ? blocoComprasDoGrupoFicha(fichas.get(it.ficha_id)?.grupo) : null;
+        porItem.forEach((kg, insumoId) => coletor.add(insumoId, kg, nome, dia, bloco));
+      }
     }
   });
   const emb = insumosEmbalagemDiaCompra(dayDoc, numPessoas);
@@ -8507,7 +8537,10 @@ function insumosDoDiaCafeCompra(cafeRow, diaKey, numPessoas, dia, coletor){
     mergeInsumosInto(total, porItem);
     if(coletor){
       const nome = nomeReceitaDoItemCardapio(it);
-      if(nome) porItem.forEach((kg, insumoId) => coletor.add(insumoId, kg, nome, dia));
+      if(nome){
+        const bloco = it.ficha_id ? blocoComprasDoGrupoFicha(fichas.get(it.ficha_id)?.grupo) : null;
+        porItem.forEach((kg, insumoId) => coletor.add(insumoId, kg, nome, dia, bloco));
+      }
     }
   });
   return total;
@@ -8551,7 +8584,7 @@ function insumosUnidadeItemCompra(almocoIdx, cafeIdx, produtoId, contrato, seman
       const rendimentoUnd = f.rendimento_und || 1;
       const kgPorUnidade = (f.rendimento_kg && rendimentoUnd) ? (f.rendimento_kg/rendimentoUnd) : 0;
       const res = insumosParaKgNecessario(cat.ficha_id, kgPorUnidade * quantidade);
-      if(coletor) res.forEach((kg, insumoId) => coletor.add(insumoId, kg, f.nome, dia));
+      if(coletor) res.forEach((kg, insumoId) => coletor.add(insumoId, kg, f.nome, dia, blocoComprasDoGrupoFicha(f.grupo)));
       return res;
     }
     default:
@@ -9336,6 +9369,7 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale, ca
       const gramagemComp = pcpGramagemSubstituicao(fichas.get(rowComp.ficha_id));
       if(gramagemComp == null) return; // sem rendimento cadastrado na ficha — mesmo aviso já cobre isso no PCP
       const pessoasPorDiaComp = rowComp.estimativa_pessoas / diasAtivosComp.length;
+      const fichaComp = fichas.get(rowComp.ficha_id);
       diasAtivosComp.forEach(dia => {
         const porItem = insumosParaKgNecessario(rowComp.ficha_id, gramagemComp * pessoasPorDiaComp);
         mergeInsumosInto(totalInsumos, porItem);
@@ -9348,6 +9382,7 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale, ca
           const accDia = porDia.get(dia) || {matriz:0, filial:0};
           accDia.matriz += kg;
           porDia.set(dia, accDia);
+          if(coletor) coletor.add(insumoId, kg, fichaComp ? fichaComp.nome : (t.nome || "Composição completa"), dia, blocoComprasDoGrupoFicha(fichaComp && fichaComp.grupo));
         });
       });
     });
@@ -9401,7 +9436,7 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale, ca
         .sort((a,b) => b.kg - a.kg);
       return { dia, receitas };
     }).filter(d => d.receitas.length);
-    return { insumoId, nome: ins ? ins.nome : insumoId, grupo: ins?.grupo_compra || "(sem grupo)", kg, kgBruto, emEstoque, extra, porDiaKg, usoPorDia, unidade: ins ? unidadeCustoInsumo(ins) : "kg", custo };
+    return { insumoId, nome: ins ? ins.nome : insumoId, grupo: ins?.grupo_compra || "(sem grupo)", bloco: coletor.blocoDominante(insumoId), kg, kgBruto, emEstoque, extra, porDiaKg, usoPorDia, unidade: ins ? unidadeCustoInsumo(ins) : "kg", custo };
   }).sort((a,b) => normalizeText(a.grupo).localeCompare(normalizeText(b.grupo)) || normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
 
   let totCusto = 0, semCusto = 0;
@@ -9552,13 +9587,29 @@ function imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto)
   const cardapiosUsados = [...cardapiosUsadosMap.values()].sort((a,b) => (ORDEM_GRUPO_CARDAPIO[a.grupo]-ORDEM_GRUPO_CARDAPIO[b.grupo]) || (a.num-b.num));
   const blocosCardapiosHtml = cardapiosUsados.map(c => cardapioBlocoHtml(c.grupo, c.num, semana, false)).join("");
 
-  const linhasHtml = linhas.map(l => `<tr>
+  // Separa a lista em blocos por função do prato (pedido Marcelo, 10/11/2026) — ver blocoComprasDoGrupoFicha.
+  // Insumo compartilhado entre categorias aparece só no bloco de maior uso na semana (l.bloco já vem
+  // calculado assim de renderListaCompraResultado); nada muda na tabela da tela, só na impressão.
+  const BLOCO_LISTA_COMPRA_LABEL = { "PROTEÍNAS":"Proteínas", "BASE":"Base", "GUARNIÇÕES":"Guarnições", "SALADAS":"Saladas", "SOBREMESAS":"Sobremesas", "OUTROS":"Outros (suco, prato completo, embalagem, ajuste de segurança e demais insumos sem bloco definido)" };
+  const linhaComprasHtml = l => `<tr>
       <td>${escapeHtml(l.nome)}<div class="sub-receita">${l.usoPorDia.map(d => `<strong>${DIA_LABEL[d.dia].slice(0,3)}:</strong> ${d.receitas.map(r => `${escapeHtml(r.receita)} (${fmtNum(r.kg,2)})`).join(", ")}`).join(" · ")}</div></td>
       <td>${escapeHtml(l.grupo)}</td>
       ${l.porDiaKg.map(kg => `<td class="num">${kg>0 ? fmtNum(kg,3) : "—"}</td>`).join("")}
       <td class="num"><strong>${fmtNum(l.kg,3)}</strong></td>
       <td>${l.unidade}</td>
-    </tr>`).join("");
+    </tr>`;
+  const blocosListaCompraHtml = BLOCOS_LISTA_COMPRA.map(bloco => {
+    const ls = linhas.filter(l => (l.bloco || "OUTROS") === bloco);
+    if(!ls.length) return "";
+    const totalDiaBloco = DIAS_ORDEM.map((_, i) => ls.reduce((s,l) => s + (l.porDiaKg[i]||0), 0));
+    const totalSemanaBloco = ls.reduce((s,l) => s + l.kg, 0);
+    return `<table>
+      <thead><tr><th colspan="${3+DIAS_ORDEM.length}" style="background:#e4e4e4;">${escapeHtml(BLOCO_LISTA_COMPRA_LABEL[bloco])}</th></tr>
+      <tr><th>Insumo</th><th>Grupo de compra</th>${DIAS_ORDEM.map(dia => `<th class="num">${DIA_LABEL[dia].slice(0,3)}</th>`).join("")}<th class="num">Total semana</th><th>Unid.</th></tr></thead>
+      <tbody>${ls.map(linhaComprasHtml).join("")}</tbody>
+      <tfoot><tr><td>Subtotal</td><td></td>${totalDiaBloco.map(kg => `<td class="num">${kg>0?fmtNum(kg,3):"—"}</td>`).join("")}<td class="num">${fmtNum(totalSemanaBloco,3)}</td><td></td></tr></tfoot>
+    </table>`;
+  }).join("") || `<div class="sub">Nenhuma previsão de consumo para os clientes e semana selecionados.</div>`;
 
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Lista de compra — ${escapeHtml(rotuloSemana(semana))}</title>
     <style>
@@ -9589,13 +9640,12 @@ function imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto)
       <tfoot><tr><td colspan="3">Total</td><td class="num">${fmtNum(totalRefeicoesGeral,0)}</td></tr></tfoot>
     </table>
 
-    <h2>Insumos por dia</h2>
+    <h2>Insumos por dia — separado por bloco</h2>
+    ${blocosListaCompraHtml}
     <table>
-      <thead><tr><th>Insumo</th><th>Grupo de compra</th>${DIAS_ORDEM.map(dia => `<th class="num">${DIA_LABEL[dia].slice(0,3)}</th>`).join("")}<th class="num">Total semana</th><th>Unid.</th></tr></thead>
-      <tbody>${linhasHtml}</tbody>
-      <tfoot><tr><td>Total</td><td></td>${totalPorDia.map(kg => `<td class="num">${kg>0?fmtNum(kg,3):"—"}</td>`).join("")}<td></td><td></td></tr></tfoot>
+      <tfoot><tr><td><strong>Total geral</strong></td><td></td>${totalPorDia.map(kg => `<td class="num">${kg>0?fmtNum(kg,3):"—"}</td>`).join("")}<td class="num"><strong>${fmtNum(linhas.reduce((s,l)=>s+l.kg,0),3)}</strong></td><td></td></tr></tfoot>
     </table>
-    <div class="sub">Custo total estimado: ${fmtMoney(totCusto)}. A coluna "Total semana" dos insumos pode incluir ajuste de segurança lançado para a semana (não detalhado por dia).${diasExcluidos.length ? ` <strong>${diasExcluidos.map(d => DIA_LABEL[d]).join(", ")} excluído${diasExcluidos.length===1?"":"s"} desta lista</strong> (sem expediente) — aparece zerado, não é falta de previsão.` : ""}</div>
+    <div class="sub">Custo total estimado: ${fmtMoney(totCusto)}. A coluna "Total semana" dos insumos pode incluir ajuste de segurança lançado para a semana (não detalhado por dia). Insumo usado em mais de um bloco aparece só no bloco de maior consumo na semana.${diasExcluidos.length ? ` <strong>${diasExcluidos.map(d => DIA_LABEL[d]).join(", ")} excluído${diasExcluidos.length===1?"":"s"} desta lista</strong> (sem expediente) — aparece zerado, não é falta de previsão.` : ""}</div>
     ${blocosCardapiosHtml || `<div class="cps-bloco" style="page-break-before:always;"><div class="sub">Nenhum cardápio de referência cadastrado nos contratos desta lista.</div></div>`}
     <script>window.onload = () => window.print();<\/script>
     </body></html>`);
