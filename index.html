@@ -1422,7 +1422,6 @@ function composicoesSemanaPainelHtml(semana, titulo){
   const linhas = tipos.map(t => {
     const row = composicaoDaSemana(t.id, semana);
     const fichaSel = row && row.ficha_id ? fichas.get(row.ficha_id) : null;
-    const semFicha = !fichaSel;
     const naoPratoCompleto = fichaSel && pcpGrupoFicha(fichaSel) !== "PRATO COMPLETO";
     return `<tr data-comp-tipo="${t.id}">
       <td class="name-cell">${escapeHtml(t.nome)}</td>
@@ -1433,13 +1432,12 @@ function composicoesSemanaPainelHtml(semana, titulo){
         </div>
       </td>
       <td><input type="number" min="0" step="1" class="comp-estimativa" data-comp-estimativa="${t.id}" value="${row && row.estimativa_pessoas != null ? row.estimativa_pessoas : ""}" placeholder="pessoas/semana" style="width:120px;"></td>
-      <td>${semFicha ? `<span class="chip" style="background:#fff3cd; color:#7a5c00;">não definido — custa R$0 se escolhido</span>` : naoPratoCompleto ? `<span class="chip" style="background:#fde2e1; color:#9a2a2a;" title="Esta ficha não é 'Prato completo' — o desconto de efetivo na produção será só da Proteína, não da refeição (Proteína+Base+Guarnição) inteira.">⚠ não é Prato completo</span>` : ""}</td>
+      <td>${naoPratoCompleto ? `<span class="chip" style="background:#fde2e1; color:#9a2a2a;" title="Esta ficha não é 'Prato completo' — o desconto de efetivo na produção será só da Proteína, não da refeição (Proteína+Base+Guarnição) inteira.">⚠ não é Prato completo</span>` : ""}</td>
       <td><button type="button" class="btn small ghost" data-comp-remover-tipo="${t.id}" title="Remover este tipo da configuração (lançamentos já feitos continuam valendo)">✕</button></td>
     </tr>`;
   }).join("");
   return `<div class="panel" style="margin-bottom:14px;"><div class="panel-body">
     <div class="panel-head" style="border:none; padding:0 0 8px;"><h3 style="font-size:14px;">${escapeHtml(titulo || "Composições completas da semana")}</h3></div>
-    <p class="footnote" style="margin:0 0 10px;">Busca entre todas as fichas técnicas cadastradas. Fichas marcadas como "Prato completo" descontam Proteína+Base+Guarnição do efetivo; as demais descontam só a Proteína (veja o aviso quando aparecer).</p>
     ${tipos.length ? `<div class="table-wrap"><table><thead><tr><th>Tipo</th><th>Ficha desta semana</th><th>Estimativa (pessoas/semana)</th><th></th><th></th></tr></thead><tbody>${linhas}</tbody></table></div>` : `<div class="empty-state">Nenhum tipo configurado — adicione abaixo (ex. Prato Especial).</div>`}
     <div style="display:flex; gap:8px; align-items:center; margin-top:10px;">
       <input type="text" id="comp-tipo-novo" placeholder="Novo tipo (ex. Prato Vegetariano)" style="max-width:260px;">
@@ -13191,6 +13189,13 @@ let pcpProdClientesSel = null;
 // fica true pelo resto da sessão e a tabela continua reativa a qualquer mudança de filtro (mesmo padrão do
 // "Gerar lista de compra" em Compras — ver comprasListaGerada). Só da sessão, não grava no banco.
 let pcpProdGerado = false;
+// dias selecionados em Substituições (10/11/2026, pedido do Marcelo: "visual + multi-dia", mesmo padrão
+// multi-seleção de pcpProdDiasSel acima) — ao contrário de Produção, a grade continua reativa sem botão
+// "Gerar tabela" (não houve pedido pra esse 2º passo aqui), e NÃO existe filtro de cliente equivalente ao
+// prodClienteFiltro: a grade sempre mostra todo o grupo atendido no(s) dia(s) marcado(s) — decisão explícita
+// do Marcelo ao responder "Visual + multi-dia" (não "Visual + filtro de cliente" nem "Visual + os dois").
+// Só da sessão, não grava no banco; semeada com pcpDiaSel na 1ª renderização, igual pcpProdDiasSel.
+let pcpSubstDiasSel = new Set();
 // dias marcados pra impressão na tabela nova "Preparo da semana" do Açougue (corte×receita, 20/10/2026) —
 // Set PRÓPRIO, separado de pcpAcgDiasSel (que já era usado pela baixa de estoque/kardex acima), pra marcar
 // um dia numa tela não desmarcar o outro por engano.
@@ -15798,7 +15803,10 @@ function pcpSubstGradeBlocoHtml(res, itens){
     const celulas = servs.map(sv => itens.map(it => {
       if(!(c.porServico[sv.id] > 0)) return `<td class="num-cell footnote">—</td>`;
       const v = valor(c.id, sv.id, it.fichaId);
-      return `<td class="num-cell"><input type="number" min="0" step="1" class="subst-grid-cel" data-cli="${c.id}" data-serv="${sv.id}" data-ficha="${it.fichaId}" data-max="${c.porServico[sv.id]}" data-orig="${v}" value="${v}" style="width:62px; text-align:right; padding:4px 6px;"></td>`;
+      // data-dia (10/11/2026, multi-dia): antes a célula não precisava saber o próprio dia porque a tela só
+      // mostrava 1 dia por vez e pcpSubstituicoesBind lia `dia` do closure; com vários blocos de dias
+      // diferentes na mesma tela, cada input precisa carregar o SEU dia pra salvar/ler certo.
+      return `<td class="num-cell"><input type="number" min="0" step="1" class="subst-grid-cel" data-dia="${res.dia}" data-cli="${c.id}" data-serv="${sv.id}" data-ficha="${it.fichaId}" data-max="${c.porServico[sv.id]}" data-orig="${v}" value="${v}" style="width:62px; text-align:right; padding:4px 6px;"></td>`;
     }).join("")).join("");
     return `<tr data-subst-linha-cli="${c.id}"><td class="name-cell">${escapeHtml(c.nome)}<div class="footnote" style="margin:1px 0 0;">${servs.filter(sv => c.porServico[sv.id] > 0).map(sv => `${sv.nome.slice(0,3)} ${fmtNum(c.porServico[sv.id],0)}`).join(" · ")}</div></td>
       ${celulas}
@@ -15810,36 +15818,93 @@ function pcpSubstGradeBlocoHtml(res, itens){
   return `<div class="panel-head" style="border:none; padding-left:0;"><h3 style="font-size:14px;">${escapeHtml(nomeUnidadeCompra(res.unidade))}</h3><span class="hint">${clis.length} cliente(s) atendido(s)</span></div>
     <div class="table-wrap" data-subst-tabela="${res.unidade}"><table><thead>${cab1}${cab2}</thead><tbody>${linhas}</tbody><tfoot>${rodape}</tfoot></table></div>`;
 }
-function pcpSubstituicoesHtml(listaRes, unidadeFiltro){
-  const semana = listaRes[0].semana;
+// 10/11/2026 (pedido do Marcelo, "Visual + multi-dia"): `resPorDia` passou a ser um array de
+// {dia, listaRes} (1 entrada por dia marcado em pcpSubstDiasSel, cada `listaRes` com 1 ou 2 `res` —
+// matriz/filial — igual já era por dia). Painel "Dias da semana" e painel "Clientes" (visual igual à
+// Produção da cozinha, mas SEM filtro de cliente — decisão explícita do Marcelo) entram aqui, antes da
+// grade. "Clientes" é só informativo: mostra nomes, não tem seleção nem afeta quem aparece na grade.
+function pcpSubstituicoesHtml(resPorDia, unidadeFiltro){
+  const semana = resPorDia[0].listaRes[0].semana;
+  const multiDia = resPorDia.length > 1;
+  const diasPanel = `
+  <div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head">
+      <h3>Dias da semana</h3>
+      <span class="hint">${pcpSubstDiasSel.size} de ${DIAS_ORDEM.length}</span>
+    </div>
+    <div class="panel-body">
+      <div class="footnote" style="margin:0 0 10px;">Marque os dias que entram na grade de lançamento abaixo — pode marcar mais de um, cada dia marcado vira um bloco separado.</div>
+      <div class="kk-dias-chips" id="pcp-dia-tabs" style="flex-wrap:wrap;">
+        ${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia pcp-subst-dia-chip ${pcpSubstDiasSel.has(d)?"on":""}" data-dia="${d}">${DIA_LABEL[d]}</button>`).join("")}
+      </div>
+    </div>
+  </div>`;
+  const contratosMatrizSubst = [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === "matriz").sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)));
+  const contratosFilialSubst = [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === "filial").sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)));
+  // caixa da unidade fora do filtro atual fica exposta, só pra consulta (grid2-box-dim, mesmo padrão de
+  // Compras/Produção) — "todos" (Ambas) deixa as duas ativas, já que a grade mostra as duas de qualquer jeito.
+  const grupoClientesSubstHtml = (titulo, lista, unidadeKey) => {
+    const ativa = !unidadeFiltro || unidadeFiltro === unidadeKey;
+    return `<div class="grid2-box ${ativa?"":"grid2-box-dim"}">
+      <div class="footnote" style="margin:0 0 8px; font-weight:600;">${escapeHtml(titulo)} (${lista.length})</div>
+      ${lista.length ? `<div class="kk-dias-chips" style="flex-wrap:wrap;">
+        ${lista.map(([,c]) => `<span class="chip-dia" style="cursor:default;">${escapeHtml(c.nome_cliente)}</span>`).join("")}
+      </div>` : `<div class="footnote">Nenhum contrato ativo.</div>`}
+    </div>`;
+  };
+  const clientesPanel = `
+  <div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head">
+      <h3>Clientes</h3>
+      <span class="hint">${contratosMatrizSubst.length + contratosFilialSubst.length} no grupo</span>
+    </div>
+    <div class="panel-body">
+      <div class="footnote" style="margin:0 0 10px;">Informativo — a grade sempre lança pra todo o grupo atendido no(s) dia(s)/unidade(s) marcados, sem filtro por cliente.</div>
+      <div class="kk-dias-chips" style="margin-bottom:10px; flex-wrap:wrap; align-items:center;">
+        <button type="button" class="chip-dia ${!unidadeFiltro?"on":""}" data-subst-atalho="todos">Grupo inteiro (${contratosMatrizSubst.length + contratosFilialSubst.length})</button>
+        <button type="button" class="chip-dia ${unidadeFiltro==="matriz"?"on":""}" data-subst-atalho="matriz">Matriz (${contratosMatrizSubst.length})</button>
+        <button type="button" class="chip-dia ${unidadeFiltro==="filial"?"on":""}" data-subst-atalho="filial">Filial (${contratosFilialSubst.length})</button>
+      </div>
+      <div class="grid2">
+        ${grupoClientesSubstHtml("Matriz", contratosMatrizSubst, "matriz")}
+        ${grupoClientesSubstHtml("Filial", contratosFilialSubst, "filial")}
+      </div>
+    </div>
+  </div>`;
   // 09/11/2026: colunas da grade = itens fixos (ovo/omelete/filé) + composições completas da semana
   // (Prato Especial/Fit/Lanche, resolvidas pra ficha desta semana — ver itensGradeSemana).
   const itens = itensGradeSemana(semana);
   const gerenciar = pcpSubstGerenciarItensHtml();
   // cadastro mora na aba Cardápio (pedido do Marcelo), replicado aqui só pra acesso rápido — mesmo painel,
-  // mesma função de bind (composicoesSemanaPainelBind, ligado em pcpSubstituicoesBind). Fica aberto por
-  // padrão quando há tipo sem ficha definida, pra não repassar o aviso só pro banner.
-  const pendentesComp = composicoesSemanaPendentes(semana);
-  const composicoesDetails = `<details class="integrity-detail" style="margin-bottom:14px;" ${pendentesComp.length ? "open" : ""}>
-    <summary>Composições completas da semana (${composicaoTiposAtivos().length})${pendentesComp.length ? ` — ⚠ ${pendentesComp.length} sem ficha definida, custa R$0 se escolhida` : ""}</summary>
-    ${composicoesSemanaPainelHtml(semana)}
-  </details>`;
+  // mesma função de bind (composicoesSemanaPainelBind, ligado em pcpSubstituicoesBind). 10/11/2026: tirou o
+  // <details>/<summary> com o aviso "X sem ficha definida, custa R$0" (o painel já tem título próprio, e o
+  // aviso de custo R$0 continua aparecendo em "Pontos a revisar antes de imprimir" — ver o avisos.push em
+  // pcpCalcularDia) — e moveu pro final da aba (ordem pedida: quantidades → custo → fichas).
+  const composicoesHtml = composicoesSemanaPainelHtml(semana);
   if(!itens.length){
-    return composicoesDetails + gerenciar + `<div class="empty-state">Configure ao menos 1 item substituto ou 1 composição completa (acima) pra liberar a grade de lançamento.</div>`;
+    return diasPanel + clientesPanel + gerenciar + `<div class="empty-state">Configure ao menos 1 item substituto ou 1 composição completa (abaixo) pra liberar a grade de lançamento.</div>` + composicoesHtml;
   }
-  const dia = listaRes[0].dia;
-  const pendentes = pcpSubstituicoesPendentes(dia, unidadeFiltro);
-  const banner = pendentes.length
+  // 10/11/2026: pendências agregadas por dia marcado (antes só o dia único da tela) — cada dia entra na
+  // mensagem/aviso separadamente, pra não confundir "revisado" de um dia com o de outro.
+  const pendenciasPorDia = resPorDia.map(({dia}) => ({ dia, unidades: pcpSubstituicoesPendentes(dia, unidadeFiltro) })).filter(x => x.unidades.length);
+  const bannerMsg = pendenciasPorDia.map(x => `${DIA_LABEL[x.dia]}: ${x.unidades.map(u => escapeHtml(nomeUnidadeCompra(u))).join(" e ")}`).join(" · ");
+  const banner = pendenciasPorDia.length
     ? `<div class="panel" style="margin-bottom:14px; border-color:#e0a800;"><div class="panel-body" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-        <p class="footnote" style="margin:0;">Substituição pendente de revisão em <strong>${pendentes.map(u => escapeHtml(nomeUnidadeCompra(u))).join(" e ")}</strong> — confira os lançamentos abaixo antes de imprimir.</p>
+        <p class="footnote" style="margin:0;">Substituição pendente de revisão — <strong>${bannerMsg}</strong> — confira os lançamentos abaixo antes de imprimir.</p>
         <div style="display:flex; gap:8px;"><button type="button" class="btn small primary" data-subst-imprimir-lista="1">Imprimir lista de substituições</button><button type="button" class="btn small primary" data-subst-marcar-revisado="1">Marcar substituições como revisadas</button></div>
       </div></div>`
     : `<div class="panel" style="margin-bottom:14px; border-color:#2e7d32;"><div class="panel-body" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-        <p class="footnote" style="margin:0; color:#2e7d32;">✓ Substituições revisadas — nenhuma pendência para este dia.</p>
+        <p class="footnote" style="margin:0; color:#2e7d32;">✓ Substituições revisadas — nenhuma pendência ${multiDia ? "nos dias selecionados" : "para este dia"}.</p>
         <button type="button" class="btn small primary" data-subst-imprimir-lista="1">Imprimir lista de substituições</button>
       </div></div>`;
-  const blocos = listaRes.map(res => pcpSubstGradeBlocoHtml(res, itens)).join(`<div style="height:22px;"></div>`);
-  const resumoSemana = pcpSubstCustoSemana(listaRes);
+  // 1 bloco por dia marcado, cada 1 com seu(s) bloco(s) de unidade dentro — cabeçalho do dia só aparece
+  // quando há mais de 1 dia selecionado (multiDia), pra não poluir a tela no caso comum de 1 dia só.
+  const blocos = resPorDia.map(({dia, listaRes}) => `
+    <div data-pcp-subst-dia-bloco="${dia}">
+      ${multiDia ? `<div class="panel-head" style="margin:0 0 10px; border:none;"><h3 style="font-size:15px;">${DIA_LABEL[dia]}</h3></div>` : ""}
+      ${listaRes.map(res => pcpSubstGradeBlocoHtml(res, itens)).join(`<div style="height:14px;"></div>`)}
+    </div>`).join(`<div style="height:22px;"></div>`);
+  const resumoSemana = pcpSubstCustoSemana(resPorDia.flatMap(d => d.listaRes));
   const resumoHtml = resumoSemana.pessoas ? `<div class="panel" style="margin-bottom:14px;"><div class="panel-body">
       <div class="panel-head" style="border:none; padding:0 0 8px;"><h3 style="font-size:14px;">Custo de substituição — fechamento da semana</h3></div>
       <div style="display:flex; gap:24px; flex-wrap:wrap; margin-bottom:10px;">
@@ -15858,11 +15923,15 @@ function pcpSubstituicoesHtml(listaRes, unidadeFiltro){
       <input type="text" id="pcp-ctrl-func" placeholder="Nome de quem faz o filé hoje (aparece no rodapé da impressão)" style="flex:1 1 320px; min-width:220px;">
       <button type="button" class="btn small primary" data-subst-imprimir-controle="1">🖨 Imprimir controle de proteínas</button>
     </div></div>`;
-  return composicoesDetails + gerenciar + banner + controleProteinasHtml + resumoHtml +
-    `<div class="panel" style="margin-bottom:14px;"><div class="panel-body" style="display:flex; align-items:center; justify-content:flex-end; gap:12px; flex-wrap:wrap;">
+  // 10/11/2026 (pedido do Marcelo): ordem final passou a ser quantidades → custo → fichas dos pratos
+  // especiais — a grade de lançamento (blocos) e o botão de salvar vêm primeiro, depois o fechamento de
+  // custo da semana (resumoHtml), e só por último a configuração de fichas (composicoesHtml).
+  return diasPanel + clientesPanel + gerenciar + banner + controleProteinasHtml +
+    `<div class="panel" style="margin-bottom:14px;"><div class="panel-body">${blocos}</div></div>
+    <div class="panel" style="margin-bottom:14px;"><div class="panel-body" style="display:flex; align-items:center; justify-content:flex-end; gap:12px; flex-wrap:wrap;">
       <button type="button" class="btn small primary" id="pcp-subst-salvar" data-subst-salvar="1">Salvar substituições</button>
-    </div></div>
-    <div class="panel"><div class="panel-body">${blocos}</div></div>`;
+    </div></div>` +
+    resumoHtml + composicoesHtml;
 }
 // Resumo de custo de substituição da semana aberta na tela (todas as unidades/dias visíveis em listaRes) —
 // 20/10/2026, pedido do Marcelo ("pode somar no fechamento da semana"). Lê do cache GLOBAL
@@ -15915,7 +15984,11 @@ function pcpSubstMarcarSuja(inp){
   inp.style.background = suja ? "var(--warn-soft)" : "";
   inp.style.fontWeight = suja ? "600" : "";
 }
-function pcpSubstituicoesBind(content, semana, dia, unidade, listaRes){
+// 10/11/2026 ("Visual + multi-dia"): assinatura trocou de (dia, unidade, listaRes) único pra
+// (unidadeFiltro, resPorDia) — resPorDia = [{dia, listaRes}], 1 entrada por dia marcado em pcpSubstDiasSel.
+// Cada célula da grade carrega o próprio `data-dia` (ver pcpSubstGradeBlocoHtml), então salvar/ler usa o dia
+// DO INPUT, não um closure único — é o que permite vários dias na mesma tela sem misturar lançamentos.
+function pcpSubstituicoesBind(content, semana, unidadeFiltro, resPorDia){
   // 09/11/2026: liga o painel de "Composições completas da semana" (mesmo HTML/bind da aba Cardápio,
   // ver composicoesSemanaPainelBind) — delegado no mesmo `content`, então os seletores/inputs do painel
   // (dentro do <details> montado por pcpSubstituicoesHtml) funcionam igual aqui.
@@ -15969,13 +16042,32 @@ function pcpSubstituicoesBind(content, semana, dia, unidade, listaRes){
     if(tabela) pcpSubstRecalcularTabela(tabela);
     pcpSubstMarcarSuja(inp);
   });
+  // atalhos Grupo inteiro/Matriz/Filial do painel "Clientes" (10/11/2026) — só trocam pcpUnidadeSel, igual
+  // ao #pcp-uni-tabs genérico (que fica escondido em Substituições); NÃO existe filtro de cliente aqui.
+  content.addEventListener("click", e => {
+    const bAtalho = e.target.closest("button[data-subst-atalho]");
+    if(!bAtalho) return;
+    pcpUnidadeSel = bAtalho.dataset.substAtalho;
+    renderPCP();
+  });
   content.addEventListener("click", async e => {
+    // "Imprimir lista"/"Imprimir controle"/"Marcar revisado" agora cobrem TODOS os dias marcados — cada
+    // função de impressão já existente é chamada 1x por dia (mesmo padrão de pcpImprimirCardapiosDoDia pra
+    // vários cardápios), pra nunca misturar lançamentos de dias diferentes numa tabela só.
     const btnImprimirLista = e.target.closest("button[data-subst-imprimir-lista]");
-    if(btnImprimirLista){ pcpImprimirListaSubstituicoes(listaRes); return; }
+    if(btnImprimirLista){ resPorDia.forEach(({listaRes}) => pcpImprimirListaSubstituicoes(listaRes)); return; }
     const btnImprimirControle = e.target.closest("button[data-subst-imprimir-controle]");
-    if(btnImprimirControle){ pcpImprimirControleProteinas(listaRes, document.getElementById("pcp-ctrl-func")?.value || ""); return; }
+    if(btnImprimirControle){
+      const func = document.getElementById("pcp-ctrl-func")?.value || "";
+      resPorDia.forEach(({listaRes}) => pcpImprimirControleProteinas(listaRes, func));
+      return;
+    }
     const btnRevisado = e.target.closest("button[data-subst-marcar-revisado]");
-    if(btnRevisado){ await pcpMarcarSubstituicoesRevisadas(semana, dia, unidade); renderPCP(); return; }
+    if(btnRevisado){
+      for(const {dia} of resPorDia) await pcpMarcarSubstituicoesRevisadas(semana, dia, unidadeFiltro);
+      renderPCP();
+      return;
+    }
     const btnItemAdd = e.target.closest("button[data-subst-item-add]");
     if(btnItemAdd){
       const sel = document.getElementById("subst-item-novo");
@@ -15995,17 +16087,19 @@ function pcpSubstituicoesBind(content, semana, dia, unidade, listaRes){
       if(!sujas.length){ showAlert("Nenhuma alteração pra salvar."); return; }
       btnSalvar.disabled = true; btnSalvar.textContent = "Salvando...";
       for(const inp of sujas){
-        const { cli: contratoId, serv: servico, ficha: fichaId } = inp.dataset;
+        // `dia` vem do PRÓPRIO input (data-dia), não de um closure único — com vários dias marcados na tela
+        // cada célula pertence a um bloco de dia diferente (ver pcpSubstGradeBlocoHtml/10/11/2026).
+        const { cli: contratoId, serv: servico, ficha: fichaId, dia: diaCel } = inp.dataset;
         const raw = inp.value.trim();
         const pessoas = raw === "" ? 0 : Number(raw);
-        const existente = pcpListaSubstituicoes(dia, contratoId).find(s => s.servico === servico && s.fichaId === fichaId);
+        const existente = pcpListaSubstituicoes(diaCel, contratoId).find(s => s.servico === servico && s.fichaId === fichaId);
         if(pessoas <= 0){
           if(existente) await pcpRemoverSubstituicao(existente.id);
         } else {
           // unidade REAL do contrato, não o filtro da tela — ver nota em pcpAjustesBind/16/10/2026.
           const ct = contratos.get(contratoId);
           if(!ct || !ct.unidade){ showAlert(`Não achei a unidade do contrato de ${inp.closest("tr")?.querySelector(".name-cell")?.textContent || contratoId} — esse lançamento não foi salvo, os outros sim.`); continue; }
-          await pcpSalvarSubstituicao(semana, dia, ct.unidade, contratoId, fichaId, pessoas, servico);
+          await pcpSalvarSubstituicao(semana, diaCel, ct.unidade, contratoId, fichaId, pessoas, servico);
         }
       }
       // recarrega o cache GLOBAL de substituições (pcpSubstituicoesPorContrato) além do cache da tela de
@@ -16326,7 +16420,16 @@ async function renderPCP(){
   // Substituições (16/10/2026, Tarefa 11): a grade sempre mostra 1 bloco por unidade REAL (nunca soma
   // Matriz+Filial numa tabela só, mesmo padrão de pcpProducaoAmbasHtml) — então em "Ambas" precisa dos dois
   // `res` separados, igual Produção já faz com `listaRes`.
-  const listaResSubst = ehSubst && !unidadeFiltro ? ["matriz", "filial"].map(u => pcpCalcularDia(pcpSemanaSel, pcpDiaSel, u, null)) : null;
+  // seleção multi-dia de Substituições (10/11/2026) — mesma semeadura de pcpProdDiasSel: se a sessão ainda
+  // não tocou no seletor, abre só com o dia do toggle do topo (pcpDiaSel).
+  if(ehSubst && !pcpSubstDiasSel.size) pcpSubstDiasSel.add(pcpDiaSel);
+  const substDiasAtivos = DIAS_ORDEM.filter(d => pcpSubstDiasSel.has(d));
+  // 1 pcpCalcularDia por dia marcado × unidade (igual já fazia pra 1 dia só) — nunca soma Matriz+Filial numa
+  // tabela só (mesmo padrão de pcpProducaoAmbasHtml/listaRes), então em "Ambas" cada dia tem 2 `res`.
+  const resPorDiaSubst = ehSubst ? substDiasAtivos.map(d => ({
+    dia: d,
+    listaRes: unidadeFiltro ? [pcpCalcularDia(pcpSemanaSel, d, unidadeFiltro, null)] : ["matriz", "filial"].map(u => pcpCalcularDia(pcpSemanaSel, d, u, null))
+  })) : null;
   const reqCobertura = ehEstoque ? pcpCalcularReqComCobertura(pcpSemanaSel, pcpDiaSel, unidadeFiltro, servicosFiltro) : null;
   const mapaSemana = ehAcougue ? pcpMapaCarnesSemana(pcpSemanaSel, unidadeFiltro, servicosFiltro) : null;
   // Preparo da semana (20/10/2026, pedido do Marcelo) — substitui o antigo "Mapa de carnes" do dia
@@ -16372,9 +16475,9 @@ async function renderPCP(){
       <button type="button" data-pcpsub="romaneio" class="${pcpSubView==="romaneio"?"active":""}">Romaneio por rota</button>
     </div>
     <div class="menu-controls" style="margin-bottom:16px;">
-      ${ehProducao && !ehProducaoAmbas ? "" : `<div class="kk-dias-chips" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" class="chip-dia ${pcpUnidadeSel===u.id?"on":""}" data-pcpuni="${u.id}">${u.nome}${u.id !== "todos" ? ` · ${pcpContagemUnidade(u.id)}` : ""}</button>`).join("")}</div>`}
+      ${(ehProducao && !ehProducaoAmbas) || ehSubst ? "" : `<div class="kk-dias-chips" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" class="chip-dia ${pcpUnidadeSel===u.id?"on":""}" data-pcpuni="${u.id}">${u.nome}${u.id !== "todos" ? ` · ${pcpContagemUnidade(u.id)}` : ""}</button>`).join("")}</div>`}
       <select id="pcp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===pcpSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
-      ${ehProducao && !ehProducaoAmbas ? "" : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
+      ${(ehProducao && !ehProducaoAmbas) || ehSubst ? "" : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
       ${servicosAplicavel ? `<div class="kk-dias-chips" id="pcp-serv-tabs">${PCP_TURNOS.filter(t=>t.id!=="todos").map(t => `<button type="button" class="chip-dia ${pcpServicosSel.has(t.id)?"on":""}" data-pcp-serv="${t.id}">${t.nome}</button>`).join("")}</div>` : ""}
     </div>
     ${ehAcougue ? `
@@ -16421,16 +16524,18 @@ async function renderPCP(){
       })()) +
       pcpCafeHtml(unidadeFiltro, pcpDataSel, pcpDiaLabelSel)
     ) : ehSubst ? (
+      // 10/11/2026: KPI e grade agregam todos os dias marcados em pcpSubstDiasSel (antes só pcpDiaSel) —
+      // mesma lógica de "Revisão pendente" de cada dia, só que somada/listada pros dias selecionados.
       pcpPainelAreaHtml((() => {
         const unidadesSubst = pcpUnidadesDoFiltro(unidadeFiltro);
-        const substTotal = unidadesSubst.reduce((s,u) => s + pcpSubstituicoesContagemUnidade(pcpDiaSel, u), 0);
-        const substPendentes = pcpSubstituicoesPendentes(pcpDiaSel, unidadeFiltro);
+        const substTotal = substDiasAtivos.reduce((s,d) => s + unidadesSubst.reduce((s2,u) => s2 + pcpSubstituicoesContagemUnidade(d, u), 0), 0);
+        const pendenciasPorDia = substDiasAtivos.map(d => ({ dia: d, unidades: pcpSubstituicoesPendentes(d, unidadeFiltro) })).filter(x => x.unidades.length);
         return [
-          {label:"Substituições lançadas hoje", valor: substTotal},
-          {label:"Revisão pendente", valor: substPendentes.length ? substPendentes.map(u=>nomeUnidadeCompra(u)).join(" e ") : "Nenhuma", ok: !substPendentes.length}
+          {label: substDiasAtivos.length > 1 ? "Substituições lançadas (dias marcados)" : "Substituições lançadas hoje", valor: substTotal},
+          {label:"Revisão pendente", valor: pendenciasPorDia.length ? pendenciasPorDia.map(x => `${DIA_LABEL[x.dia].slice(0,3)}: ${x.unidades.map(u=>nomeUnidadeCompra(u)).join(" e ")}`).join(" · ") : "Nenhuma", ok: !pendenciasPorDia.length}
         ];
       })()) +
-      pcpSubstituicoesHtml(unidadeFiltro ? [res] : listaResSubst, unidadeFiltro)
+      pcpSubstituicoesHtml(resPorDiaSubst, unidadeFiltro)
     ) : ehAjustes ? (
       pcpPainelAreaHtml([
         {label:"Ajustes lançados hoje", valor: (pcpAjustesCache.get(pcpDiaSel) || new Map()).size}
@@ -16588,6 +16693,10 @@ async function renderPCP(){
   content.querySelector("#pcp-dia-tabs").addEventListener("click", e => {
     const bProd = e.target.closest("button.pcp-prod-dia-chip");
     if(bProd){ const d = bProd.dataset.dia; if(pcpProdDiasSel.has(d)) pcpProdDiasSel.delete(d); else pcpProdDiasSel.add(d); renderPCP(); return; }
+    // multi-seleção de dias em Substituições (10/11/2026, "Visual + multi-dia") — mesmo padrão do chip de
+    // Produção acima, só que no Set próprio pcpSubstDiasSel (sem filtro de cliente equivalente).
+    const bSubst = e.target.closest("button.pcp-subst-dia-chip");
+    if(bSubst){ const d = bSubst.dataset.dia; if(pcpSubstDiasSel.has(d)) pcpSubstDiasSel.delete(d); else pcpSubstDiasSel.add(d); renderPCP(); return; }
     const b = e.target.closest("button[data-pcpdia]"); if(!b) return; pcpDiaSel = b.dataset.pcpdia; renderPCP();
   });
   content.querySelector("#pcp-semana").addEventListener("change", e => { pcpSemanaSel = parseInt(e.target.value,10); renderPCP(); });
@@ -16782,7 +16891,7 @@ async function renderPCP(){
   } else if(ehCafe){
     pcpCafeBind(content, unidadeFiltro, pcpDataSel, pcpDiaLabelSel, pcpSemanaSel);
   } else if(ehSubst){
-    pcpSubstituicoesBind(content, pcpSemanaSel, pcpDiaSel, unidadeFiltro, unidadeFiltro ? [res] : listaResSubst);
+    pcpSubstituicoesBind(content, pcpSemanaSel, unidadeFiltro, resPorDiaSubst);
   } else if(ehAjustes){
     pcpAjustesBind(content, pcpSemanaSel, pcpDiaSel);
     pcpPesosBind(content);
