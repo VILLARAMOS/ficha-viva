@@ -822,7 +822,7 @@ async function showApp(user){
   await carregarMeusAcessos();
   aplicarMenuPorPerfil();
   if(!possoVerView(currentView)) currentView = primeiraViewPermitida() || currentView;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadRotas(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadFornecedores(), loadConjuntosCompra(), loadAjusteSeguranca(), loadRefeicoesFuncionarios(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas(), loadPcpConfig(), loadPcpSubstituicoesTudo(), loadComposicoesTipos(), loadComposicoesSemana(), loadAjudaConteudo(), loadAjudaDuvidas()]);
+  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadOrcamentosCardapio(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadRotas(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadFornecedores(), loadConjuntosCompra(), loadAjusteSeguranca(), loadRefeicoesFuncionarios(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas(), loadPcpConfig(), loadPcpSubstituicoesTudo(), loadComposicoesTipos(), loadComposicoesSemana(), loadAjudaConteudo(), loadAjudaDuvidas()]);
   renderBotaoDuvidaFlutuante();
   goToView(currentView);
 }
@@ -1128,6 +1128,18 @@ async function excluirEstruturaCardapio(grupo, num){
   const { error } = await sb.from('cardapio_estrutura').delete().eq('id', existente.id);
   if(error) throw error;
   await loadCardapioEstrutura();
+}
+
+/* ---- Orçamento (dentro da aba Cardápio) — composição de cardápios especiais para orçamento de
+   eventos/pedidos pontuais, 10/11/2026. Tabela própria, isolada de propósito: não usa cardapio_num
+   nem a tabela `cardapios`, e não é lida por Vendas/Contratos/PCP/Compras/Expedição/CMV — só monta a
+   composição e mostra o custo estimado, pra apoiar a proposta de preço do evento. */
+let orcamentosCardapio = new Map(); // id -> row
+async function loadOrcamentosCardapio(){
+  const { data, error } = await sb.from('orcamentos_cardapio').select('*');
+  orcamentosCardapio = new Map();
+  if (error){ showAlert('Erro ao carregar orçamentos: ' + error.message); return; }
+  (data || []).forEach(row => orcamentosCardapio.set(row.id, row));
 }
 
 async function loadCardapios(){
@@ -2797,7 +2809,10 @@ function mesAtualId(){
 let cardapioNumSel = null;
 let cardapioSemanaSel = null;
 let cardapioSemanaNovaPendente = null; // semana recém-criada (sem dados ainda), pra não ser descartada pelo guard do select
-let cardapioTabSel = "refeicao"; // "refeicao" | "marmita" | "cafe"
+let cardapioTabSel = "refeicao"; // "refeicao" | "marmita" | "cafe" | "orcamento"
+let orcamentoSel = null;         // id do orçamento aberto na área Orçamento (null = nenhum ainda/novo)
+let orcamentoCriandoNovo = false; // true enquanto um orçamento novo/duplicado ainda não foi salvo — evita o auto-select do primeiro da lista sobrescrever o rascunho
+let draftOrcamento = null;        // {id, nome, cliente_evento, data_evento, observacoes, colunas:[...], itens:[20][colunas], precoVenda:[colunas]}
 
 function custoFichaOuInsumo(item){
   if(item.ficha_id){
@@ -3382,7 +3397,9 @@ function renderCardapio(){
   document.getElementById("page-title").textContent = "Cardápio";
   document.getElementById("page-desc").textContent = "";
 
-  const grupo = cardapioTabSel; // "refeicao" | "marmita" | "cafe"
+  const grupo = cardapioTabSel; // "refeicao" | "marmita" | "cafe" | "orcamento"
+  if(grupo === "orcamento"){ renderOrcamentoArea(); return; }
+
   const numerosPorGrupo = numerosPorGrupoAtual(grupo);
   if (cardapioNumSel === null || !numerosPorGrupo.includes(cardapioNumSel)) cardapioNumSel = numerosPorGrupo[0];
 
@@ -3414,6 +3431,7 @@ function renderCardapio(){
         <button type="button" data-tab="refeicao" class="${cardapioTabSel==="refeicao"?"active":""}">Refeição</button>
         <button type="button" data-tab="marmita" class="${cardapioTabSel==="marmita"?"active":""}">Marmita</button>
         <button type="button" data-tab="cafe" class="${cardapioTabSel==="cafe"?"active":""}">Café da manhã</button>
+        <button type="button" data-tab="orcamento" class="${cardapioTabSel==="orcamento"?"active":""}">Orçamento</button>
       </div>
       <span style="flex:1 1 auto;"></span>
       ${grupo !== "cafe" ? `<button class="btn" id="btn-sugerir-semana" title="Preenche o rascunho da semana automaticamente — não salva sozinho">🎲 Sugerir semana</button>` : ""}
@@ -3448,6 +3466,302 @@ function renderCardapio(){
   else montarTabelaAlmoco(cardapioNumSel, cardapioSemanaSel);
   montarPainelCmv(grupo, cardapioNumSel, cardapioSemanaSel);
   montarPainelComposicoesSemana(cardapioSemanaSel);
+}
+
+/* ===== ORÇAMENTO — composição de cardápios especiais para eventos/pedidos pontuais (10/11/2026) =====
+   Área própria dentro da aba Cardápio, ao lado de Refeição/Marmita/Café, mas com tabela e numeração
+   isoladas (orcamentos_cardapio) — não entra em REFEICAO_NUMS/MARMITA_NUMS/CAFE_NUMS, logo nenhum
+   contrato pode apontar pra ela e ela não aparece em Vendas, Contratos, PCP, Compras, Expedição ou
+   CMV. O custo mostrado aqui é só pra apoiar a montagem da proposta do evento — não é gravado em
+   nenhuma tabela lida por outra área do sistema. */
+function construirDraftOrcamento(id){
+  const row = id ? orcamentosCardapio.get(id) : null;
+  if(!row){
+    return {
+      id: null, nome: "", cliente_evento: "", data_evento: "", observacoes: "",
+      colunas: ["Opção 1"],
+      itens: CATEGORIAS_CARDAPIO.map(() => [{ nome:"", ficha_id:null, insumo_id:null, gramagem_kg:null }]),
+      precoVenda: [null],
+    };
+  }
+  const colunas = (row.colunas && row.colunas.length) ? row.colunas.slice() : ["Opção 1"];
+  const itensSalvos = row.itens || [];
+  const itens = CATEGORIAS_CARDAPIO.map((cat, ci) => {
+    const linhaSalva = itensSalvos[ci] || [];
+    return colunas.map((_, cl) => {
+      const l = linhaSalva[cl];
+      return l ? { nome: l.nome||"", ficha_id: l.ficha_id||null, insumo_id: l.insumo_id||null, gramagem_kg: l.gramagem_kg ?? null }
+               : { nome:"", ficha_id:null, insumo_id:null, gramagem_kg:null };
+    });
+  });
+  const precoSalvo = row.preco_venda || [];
+  const precoVenda = colunas.map((_, cl) => precoSalvo[cl] ?? null);
+  return {
+    id: row.id, nome: row.nome || "", cliente_evento: row.cliente_evento || "",
+    data_evento: row.data_evento || "", observacoes: row.observacoes || "",
+    colunas, itens, precoVenda,
+  };
+}
+
+function renderOrcamentoArea(){
+  document.getElementById("topbar-actions").innerHTML = "";
+  const content = document.getElementById("content");
+  const lista = [...orcamentosCardapio.values()].sort((a,b) => normalizeText(a.nome||"").localeCompare(normalizeText(b.nome||"")));
+
+  if(!orcamentoCriandoNovo){
+    if(orcamentoSel === null && lista.length) orcamentoSel = lista[0].id;
+    if(orcamentoSel !== null && !orcamentosCardapio.has(orcamentoSel)) orcamentoSel = lista.length ? lista[0].id : null;
+  }
+  if(!draftOrcamento) draftOrcamento = construirDraftOrcamento(orcamentoSel);
+
+  content.innerHTML = `
+    <div class="menu-controls">
+      <div class="seg-toggle">
+        <button type="button" data-tab="refeicao">Refeição</button>
+        <button type="button" data-tab="marmita">Marmita</button>
+        <button type="button" data-tab="cafe">Café da manhã</button>
+        <button type="button" data-tab="orcamento" class="active">Orçamento</button>
+      </div>
+      ${lista.length ? `<select id="orc-sel">${lista.map(o => `<option value="${o.id}" ${!orcamentoCriandoNovo && o.id===orcamentoSel?"selected":""}>${escapeHtml(o.nome||"(sem nome)")}</option>`).join("")}</select>` : ""}
+      <button class="btn" id="btn-novo-orcamento">+ Novo orçamento</button>
+      ${!orcamentoCriandoNovo && orcamentoSel ? `<button class="btn" id="btn-duplicar-orcamento">⧉ Duplicar</button>` : ""}
+      ${!orcamentoCriandoNovo && orcamentoSel ? `<button class="btn danger" id="btn-excluir-orcamento">🗑 Excluir orçamento</button>` : ""}
+      <span style="flex:1 1 auto;"></span>
+      <button class="btn primary" id="btn-salvar-orcamento">Salvar orçamento</button>
+    </div>
+    <div class="footnote" style="margin:-4px 0 12px 0; color:var(--text-muted);">
+      Área isolada só pra montar cardápios especiais de orçamento/evento e ver o custo estimado — nada aqui entra em Vendas, Contratos, PCP, Compras, Expedição ou CMV.
+    </div>
+    <div class="menu-controls" style="margin-bottom:14px;">
+      <input type="text" id="orc-nome" placeholder="Nome do orçamento (ex.: Evento aniversário Cliente X)" value="${escapeHtml(draftOrcamento.nome)}" style="min-width:260px; flex:1 1 260px;">
+      <input type="text" id="orc-cliente" placeholder="Cliente/evento" value="${escapeHtml(draftOrcamento.cliente_evento)}" style="min-width:180px; flex:1 1 180px;">
+      <input type="date" id="orc-data" value="${draftOrcamento.data_evento||""}">
+    </div>
+    <div class="menu-controls" style="margin-bottom:14px;">
+      <textarea id="orc-obs" placeholder="Observações" rows="2" style="flex:1 1 auto; width:100%;">${escapeHtml(draftOrcamento.observacoes)}</textarea>
+    </div>
+    <div id="orc-grade"></div>
+    <div class="footnote" id="orc-err" style="color:var(--critical); margin-top:8px;"></div>
+  `;
+
+  content.querySelectorAll(".seg-toggle button").forEach(b => b.addEventListener("click", () => { cardapioTabSel = b.dataset.tab; cardapioNumSel = null; cardapioSemanaSel = null; cardapioSemanaNovaPendente = null; orcamentoCriandoNovo = false; renderCardapio(); }));
+
+  const selEl = document.getElementById("orc-sel");
+  if(selEl) selEl.addEventListener("change", e => { orcamentoSel = e.target.value; orcamentoCriandoNovo = false; draftOrcamento = null; renderOrcamentoArea(); });
+  document.getElementById("btn-novo-orcamento").addEventListener("click", () => {
+    orcamentoSel = null; orcamentoCriandoNovo = true; draftOrcamento = construirDraftOrcamento(null);
+    renderOrcamentoArea();
+  });
+  const btnDup = document.getElementById("btn-duplicar-orcamento");
+  if(btnDup) btnDup.addEventListener("click", () => {
+    const copia = construirDraftOrcamento(orcamentoSel);
+    copia.id = null; copia.nome = copia.nome ? `${copia.nome} (cópia)` : "Cópia";
+    orcamentoSel = null; orcamentoCriandoNovo = true; draftOrcamento = copia;
+    renderOrcamentoArea();
+  });
+  const btnDel = document.getElementById("btn-excluir-orcamento");
+  if(btnDel) btnDel.addEventListener("click", async () => {
+    if(!orcamentoSel) return;
+    const o = orcamentosCardapio.get(orcamentoSel);
+    if(!(await confirmDialog(`Excluir o orçamento "${escapeHtml((o&&o.nome)||"")}"? Essa ação não pode ser desfeita.`))) return;
+    try{
+      const { error } = await sb.from('orcamentos_cardapio').delete().eq('id', orcamentoSel);
+      if(error) throw error;
+      await loadOrcamentosCardapio();
+      orcamentoSel = null; orcamentoCriandoNovo = false; draftOrcamento = null;
+      renderOrcamentoArea();
+    }catch(e){ showAlert(mensagemErro(e, "Erro ao excluir: ")); }
+  });
+
+  document.getElementById("orc-nome").addEventListener("input", e => { draftOrcamento.nome = e.target.value; });
+  document.getElementById("orc-cliente").addEventListener("input", e => { draftOrcamento.cliente_evento = e.target.value; });
+  document.getElementById("orc-data").addEventListener("input", e => { draftOrcamento.data_evento = e.target.value || null; });
+  document.getElementById("orc-obs").addEventListener("input", e => { draftOrcamento.observacoes = e.target.value; });
+
+  document.getElementById("btn-salvar-orcamento").onclick = async () => {
+    const errEl = document.getElementById("orc-err");
+    if(!draftOrcamento.nome || !draftOrcamento.nome.trim()){ errEl.textContent = "Dê um nome ao orçamento antes de salvar."; return; }
+    errEl.textContent = "Salvando…";
+    try{
+      const itensParaSalvar = draftOrcamento.itens.map(linha => linha.map(l => ({ nome: l.nome||"", ficha_id: l.ficha_id||null, insumo_id: l.insumo_id||null, gramagem_kg: l.gramagem_kg ?? null })));
+      const data = {
+        nome: draftOrcamento.nome.trim(), cliente_evento: draftOrcamento.cliente_evento||null,
+        data_evento: draftOrcamento.data_evento||null, observacoes: draftOrcamento.observacoes||null,
+        colunas: draftOrcamento.colunas, itens: itensParaSalvar, preco_venda: draftOrcamento.precoVenda,
+      };
+      Object.assign(data, carimbo());
+      let error, idSalvo = draftOrcamento.id;
+      if(draftOrcamento.id){ ({error} = await sb.from('orcamentos_cardapio').update(data).eq('id', draftOrcamento.id)); }
+      else { const ins = await sb.from('orcamentos_cardapio').insert(data).select('id').single(); error = ins.error; idSalvo = ins.data ? ins.data.id : null; }
+      if(error) throw error;
+      await loadOrcamentosCardapio();
+      orcamentoSel = idSalvo; orcamentoCriandoNovo = false; draftOrcamento = null;
+      errEl.textContent = "";
+      renderOrcamentoArea();
+      showAlert("Orçamento salvo com sucesso.");
+    }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao salvar: "); }
+  };
+
+  montarGradeOrcamento();
+}
+
+function montarGradeOrcamento(){
+  const host = document.getElementById("orc-grade");
+  if(!host || !draftOrcamento) return;
+  const colunas = draftOrcamento.colunas;
+
+  const custoColuna = cl => draftOrcamento.itens.reduce((s, linha) => s + custoLinhaCardapio(linha[cl]), 0);
+
+  host.innerHTML = `
+    <div class="table-scroll">
+      <table class="cardapio-table">
+        <thead><tr>
+          <th class="cat-col">Categoria</th>
+          ${colunas.map((label, cl) => `<th>
+            <div class="th-dia-head">
+              <input type="text" class="cel-nome" data-col-label-cl="${cl}" value="${escapeHtml(label)}" style="width:100%; text-align:center; font-weight:600; border:none; background:transparent;">
+              ${colunas.length > 1 ? `<button type="button" class="th-del" data-del-coluna="${cl}">remover</button>` : ""}
+            </div>
+          </th>`).join("")}
+          <th style="width:40px;"><button type="button" class="btn" id="btn-add-coluna" title="Adicionar opção/dia">+</button></th>
+        </tr></thead>
+        <tbody>
+          ${CATEGORIAS_CARDAPIO.map((cat,ci) => `
+            <tr>
+              <td class="cat-col">${escapeHtml(cat)}</td>
+              ${colunas.map((_, cl) => `
+                <td class="cel">
+                  <div class="cel-nome-row">
+                    <div class="autocomplete">
+                      <input type="text" class="cel-nome search-input" data-ci="${ci}" data-cl="${cl}" value="${escapeHtml(draftOrcamento.itens[ci][cl].nome||"")}" title="${escapeHtml(draftOrcamento.itens[ci][cl].nome||"")}" placeholder="—" autocomplete="off">
+                    </div>
+                    <button type="button" class="cel-search-btn" data-search-ci="${ci}" data-search-cl="${cl}" title="Buscar na lista de fichas/insumos"><i class="ico" data-lucide="search"></i></button>
+                  </div>
+                  <div class="cel-sub-row">
+                    <input type="number" step="0.001" class="cel-gram" data-ci="${ci}" data-cl="${cl}" value="${draftOrcamento.itens[ci][cl].gramagem_kg != null ? Number(draftOrcamento.itens[ci][cl].gramagem_kg).toFixed(3) : ""}" placeholder="kg">
+                    <span class="cel-custo" data-custo-cel="${ci}|${cl}">${custoItemTxt(draftOrcamento.itens[ci][cl])}</span>
+                  </div>
+                </td>`).join("")}
+              <td></td>
+            </tr>`).join("")}
+          <tr class="row-total">
+            <td class="cat-col">Preço de venda</td>
+            ${colunas.map((_, cl) => `<td><div class="cel-preco-wrap"><span class="cel-preco-prefix">R$</span><input type="number" step="0.01" class="cel-preco" data-cl="${cl}" value="${draftOrcamento.precoVenda[cl] ?? ""}"></div></td>`).join("")}
+            <td></td>
+          </tr>
+          <tr class="row-total">
+            <td class="cat-col">Custo calculado</td>
+            ${colunas.map((_, cl) => `<td class="custo-dia" data-custo-coluna="${cl}">${fmtMoney(custoColuna(cl))}</td>`).join("")}
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="cardapio-cmv-panel" style="margin-top:14px; margin-bottom:0;">
+      <div class="stat-block"><div class="label">Custo total estimado (todas as opções/dias)</div><div class="val" id="orc-custo-total">${fmtMoney(colunas.reduce((s,_,cl) => s + custoColuna(cl), 0))}</div></div>
+    </div>
+  `;
+  if(window.lucide) lucide.createIcons();
+
+  const todosInsumos = [...insumos.entries()];
+  const todasFichas = [...fichas.entries()];
+
+  function recomputarCustoColuna(cl){
+    const el = host.querySelector(`[data-custo-coluna="${cl}"]`);
+    if(el) el.textContent = fmtMoney(custoColuna(cl));
+    const totalEl = host.querySelector("#orc-custo-total");
+    if(totalEl) totalEl.textContent = fmtMoney(colunas.reduce((s,_,c) => s + custoColuna(c), 0));
+  }
+  function recomputarCustoCelula(ci, cl){
+    const el = host.querySelector(`[data-custo-cel="${ci}|${cl}"]`);
+    if(el) el.textContent = custoItemTxt(draftOrcamento.itens[ci][cl]);
+  }
+
+  host.querySelectorAll("[data-col-label-cl]").forEach(inp => {
+    inp.addEventListener("input", e => { draftOrcamento.colunas[+inp.dataset.colLabelCl] = e.target.value; });
+  });
+  host.querySelectorAll("[data-del-coluna]").forEach(b => b.addEventListener("click", () => {
+    const cl = +b.dataset.delColuna;
+    draftOrcamento.colunas.splice(cl,1);
+    draftOrcamento.itens.forEach(linha => linha.splice(cl,1));
+    draftOrcamento.precoVenda.splice(cl,1);
+    montarGradeOrcamento();
+  }));
+  document.getElementById("btn-add-coluna").addEventListener("click", () => {
+    draftOrcamento.colunas.push(`Opção ${draftOrcamento.colunas.length+1}`);
+    draftOrcamento.itens.forEach(linha => linha.push({ nome:"", ficha_id:null, insumo_id:null, gramagem_kg:null }));
+    draftOrcamento.precoVenda.push(null);
+    montarGradeOrcamento();
+  });
+
+  host.querySelectorAll("[data-search-ci]").forEach(btn => btn.addEventListener("click", () => {
+    const ci = +btn.dataset.searchCi, cl = +btn.dataset.searchCl;
+    abrirBuscaInsumoModal(null, (tipo, refId) => {
+      const l = draftOrcamento.itens[ci][cl];
+      if(tipo === "insumo"){ l.insumo_id = refId; l.ficha_id = null; l.nome = insumos.get(refId).nome; }
+      else { l.ficha_id = refId; l.insumo_id = null; l.nome = fichas.get(refId).nome; }
+      const campoNome = host.querySelector(`.cel-nome[data-ci="${ci}"][data-cl="${cl}"]`);
+      if(campoNome){ campoNome.value = l.nome; campoNome.title = l.nome; }
+      recomputarCustoColuna(cl); recomputarCustoCelula(ci, cl);
+    });
+  }));
+
+  host.querySelectorAll(".cel-nome[data-ci]").forEach(inp => {
+    const ci = +inp.dataset.ci, cl = +inp.dataset.cl;
+    let optsEl = null;
+    const fecharOpts = () => { if(optsEl){ optsEl.remove(); optsEl = null; } };
+    const escolher = (t, refId) => {
+      fecharOpts();
+      const l = draftOrcamento.itens[ci][cl];
+      if(t === "insumo"){ l.insumo_id = refId; l.ficha_id = null; l.nome = insumos.get(refId).nome; }
+      else { l.ficha_id = refId; l.insumo_id = null; l.nome = fichas.get(refId).nome; }
+      inp.value = l.nome; inp.title = l.nome;
+      recomputarCustoColuna(cl); recomputarCustoCelula(ci, cl);
+    };
+    inp.addEventListener("input", () => {
+      const l = draftOrcamento.itens[ci][cl];
+      l.nome = inp.value; l.insumo_id = null; l.ficha_id = null; inp.title = inp.value;
+      const matchesFicha = inp.value ? buscarPorNome(todasFichas, inp.value, 8) : [];
+      const matchesInsumo = inp.value ? buscarPorNome(todosInsumos, inp.value, 8) : [];
+      fecharOpts();
+      if(matchesFicha.length || matchesInsumo.length){
+        optsEl = document.createElement("div");
+        optsEl.className = "options";
+        optsEl.innerHTML =
+          matchesFicha.map(([fid,d]) => `<div data-pick-ficha="${fid}">${escapeHtml(d.nome)} <span class="footnote">(ficha · ${fmtMoney(computeFicha(d, fid).custoKg)}/kg)</span></div>`).join("") +
+          matchesInsumo.map(([iid,d]) => `<div data-pick-insumo="${iid}">${escapeHtml(d.nome)} <span class="footnote">(${fmtMoney(d.custo_kg_l_und)}/${unidadeCustoInsumo(d)})</span></div>`).join("");
+        inp.parentElement.appendChild(optsEl);
+        optsEl.querySelectorAll("[data-pick-insumo]").forEach(opt => opt.addEventListener("mousedown", e => { e.preventDefault(); escolher("insumo", opt.dataset.pickInsumo); }));
+        optsEl.querySelectorAll("[data-pick-ficha]").forEach(opt => opt.addEventListener("mousedown", e => { e.preventDefault(); escolher("ficha", opt.dataset.pickFicha); }));
+      }
+      recomputarCustoColuna(cl); recomputarCustoCelula(ci, cl);
+    });
+    inp.addEventListener("keydown", e => {
+      if(e.key !== "Enter") return;
+      if(optsEl){
+        const first = optsEl.querySelector("[data-pick-insumo],[data-pick-ficha]");
+        if(first){ e.preventDefault(); first.dataset.pickInsumo ? escolher("insumo", first.dataset.pickInsumo) : escolher("ficha", first.dataset.pickFicha); return; }
+      }
+    });
+    inp.addEventListener("blur", () => fecharOpts());
+  });
+
+  host.querySelectorAll(".cel-gram").forEach(inp => {
+    const ci = +inp.dataset.ci, cl = +inp.dataset.cl;
+    inp.addEventListener("input", () => {
+      draftOrcamento.itens[ci][cl].gramagem_kg = inp.value===""?null:parseFloat(inp.value);
+      recomputarCustoColuna(cl); recomputarCustoCelula(ci, cl);
+    });
+    inp.addEventListener("blur", () => {
+      const v = draftOrcamento.itens[ci][cl].gramagem_kg;
+      inp.value = v != null ? v.toFixed(3) : "";
+    });
+  });
+
+  host.querySelectorAll(".cel-preco[data-cl]").forEach(inp => {
+    const cl = +inp.dataset.cl;
+    inp.addEventListener("input", () => { draftOrcamento.precoVenda[cl] = inp.value===""?null:parseFloat(inp.value); });
+  });
 }
 
 /* ===== Painel de CMV (planejado + real) e incidência de proteína — topo da aba Cardápio =====
