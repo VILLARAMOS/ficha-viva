@@ -12091,8 +12091,20 @@ function pcpDiretoEntraImpressao(d){ return !/TALHER|MARMITA/i.test(d.nome || ""
 // informativa ("Custo / un") na tela de Fichas técnicas — nunca muda a unidade usada em Compras. Se eu
 // tivesse deixado "porção"/"un." aqui, a Produção ia mostrar um número que não bate com o kg que a Lista
 // de compra calcula pro MESMO item do MESMO cardápio. Removido — fica só kg, igual ao resto do sistema.
-function pcpFmtQtd(q){
+// 10/11/2026, pedido do Marcelo: nas tabelas/impressões da Produção, item que é item substituto
+// configurado (Filé de Frango Grelhado, Ovo, Omelete...) ou composição completa da semana (Prato
+// Especial/Fit/Lanche) mostra a quantidade em UNIDADE, não em quilo — são contados por pessoa (1 filé, 1
+// ovo...), mesmo que o motor continue calculando em kg por dentro (gramagem × unidades, pra bater com
+// insumo/custo). Não muda nenhuma conta, só a etiqueta/rótulo na tela e na impressão.
+function pcpFichaEhPorUnidade(fichaId){
+  if(!fichaId) return false;
+  if(pcpItensSubstitutos.some(it => it.fichaId === fichaId)) return true;
+  if([...composicoesSemanaCache.values()].some(r => r.ficha_id === fichaId)) return true;
+  return false;
+}
+function pcpFmtQtd(q, fichaId){
   if(q === null || q === undefined || !isFinite(q)) return "—";
+  if(fichaId && pcpFichaEhPorUnidade(fichaId)) return `${fmtNum(q,0)} un.`;
   return `${fmtNum(q,2)} kg`;
 }
 
@@ -13166,14 +13178,14 @@ function pcpProducaoHtml(res, margemPct){
     const novoGrupo = r.grupo !== grupoAtual;
     grupoAtual = r.grupo;
     const qtdComMargem = r.total * fator;
-    const colsTurno = mostrarBreakdown ? servAtivos.map(t => `<td class="num-cell">${pcpFmtQtd((r.porTurno[t.id]||0) * fator)}</td>`).join("") : "";
+    const colsTurno = mostrarBreakdown ? servAtivos.map(t => `<td class="num-cell">${pcpFmtQtd((r.porTurno[t.id]||0) * fator, r.fichaId)}</td>`).join("") : "";
     // Fase 6 (14/10/2026, pedido do Marcelo — unidade-a-unidade): o kg continua sendo o que vai pra
     // produção/cuba/insumo (sem isso a cozinha não sabe quanto pesar), mas quando parte do total veio de
     // substituição de proteína, mostra também em UNIDADES (1 pessoa trocada = 1 unidade do substituto) —
     // "Unidade nunca soma com kg" era a régua do protótipo de referência; aqui as duas aparecem juntas,
     // kg pra produção e unidades só como anotação, porque o resto do motor (cuba/compra) continua em kg.
     const substUnidades = [...r.porCliente.values()].filter(p => !p.produtoId).reduce((s,p) => s + (p.pessoas||0), 0);
-    const qtdTxt = pcpFmtQtd(qtdComMargem) + (substUnidades > 0 ? ` <span class="footnote" style="margin:0;">(${fmtNum(substUnidades,0)} un. substituída${substUnidades>1?"s":""})</span>` : "");
+    const qtdTxt = pcpFmtQtd(qtdComMargem, r.fichaId) + (substUnidades > 0 ? ` <span class="footnote" style="margin:0;">(${fmtNum(substUnidades,0)} un. substituída${substUnidades>1?"s":""})</span>` : "");
     return (novoGrupo ? `<tr><th colspan="${nCols}" style="background:var(--surface-alt); font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted);">${escapeHtml(r.grupo)}</th></tr>` : "") +
       `<tr><td class="name-cell">${escapeHtml(r.nome)}</td><td>${escapeHtml(r.grupo)}</td>${colsTurno}<td class="num-cell">${qtdTxt}</td><td class="num-cell">${pcpCubaTxt(r.fichaId, qtdComMargem)}</td><td class="num-cell">${r.porCliente.size}</td><td class="footnote" style="margin:0;">${[...new Set([...r.porCliente.values()].map(p => p.nome))].join(", ")}</td><td class="num-cell">${r.fichaId ? `<button class="btn small primary" data-pcp-imprimir-receita="${r.fichaId}" title="Imprimir esta receita">${iconeImprimir()}</button>` : "—"}</td></tr>`;
   }).join("");
@@ -13201,9 +13213,9 @@ function pcpSubsPanelHtml(subs, margemPct, unidade){
   const fator = 1 + (margemPct || 0) / 100;
   const linhas = subs.map(S => {
     const kg = S.total * fator;
-    const usadaEmTxt = [...S.usadaEm.entries()].map(([nome, kgUso]) => `${escapeHtml(nome)} (${pcpFmtQtd(kgUso * fator)})`).join(", ");
+    const usadaEmTxt = [...S.usadaEm.entries()].map(([nome, kgUso]) => `${escapeHtml(nome)} (${pcpFmtQtd(kgUso * fator, S.fichaId)})`).join(", ");
     const attrBtn = unidade ? `data-pcp-imprimir-receita-uni="${S.fichaId}|${unidade}"` : `data-pcp-imprimir-receita="${S.fichaId}"`;
-    return `<tr><td class="name-cell">${escapeHtml(S.nome)}</td><td class="num-cell">${pcpFmtQtd(kg)}</td><td class="footnote" style="margin:0;">${usadaEmTxt}</td><td class="num-cell"><button class="btn small primary" ${attrBtn} title="Imprimir esta sub-receita">${iconeImprimir()}</button></td></tr>`;
+    return `<tr><td class="name-cell">${escapeHtml(S.nome)}</td><td class="num-cell">${pcpFmtQtd(kg, S.fichaId)}</td><td class="footnote" style="margin:0;">${usadaEmTxt}</td><td class="num-cell"><button class="btn small primary" ${attrBtn} title="Imprimir esta sub-receita">${iconeImprimir()}</button></td></tr>`;
   }).join("");
   return `<div class="panel">
       <div class="panel-head"><h3><i class="ico" data-lucide="layers"></i>Sub-receitas (preparar antes)</h3></div>
@@ -13240,7 +13252,7 @@ function pcpProducaoAmbasHtml(listaRes, margemPct){
       const r = x.porUnidade[res.unidade];
       if(!r) return `<td class="num-cell footnote">—</td><td class="num-cell footnote">—</td>`;
       const qtd = r.total * fator;
-      return `<td class="num-cell">${pcpFmtQtd(qtd)}</td><td class="num-cell">${pcpCubaTxt(fichaId, qtd)} <button class="btn small primary" data-pcp-imprimir-receita-uni="${fichaId}|${res.unidade}" title="Imprimir a receita (${nomeUnidadeCompra(res.unidade)})">${iconeImprimir()}</button></td>`;
+      return `<td class="num-cell">${pcpFmtQtd(qtd, fichaId)}</td><td class="num-cell">${pcpCubaTxt(fichaId, qtd)} <button class="btn small primary" data-pcp-imprimir-receita-uni="${fichaId}|${res.unidade}" title="Imprimir a receita (${nomeUnidadeCompra(res.unidade)})">${iconeImprimir()}</button></td>`;
     }).join("");
     return (novoGrupo ? `<tr><th colspan="${nCols}" style="background:var(--surface-alt); font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted);">${escapeHtml(x.grupo)}</th></tr>` : "") +
       `<tr><td class="name-cell">${escapeHtml(x.nome)}</td>${cols}</tr>`;
@@ -13282,7 +13294,7 @@ function pcpReceitaBlocoHtml(fichaId, nome, kgAlvo){
   }).join("") || `<tr><td colspan="3" class="vazio">${f ? "Nenhum ingrediente cadastrado." : "Ficha técnica não encontrada — confira o cadastro."}</td></tr>`;
   return `<div style="page-break-inside:avoid; margin-bottom:28px;">
     <h1>${escapeHtml(nome)}</h1>
-    <div class="meta">${pcpFmtQtd(kgAlvo)} previstos${f && f.rendimento_kg ? ` · rendimento padrão da ficha: ${Number(f.rendimento_kg).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg` : ""}${!f ? " · FICHA NÃO ENCONTRADA NO CADASTRO" : ""}</div>
+    <div class="meta">${pcpFmtQtd(kgAlvo, fichaId)} previstos${f && f.rendimento_kg ? ` · rendimento padrão da ficha: ${Number(f.rendimento_kg).toLocaleString('pt-BR',{minimumFractionDigits:3,maximumFractionDigits:3})} kg` : ""}${!f ? " · FICHA NÃO ENCONTRADA NO CADASTRO" : ""}</div>
     <h2>Ingredientes</h2>
     <table><thead><tr><th>Ingrediente</th><th style="width:140px;">Peso (receita padrão)</th><th style="width:140px;">Qtd. p/ este atendimento</th></tr></thead><tbody>${linhas}</tbody></table>
     <h2>Modo de preparo</h2>
@@ -13574,13 +13586,13 @@ function pcpImprimirOrdemProducao(res, margemPct, setorFiltro){
     const novo = r.grupo !== grupoAtual; grupoAtual = r.grupo;
     const kg = r.total * fator;
     return (novo ? `<tr><th colspan="3" style="background:#f0f0f0;">${escapeHtml(r.grupo)}</th></tr>` : "") +
-      `<tr><td>${escapeHtml(r.nome)}</td><td class="peso destaque">${pcpFmtQtd(kg)}</td><td class="peso">${pcpCubaTxt(r.fichaId, kg)}</td></tr>`;
+      `<tr><td>${escapeHtml(r.nome)}</td><td class="peso destaque">${pcpFmtQtd(kg, r.fichaId)}</td><td class="peso">${pcpCubaTxt(r.fichaId, kg)}</td></tr>`;
   }).join("");
   const substHtml = (setorFiltro === "todos" || setorFiltro === "cozinha") ? pcpSubstituicoesImpressaoHtml(res) : "";
   // Tabelas por cliente junto da impressão da Composição principal (pedido Marcelo, 10/11/2026) — mesmos
   // itens já filtrados em "lista" acima (o que sai na composição agregada é o que aparece detalhado por
-  // cliente); quantidade líquida, sem margem de produção — mesma régua já usada em "Volume por cliente"
-  // (ver pcpImprimirVolumePorCliente), a margem só entra na tabela agregada de quanto produzir.
+  // cliente); quantidade líquida, sem margem de produção — mesma régua já usada na tela "Volume por
+  // cliente" (ver pcpVolumeHtml), a margem só entra na tabela agregada de quanto produzir.
   const blocosClientesHtml = setorFiltro === "cozinha" ? res.clientes.map(cli => {
     const linhasCli = [];
     lista.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhasCli.push({nome: r.nome, qtd: p.qtd, fichaId: r.fichaId}); });
@@ -13588,7 +13600,7 @@ function pcpImprimirOrdemProducao(res, margemPct, setorFiltro){
     return `<div style="break-inside:avoid; page-break-inside:avoid; margin-bottom:14px;">
       <h2 style="margin-bottom:6px;">${escapeHtml(cli.nome)} <span style="font-weight:400; text-transform:none; letter-spacing:0; color:#777;">— ${fmtNum(cli.pessoas,0)} pessoas · ${escapeHtml(nomeUnidadeCompra(cli.unidade))}</span></h2>
       <table><thead><tr><th>Item</th><th style="width:120px; text-align:right;">Peso</th><th style="width:120px; text-align:right;">Cubas</th></tr></thead><tbody>
-        ${linhasCli.map(l => `<tr><td>${escapeHtml(l.nome)}</td><td class="peso">${pcpFmtQtd(l.qtd)}</td><td class="peso">${l.fichaId ? pcpCubaTxt(l.fichaId, l.qtd) : "—"}</td></tr>`).join("")}
+        ${linhasCli.map(l => `<tr><td>${escapeHtml(l.nome)}</td><td class="peso">${pcpFmtQtd(l.qtd, l.fichaId)}</td><td class="peso">${l.fichaId ? pcpCubaTxt(l.fichaId, l.qtd) : "—"}</td></tr>`).join("")}
       </tbody></table>
     </div>`;
   }).join("") : "";
@@ -13615,10 +13627,10 @@ function pcpConferirChave(tipo, idx){ return `${tipo}|${idx}`; }
 function pcpConferirLinhaHtml(tipo, idx, txt, nivel){
   const chave = pcpConferirChave(tipo, idx);
   const revisado = pcpConferirRevisados.has(chave);
-  return `<label style="display:flex; align-items:flex-start; gap:10px; padding:8px 10px; border-radius:8px; ${revisado ? "opacity:.5;" : ""} background:${nivel==="critical" && !revisado ? "var(--critical-bg, rgba(220,38,38,.08))" : "transparent"};">
-    <input type="checkbox" data-pcp-conf-check="${chave}" ${revisado ? "checked" : ""} style="margin-top:3px;">
+  return `<div style="display:flex; align-items:flex-start; justify-content:space-between; gap:10px; padding:8px 10px; border-radius:8px; ${revisado ? "opacity:.5;" : ""} background:${nivel==="critical" && !revisado ? "var(--critical-bg, rgba(220,38,38,.08))" : "transparent"};">
     <span>${escapeHtml(txt)}</span>
-  </label>`;
+    <button type="button" class="btn small ${revisado ? "ghost" : "primary"}" data-pcp-conf-check="${chave}" style="flex:none; white-space:nowrap;">${revisado ? "✓ Revisado" : "Marcar revisado"}</button>
+  </div>`;
 }
 function pcpConferirHtml(res){
   const criticos = res.avisos.filter(a => a.tipo === "critical");
@@ -13665,63 +13677,22 @@ function pcpVolumeHtml(res){
     if(!linhas.length) return "";
     return `<div class="panel" data-pcp-cliente-card="${cli.id}">
       <div class="panel-head"><h3>${escapeHtml(cli.nome)}</h3><span class="hint">${fmtNum(cli.pessoas,0)} pessoas · ${nomeUnidadeCompra(cli.unidade)}</span></div>
-      <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Item</th><th style="text-align:right;">Quantidade</th><th style="text-align:right;">Cubas</th></tr></thead><tbody>${linhas.map(l => `<tr><td class="name-cell">${escapeHtml(l.nome)}</td><td class="num-cell">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd)}</td><td class="num-cell">${l.fichaId ? pcpCubaTxt(l.fichaId, l.qtd) : "—"}</td></tr>`).join("")}</tbody></table></div></div>
+      <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Item</th><th style="text-align:right;">Quantidade</th><th style="text-align:right;">Cubas</th></tr></thead><tbody>${linhas.map(l => `<tr><td class="name-cell">${escapeHtml(l.nome)}</td><td class="num-cell">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd, l.fichaId)}</td><td class="num-cell">${l.fichaId ? pcpCubaTxt(l.fichaId, l.qtd) : "—"}</td></tr>`).join("")}</tbody></table></div></div>
     </div>`;
   }).join("");
   return cards;
 }
 
-// ---------- Impressão "Volume por cliente" × "Etiquetas" (15/10/2026) ----------
-// Achado do Marcelo: o botão "Imprimir etiquetas" nunca imprimiu etiqueta nenhuma — imprimia esse mesmo
-// cartão por cliente (1 bloco por cliente, com todos os itens dele numa tabelinha), só com o nome errado.
-// Virou 2 funções separadas:
-// - pcpImprimirVolumePorCliente: o documento A4 de verdade — é o guia da cozinha pra encher cuba por
-//   cliente (volume LÍQUIDO, sem margem — é o que sai de fato pro cliente, igual a tela "Volume por
-//   cliente" já deixava claro) + uma 2ª seção com o volume TOTAL do dia por item (COM margem de produção,
-//   mesma lógica da Ordem de produção) — é o guia de quanto produzir de cada item, pedido do Marcelo
-//   pra vir junto no mesmo papel.
-// - pcpEtiquetasProdutoImprimir: etiqueta de verdade, 1 por cliente×produto (cliente, produto, peso, data).
-//   Formato físico confirmado com o Marcelo (15/10/2026): impressora térmica, rolo em tamanho padrão —
-//   usado 60×40mm (o mais comum pra etiqueta de alimento nesse tipo de impressora); 1 etiqueta por
-//   "página" via @page+page-break, não grid (rolo contínuo, a térmica avança/corta etiqueta a etiqueta).
-//   Se o rolo dele for outra largura (40/50/80mm são as outras comuns), é só mudar ETQ_LARGURA_MM/
-//   ETQ_ALTURA_MM dentro da função.
-function pcpImprimirVolumePorCliente(res, margemPct){
-  const fator = 1 + (margemPct || 0) / 100;
-  const blocosClientes = res.clientes.map(cli => {
-    const linhas = [];
-    res.receitas.filter(pcpReceitaEntraImpressao).forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: r.nome, qtd: p.qtd, fichaId: r.fichaId}); });
-    res.diretos.filter(pcpDiretoEntraImpressao).forEach(d => { const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: d.nome, qtd: p.qtd, unidade: d.unidade}); });
-    if(!linhas.length) return "";
-    const substCli = pcpListaSubstituicoes(res.dia, cli.id);
-    const avisoSubst = substCli.length ? `<div style="background:#fff3cd; border:1px solid #e0a800; border-radius:4px; padding:6px 10px; margin-bottom:6px; font-size:12.5px;">
-        ${substCli.map(s => { const f = fichas.get(s.fichaId); return `⚠ ${fmtNum(s.pessoas,0)} pessoa(s) · ${escapeHtml(PCP_TURNOS.find(t=>t.id===(s.servico||"almoco"))?.nome||s.servico)}: substituição por <b>${escapeHtml(f?f.nome:s.fichaId)}</b>`; }).join("<br>")}
-      </div>` : "";
-    return `<div style="break-inside:avoid; page-break-inside:avoid; margin-bottom:14px;">
-      <h2 style="margin-bottom:6px;">${escapeHtml(cli.nome)} <span style="font-weight:400; text-transform:none; letter-spacing:0; color:#777;">— ${fmtNum(cli.pessoas,0)} pessoas · ${escapeHtml(nomeUnidadeCompra(cli.unidade))}</span></h2>
-      ${avisoSubst}
-      <table><thead><tr><th>Item</th><th style="width:120px; text-align:right;">Peso</th><th style="width:120px; text-align:right;">Cubas</th></tr></thead><tbody>
-        ${linhas.map(l => `<tr><td>${escapeHtml(l.nome)}</td><td class="peso">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd)}</td><td class="peso">${l.fichaId ? pcpCubaTxt(l.fichaId, l.qtd) : "—"}</td></tr>`).join("")}
-      </tbody></table>
-    </div>`;
-  }).join("");
-  let grupoAtual = null;
-  const linhasTotais = res.receitas.filter(pcpReceitaEntraImpressao).map(r => {
-    const novo = r.grupo !== grupoAtual; grupoAtual = r.grupo;
-    const kg = r.total * fator;
-    return (novo ? `<tr><th colspan="3" style="background:#f0f0f0;">${escapeHtml(r.grupo)}</th></tr>` : "") +
-      `<tr><td>${escapeHtml(r.nome)}</td><td class="peso destaque">${pcpFmtQtd(kg)}</td><td class="peso">${pcpCubaTxt(r.fichaId, kg)}</td></tr>`;
-  }).join("");
-  const linhasDiretos = res.diretos.filter(pcpDiretoEntraImpressao).map(d => `<tr><td>${escapeHtml(d.nome)}</td><td class="peso destaque">${fmtNum(d.total*fator,2)} ${escapeHtml(d.unidade||"")}</td><td class="peso">—</td></tr>`).join("");
-  const corpo = `
-    <h2>Volume por cliente (líquido, sem margem — pra encher a cuba)</h2>
-    ${blocosClientes || "<p>Nada a produzir neste dia.</p>"}
-    <h2>Volume total do dia (${margemPct ? `com margem de ${fmtNum(margemPct,1)}%` : "sem margem"} — quanto produzir)</h2>
-    <table><thead><tr><th>Item</th><th style="width:120px; text-align:right;">Quantidade</th><th style="width:120px; text-align:right;">Cubas</th></tr></thead><tbody>${linhasTotais}${linhasDiretos}</tbody></table>
-    ${pcpSubstituicoesImpressaoHtml(res)}
-  `;
-  pcpAbrirImpressaoReceitas(`Volume por cliente — ${DIA_LABEL[res.dia]}, ${rotuloSemana(res.semana)}`, pcpContextoImpressao(res, margemPct), corpo);
-}
+// ---------- Impressão de etiquetas (15/10/2026) ----------
+// Achado do Marcelo: o botão "Imprimir etiquetas" nunca imprimiu etiqueta nenhuma — imprimia o cartão de
+// "Volume por cliente" por engano, só com o nome errado. Essa função é a etiqueta de verdade, 1 por
+// cliente×produto (cliente, produto, peso, data). Formato físico confirmado com o Marcelo (15/10/2026):
+// impressora térmica, rolo em tamanho padrão — usado 60×40mm (o mais comum pra etiqueta de alimento nesse
+// tipo de impressora); 1 etiqueta por "página" via @page+page-break, não grid (rolo contínuo, a térmica
+// avança/corta etiqueta a etiqueta). Se o rolo dele for outra largura (40/50/80mm são as outras comuns),
+// é só mudar ETQ_LARGURA_MM/ETQ_ALTURA_MM dentro da função.
+// (Botão "Volume total" removido 10/11/2026, pedido do Marcelo: imprimia praticamente a mesma coisa que
+// "Composição principal", que ficou como botão único de impressão agregada.)
 function pcpEtiquetasProdutoImprimir(res){
   const dataTxt = fmtDataCompleta(dataDoDia(res.semana, res.dia));
   const etiquetas = [];
@@ -13730,7 +13701,7 @@ function pcpEtiquetasProdutoImprimir(res){
     // ela tem etiqueta própria logo abaixo, em QUANTIDADE (não peso).
     res.receitas.forEach(r => {
       const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id && x.produtoId !== null);
-      if(p) etiquetas.push({ cliente: cli.nome, produto: r.nome, pesoTxt: pcpFmtQtd(p.qtd) });
+      if(p) etiquetas.push({ cliente: cli.nome, produto: r.nome, pesoTxt: pcpFmtQtd(p.qtd, r.fichaId) });
     });
     res.diretos.forEach(d => {
       const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id);
@@ -13851,7 +13822,7 @@ function pcpRomaneioHtml(grupos){
         ${semRota ? `<p class="footnote" style="margin:0 0 10px;">Esses clientes não têm rota de entrega cadastrada — edite o contrato pra atribuir uma.</p>` : ""}
         ${g.clientes.map(cli => `<div style="margin-bottom:10px; padding-bottom:10px; border-bottom:1px solid var(--border);">
           <div style="display:flex; justify-content:space-between; font-weight:600; margin-bottom:4px;"><span>${escapeHtml(cli.nome)}</span><span class="hint">${fmtNum(cli.pessoas,0)} pessoas</span></div>
-          <table style="width:100%; font-size:13px;"><tbody>${cli.linhas.map(l => `<tr><td class="name-cell">${escapeHtml(l.nome)}</td><td class="num-cell">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd)}</td></tr>`).join("")}</tbody></table>
+          <table style="width:100%; font-size:13px;"><tbody>${cli.linhas.map(l => `<tr><td class="name-cell">${escapeHtml(l.nome)}</td><td class="num-cell">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd, l.fichaId)}</td></tr>`).join("")}</tbody></table>
         </div>`).join("")}
       </div>
     </div>`;
@@ -13863,7 +13834,7 @@ function pcpRomaneioSecaoHtml(titulo, linhas){
   if(!linhas.length) return "";
   return `<div style="margin-bottom:6px;">
     <div style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:#555; margin:6px 0 2px;">${titulo}</div>
-    <table style="width:100%; border-collapse:collapse; font-size:11.5px;">${linhas.map(l => `<tr><td style="padding:2px 0; border-top:1px solid #ddd;">${escapeHtml(l.nome)}</td><td style="padding:2px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd)}</td></tr>`).join("")}</table>
+    <table style="width:100%; border-collapse:collapse; font-size:11.5px;">${linhas.map(l => `<tr><td style="padding:2px 0; border-top:1px solid #ddd;">${escapeHtml(l.nome)}</td><td style="padding:2px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd, l.fichaId)}</td></tr>`).join("")}</table>
   </div>`;
 }
 // uma via (cópia) do romaneio de 1 cliente — quente/frio separados, com assinatura de motorista e de
@@ -16255,11 +16226,11 @@ async function renderPCP(){
     </div>` : "") : (ehCafe || ehSubst || ehAjustes || ehSalSob) ? "" : ehRomaneio ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-rotas-gerenciar">Gerenciar rotas</button>
-    </div>` : `
-    <div style="display:flex; align-items:center; gap:8px;">
-      <button class="btn small primary" id="pcp-imprimir-volume">Volume total</button>
-      <button class="btn small primary" id="pcp-imprimir-etiquetas">Imprimir etiquetas</button>
-    </div>`;
+    </div>` : "";
+  // 10/11/2026: "Volume total" (topbar) saiu — imprimia quase a mesma coisa que "Composição principal"
+  // (que já ganhou a seção "Por cliente" nesta mesma sessão); "Imprimir etiquetas" não saiu, só mudou de
+  // lugar — foi pra junto dos outros botões de impressão da Produção da cozinha, em vez de ficar solto no
+  // topbar (única aba com botão de impressão fora do painel — ponto já registrado na auditoria de 10/11).
 
   const unidadeFiltro = pcpUnidadeSel === "todos" ? null : pcpUnidadeSel;
   // serviços (Almoço/Jantar/Ceia, multi-seleção) se aplica em Produção, Volume por cliente, Açougue (desde
@@ -16450,7 +16421,7 @@ async function renderPCP(){
       ${res.servicos.length > 1 ? `<div class="es-kpis inner" style="margin-bottom:16px;">
         ${res.servicos.map(id => `<div class="vn-card"><div class="vn-label">${PCP_TURNOS.find(t=>t.id===id).nome}</div><div class="vn-value">${fmtNum(res.receitas.reduce((s,r)=>pcpGrupoForaDoPeso(r.grupo)?s:s+(r.porTurno[id]||0),0),1)} kg</div></div>`).join("")}
       </div>` : ""}
-      <p class="footnote" style="margin:0 0 14px;">Pra imprimir a ordem de produção ou as receitas do dia inteiras, escolha Matriz ou Filial acima — impressão por cozinha, nunca as duas juntas numa folha só. <button class="btn small primary" id="pcp-imprimir-cardapios-dia" style="margin-left:6px;">Cardápios do dia</button></p>
+      <p class="footnote" style="margin:0 0 14px;">Pra imprimir a ordem de produção ou as receitas do dia inteiras, escolha Matriz ou Filial acima — impressão por cozinha, nunca as duas juntas numa folha só. <button class="btn small primary" id="pcp-imprimir-cardapios-dia" style="margin-left:6px;">Cardápios do dia</button> <button class="btn small primary" id="pcp-imprimir-etiquetas" style="margin-left:6px;">Imprimir etiquetas</button></p>
       ${pcpProducaoAmbasHtml(listaRes, margemPct)}
       <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="scale"></i>Volume por cliente</h3></div>
       <p class="footnote" style="margin:0 0 10px; font-weight:600;">Matriz</p>${pcpVolumeHtml(listaRes[0])}<p class="footnote" style="margin:16px 0 10px; font-weight:600;">Filial</p>${pcpVolumeHtml(listaRes[1])}
@@ -16507,6 +16478,7 @@ async function renderPCP(){
         <button class="btn small primary" data-pcp-ordem="sobremesas">Sobremesas</button>
         <button class="btn small primary" id="pcp-imprimir-receitas-producao">Receitas do dia</button>
         <button class="btn small primary" id="pcp-imprimir-cardapios-dia">Cardápios do dia</button>
+        <button class="btn small primary" id="pcp-imprimir-etiquetas">Imprimir etiquetas</button>
       </div>
       ${prodResList.map((r,i) => `<div data-pcp-dia-bloco="${prodDiasAtivos[i]}">${multiDia ? `<div class="panel-head" style="margin:20px 0 10px; border:none;"><h3>${DIA_LABEL[prodDiasAtivos[i]]}</h3></div>` : ""}${pcpProducaoHtml(r, margemPct)}</div>`).join("")}
       <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="scale"></i>Volume por cliente</h3></div>
@@ -16545,6 +16517,11 @@ async function renderPCP(){
       const resUni = listaRes.find(r => r.unidade === unidade);
       btn.addEventListener("click", () => pcpImprimirReceitaUnica(resUni, margemPct, fichaId));
     });
+    const btnEtiquetasAmbas = document.getElementById("pcp-imprimir-etiquetas");
+    if(btnEtiquetasAmbas) btnEtiquetasAmbas.addEventListener("click", async () => {
+      if(!(await pcpConfirmarSubstituicoesRevisadas(res.dia, unidadeFiltro))) return;
+      pcpEtiquetasProdutoImprimir(res);
+    });
   } else if(ehProducao){
     // Clientes (10/11/2026): atalhos Grupo inteiro/Matriz/Filial trocam a unidade do topo (fonte única de
     // verdade pra "qual unidade" — evita o filtro de cliente cruzar com uma unidade que não é mais a
@@ -16572,6 +16549,15 @@ async function renderPCP(){
       for(const r of prodResList){
         if(!(await pcpConfirmarSubstituicoesRevisadas(r.dia, unidadeFiltro))) continue;
         pcpImprimirReceitasProducao(r, margemPct);
+      }
+    });
+    // "Imprimir etiquetas" (10/11/2026): saiu do topbar, entrou junto dos outros botões de impressão da
+    // Produção — mesmo critério de dias/clientes selecionados, 1 impressão por dia marcado.
+    const btnEtiquetas = document.getElementById("pcp-imprimir-etiquetas");
+    if(btnEtiquetas) btnEtiquetas.addEventListener("click", async () => {
+      for(const r of prodResList){
+        if(!(await pcpConfirmarSubstituicoesRevisadas(r.dia, unidadeFiltro))) continue;
+        pcpEtiquetasProdutoImprimir(r);
       }
     });
     content.querySelectorAll("button[data-pcp-imprimir-receita]").forEach(btn => {
@@ -16628,11 +16614,12 @@ async function renderPCP(){
     }));
   }
   // pcpConferirHtml fica embutido no preâmbulo de Produção E de Volume por cliente (15/10/2026) — wiring
-  // genérico, fora do if/else acima, pra pegar os checkboxes nas duas telas.
-  content.querySelectorAll("input[data-pcp-conf-check]").forEach(chk => {
-    chk.addEventListener("change", () => {
-      const chave = chk.dataset.pcpConfCheck;
-      if(chk.checked) pcpConferirRevisados.add(chave); else pcpConferirRevisados.delete(chave);
+  // genérico, fora do if/else acima, pra pegar os botões "Marcar revisado" nas duas telas (10/11/2026:
+  // virou botão em vez de checkbox, mais fácil de acertar no toque/mouse).
+  content.querySelectorAll("button[data-pcp-conf-check]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const chave = btn.dataset.pcpConfCheck;
+      if(pcpConferirRevisados.has(chave)) pcpConferirRevisados.delete(chave); else pcpConferirRevisados.add(chave);
       renderPCP();
     });
   });
@@ -16704,16 +16691,10 @@ async function renderPCP(){
   } else if(ehAjustes){
     pcpAjustesBind(content, pcpSemanaSel, pcpDiaSel);
     pcpPesosBind(content);
-  } else {
-    document.getElementById("pcp-imprimir-volume").addEventListener("click", async () => {
-      if(!(await pcpConfirmarSubstituicoesRevisadas(res.dia, unidadeFiltro))) return;
-      pcpImprimirVolumePorCliente(res, margemPct);
-    });
-    document.getElementById("pcp-imprimir-etiquetas").addEventListener("click", async () => {
-      if(!(await pcpConfirmarSubstituicoesRevisadas(res.dia, unidadeFiltro))) return;
-      pcpEtiquetasProdutoImprimir(res);
-    });
   }
+  // ehProducao e ehSalSob já têm toda a wiring própria no bloco de cima (10/11/2026: "Imprimir etiquetas"
+  // saiu do topbar da Produção e virou botão junto dos outros de impressão; "Volume total" foi removido —
+  // imprimia quase a mesma coisa que "Composição principal", que já ganhou a seção "Por cliente").
   if(window.lucide) lucide.createIcons();
 }
 
