@@ -982,6 +982,13 @@ function fmtNum(n, d=3){
   if(n === null || n === undefined || !isFinite(n)) return "—";
   return n.toLocaleString("pt-BR",{minimumFractionDigits:0, maximumFractionDigits:d});
 }
+// valor pronto pro atributo "value" de um <input type=number> (ponto decimal, sem separador de milhar,
+// sem zeros à direita) — fmtNum() não serve aqui por usar vírgula/formatação pt-BR.
+function numStr(n, d){
+  if(n === null || n === undefined || !isFinite(n)) return "";
+  const f = Math.pow(10, d==null?4:d);
+  return String(Math.round(n*f)/f);
+}
 function fmtPct(n){
   if(n === null || n === undefined || !isFinite(n)) return "—";
   return (n*100).toLocaleString("pt-BR",{minimumFractionDigits:1, maximumFractionDigits:1}) + "%";
@@ -1643,6 +1650,9 @@ function semanaDaData(ymd){
 
 /* ---- pedidos (compras — fornecedor, itens de insumo, conferência de recebimento) ---- */
 const UNIDADES_COMPRA = [{id:"matriz", nome:"Matriz"}, {id:"filial", nome:"Filial"}];
+// 10/11/2026, pedido do Marcelo: tipos fixos de embalagem pro item do pedido — lista fechada que ele deu;
+// "Outra" abre um campo de texto livre pra não forçar errado quando a embalagem real não é nenhuma dessas.
+const EMBALAGENS_PEDIDO = ["Pacote","Caixa","Fardo","Unidade","Galão","Balde","Saco","Outra"];
 // bloco de compra "de apoio" (limpeza, descartáveis, embalagens, material de escritório) — não entra na
 // Lista de compra (demanda por ficha técnica), pois não é insumo de receita: o orçado dele é um valor fixo
 // por refeição servida, hoje R$1,00 (referência do controle manual, ajustada em 12/10/2026 — era R$2,50).
@@ -1755,12 +1765,12 @@ function precoMedioMesAnterior(insumoId, dataRefYMD){
 // preco_unitario = preço da embalagem como foi lançado naquele pedido (o que o fornecedor cobra); preco_base
 // = já convertido pra unidade base (kg/L/un), pra quem precisa comparar com o custo das fichas técnicas.
 function fornecedorSugeridoParaInsumo(insumoId){
-  let melhor = null; // {fornecedor_id, fornecedor, data_pedido, preco_unitario, fator_embalagem, preco_base}
+  let melhor = null; // {fornecedor_id, fornecedor, data_pedido, preco_unitario, fator_embalagem, preco_base, embalagem_tipo, embalagem_outra}
   pedidos.forEach(p => {
     if(!p.fornecedor_id || !p.data_pedido) return;
     (p.itens||[]).forEach(it => {
       if(it.insumo_id !== insumoId) return;
-      if(!melhor || p.data_pedido > melhor.data_pedido) melhor = {fornecedor_id: p.fornecedor_id, fornecedor: p.fornecedor, data_pedido: p.data_pedido, preco_unitario: it.preco_unitario, fator_embalagem: fatorEmbalagemItem(it), preco_base: precoBaseItem(it)};
+      if(!melhor || p.data_pedido > melhor.data_pedido) melhor = {fornecedor_id: p.fornecedor_id, fornecedor: p.fornecedor, data_pedido: p.data_pedido, preco_unitario: it.preco_unitario, fator_embalagem: fatorEmbalagemItem(it), preco_base: precoBaseItem(it), embalagem_tipo: it.embalagem_tipo||null, embalagem_outra: it.embalagem_outra||null};
     });
   });
   return melhor;
@@ -1791,8 +1801,19 @@ function statusChip(st){ return `<span class="chip ${st.cls}"><span class="dot">
 function pedidoValorRecebido(p){
   return (p.itens||[]).reduce((s,it) => s + (it.quantidade_recebida != null ? it.quantidade_recebida : 0) * (it.preco_unitario||0), 0);
 }
-function novaLinhaPedido(){ return {insumo_id:null, nome:"", unidade:"", fator_embalagem:null, quantidade:null, preco_unitario:null}; }
+function novaLinhaPedido(){ return {insumo_id:null, nome:"", unidade:"", fator_embalagem:null, quantidade:null, preco_unitario:null, embalagem_tipo:null, embalagem_outra:null}; }
 function valorTotalItensPedido(itens){ return (itens||[]).reduce((s,l) => s + (l.quantidade||0)*(l.preco_unitario||0), 0); }
+// 10/11/2026, pedido do Marcelo: rótulo da embalagem (usado em "unidade" pra impressão/texto ao fornecedor,
+// que já existiam e liam esse campo) agora é montado a partir do tipo fixo escolhido + peso/qtd da embalagem
+// + unidade de medida do insumo — em vez de texto livre digitado à mão (fonte do erro de caixa-virou-quilo:
+// nada garantia que o texto batesse com o fator realmente usado no cálculo).
+function rotuloEmbalagemItem(l, ins){
+  const tipo = l.embalagem_tipo === "Outra" ? (l.embalagem_outra||"").trim() || "Embalagem" : (l.embalagem_tipo || "");
+  if(!tipo) return "";
+  const baseLabel = ins ? unidadeCustoInsumo(ins) : "";
+  const fator = fatorEmbalagemItem(l);
+  return (fator > 1 && baseLabel) ? `${tipo} de ${fmtNum(fator,3)} ${baseLabel}` : tipo;
+}
 // P0-3 (19/10/2026): desde sempre, "quantidade" e "preco_unitario" do item do pedido eram tratados pelo
 // resto do sistema (atualização de custo de Insumos, alerta de preço, sugestão por fornecedor) como se já
 // fossem a quantidade/custo na unidade BASE do insumo (kg/L/un — a mesma das fichas técnicas). Na prática
@@ -10145,7 +10166,8 @@ function renderTabPedidos(){
 
 /* ---- modal: registrar/editar pedido ---- */
 function linhaDePedidoAnterior(it){
-  return { insumo_id: it.insumo_id||null, nome: it.nome||"", unidade: it.unidade||"", fator_embalagem: it.fator_embalagem||null, quantidade: it.quantidade!=null?it.quantidade:null, preco_unitario: it.preco_unitario!=null?it.preco_unitario:null };
+  return { insumo_id: it.insumo_id||null, nome: it.nome||"", unidade: it.unidade||"", fator_embalagem: it.fator_embalagem||null, quantidade: it.quantidade!=null?it.quantidade:null, preco_unitario: it.preco_unitario!=null?it.preco_unitario:null,
+    embalagem_tipo: it.embalagem_tipo||null, embalagem_outra: it.embalagem_outra||null };
 }
 function destinoOpcoes(){
   const ativos = [...contratos.entries()].filter(([,c]) => c.ativo);
@@ -10479,6 +10501,7 @@ function openPedidoModal(id, opts){
         <div class="modal-foot">
           <div style="display:flex; gap:8px;">
             ${existing ? `<button class="btn danger" id="del-m">Excluir pedido</button>` : ""}
+            ${existing ? `<button class="btn ghost" id="pd-imprimir-m" type="button">Imprimir pedido</button>` : ""}
             <button class="btn ghost" id="pd-texto-forn" type="button">Gerar texto para fornecedor</button>
           </div>
           <div style="display:flex; gap:8px;">
@@ -10511,27 +10534,38 @@ function openPedidoModal(id, opts){
   refreshFornInfo();
 
   const wrap = document.getElementById("pd-lines");
-  // P0-3 (19/10/2026): a tela mostrava "Quantidade" + "Un." (travada no kg/L/un do insumo) + "Preço unit.",
-  // mas quem lança pensa em embalagem ("5 sacos a R$235") — e era isso que acabava gravado, sem conversão,
-  // estourando o custo em até 700× (ver auditoria e revisão manual dos pedidos existentes). Agora o operador
-  // lança a embalagem como ela é comprada de verdade: nº de embalagens + preço da embalagem + fator de
-  // conversão pra unidade base (pré-preenchido do cadastro do insumo, mas editável — o fornecedor pode vender
-  // embalagem diferente da "padrão"). Uma linha de prévia mostra o equivalente em base pra conferir de olho
-  // antes de salvar.
+  // P0-3 (19/10/2026) + ajuste de 10/11/2026 (pedido do Marcelo, mesmo motivo — pedido antigo registrado com
+  // o preço da caixa gravado como se fosse preço do quilo, porque "Embalagem"/"Fator → base" eram 2 campos
+  // pequenos e fáceis de deixar errados): linha do item agora tem cada coisa no seu próprio campo, nomeada do
+  // jeito que quem compra pensa — Produto, Qtd. de embalagens, tipo de Embalagem (lista fechada), Peso/qtd.
+  // na embalagem, Unidade de medida (vem do cadastro do insumo, não editável aqui — mudar isso por pedido
+  // bagunçaria a ficha técnica), Custo por kg/L/un e Custo da embalagem lado a lado. Esses 2 últimos são mão
+  // dupla (editar um recalcula o outro pelo Peso/qtd. na embalagem) — digitar em qualquer um dos dois dá o
+  // mesmo resultado, não existe "campo certo" e "campo errado" como antes.
   function linhaHtml(l,i){
-    const fator = fatorEmbalagemItem(l);
-    const baseLabel = l.insumo_id ? unidadeCustoInsumo(insumos.get(l.insumo_id)) : "";
-    const previaBase = (l.quantidade > 0 && fator > 0) ? `≈ ${fmtNum(qtdBaseItem(l),3)} ${baseLabel}${l.preco_unitario>0 ? ` a ${fmtMoney(precoBaseItem(l))}/${baseLabel}` : ""}` : "";
+    const ins = l.insumo_id ? insumos.get(l.insumo_id) : null;
+    const baseLabel = ins ? unidadeCustoInsumo(ins) : "—";
+    const custoBase = (l.insumo_id && l.preco_unitario != null) ? precoBaseItem(l) : null;
+    const outraVisivel = l.embalagem_tipo === "Outra";
     return `
-      <div class="field-row pd-line" data-i="${i}" style="align-items:flex-start;">
-        <div class="field" style="flex:2;"><label>Insumo</label><input type="text" class="pd-nome" list="pd-insumo-list" autocomplete="off" value="${escapeHtml(l.nome||"")}" placeholder="Buscar insumo…"><div class="footnote" style="margin-top:2px;">${l.insumo_id ? escapeHtml(blocoDoInsumo(l.insumo_id)) : (l.nome ? '<span style="color:var(--critical);">insumo não encontrado — escolha da lista</span>' : "")}</div><div class="footnote pd-ultimo" style="margin-top:2px;"></div></div>
-        <div class="field"><label>Qtd. embalagens</label><input type="number" step="0.001" min="0" class="pd-qtd" value="${l.quantidade!=null?l.quantidade:""}"></div>
-        <div class="field" style="width:110px;"><label>Embalagem</label><input type="text" class="pd-un" value="${escapeHtml(l.unidade||"")}" placeholder="ex.: SC 30KG"></div>
-        <div class="field" style="width:90px;"><label>Fator → base</label><input type="number" step="0.0001" min="0.0001" class="pd-fator" value="${l.fator_embalagem!=null?l.fator_embalagem:""}" title="Quantas unidades base (kg/L/un) cabem numa embalagem"></div>
-        <div class="field"><label>Preço da embalagem (R$)</label><input type="number" step="0.01" min="0" class="pd-preco" value="${l.preco_unitario!=null?l.preco_unitario:""}"><div class="footnote pd-alerta" style="margin-top:2px;"></div></div>
-        <div class="field"><label>Valor</label><div class="val small" style="padding:9px 0;">${fmtMoney((l.quantidade||0)*(l.preco_unitario||0))}</div></div>
-        <div class="field"><label>&nbsp;</label><button type="button" class="btn small ghost pd-rm" style="color:var(--critical);">remover</button></div>
-        <div class="footnote pd-base-preview" style="flex-basis:100%; margin:-4px 0 0;">${previaBase}</div>
+      <div class="pd-line" data-i="${i}" style="border:1px solid var(--border); border-radius:10px; padding:12px 12px 4px; margin-bottom:10px;">
+        <div class="field-row" style="margin-bottom:0;">
+          <div class="field" style="grid-column:span 2;"><label>Produto</label><input type="text" class="pd-nome" list="pd-insumo-list" autocomplete="off" value="${escapeHtml(l.nome||"")}" placeholder="Buscar insumo…"><div class="footnote" style="margin-top:2px;">${l.insumo_id ? escapeHtml(blocoDoInsumo(l.insumo_id)) : (l.nome ? '<span style="color:var(--critical);">insumo não encontrado — escolha da lista</span>' : "")}</div><div class="footnote pd-ultimo" style="margin-top:2px;"></div></div>
+          <div class="field"><label>Qtd. de embalagens</label><input type="number" step="0.001" min="0" class="pd-qtd" value="${l.quantidade!=null?l.quantidade:""}"></div>
+          <div class="field"><label>Embalagem</label>
+            <select class="pd-embtipo">
+              <option value="">selecione…</option>
+              ${EMBALAGENS_PEDIDO.map(t => `<option value="${escapeHtml(t)}" ${l.embalagem_tipo===t?"selected":""}>${escapeHtml(t)}</option>`).join("")}
+            </select>
+          </div>
+          <div class="field pd-embtipo-outra-wrap" style="${outraVisivel?"":"display:none;"}"><label>Especifique a embalagem</label><input type="text" class="pd-embtipo-outra" value="${escapeHtml(l.embalagem_outra||"")}" placeholder="ex.: Rolo, Garrafa…"></div>
+          <div class="field"><label>Peso/qtd. na embalagem</label><div style="display:flex; gap:6px; align-items:center;"><input type="number" step="0.0001" min="0.0001" class="pd-fator" style="flex:1;" value="${l.fator_embalagem!=null?numStr(l.fator_embalagem):""}" title="Quanto vem dentro de 1 embalagem, na unidade de medida do insumo"><span class="footnote" style="white-space:nowrap;">${escapeHtml(baseLabel)}</span></div></div>
+          <div class="field"><label>Unidade de medida</label><div class="val small" style="padding:9px 0;" title="Vem do cadastro do insumo em Insumos">${escapeHtml(baseLabel)}</div></div>
+          <div class="field"><label>Custo por ${escapeHtml(baseLabel)} (R$)</label><input type="number" step="0.0001" min="0" class="pd-custobase" value="${custoBase!=null?numStr(custoBase):""}"></div>
+          <div class="field"><label>Custo da embalagem (R$)</label><input type="number" step="0.01" min="0" class="pd-preco" value="${l.preco_unitario!=null?l.preco_unitario:""}"><div class="footnote pd-alerta" style="margin-top:2px;"></div></div>
+          <div class="field"><label>Valor total</label><div class="val small pd-valor" style="padding:9px 0;">${fmtMoney((l.quantidade||0)*(l.preco_unitario||0))}</div></div>
+          <div class="field"><label>&nbsp;</label><button type="button" class="btn small ghost pd-rm" style="color:var(--critical);">remover</button></div>
+        </div>
       </div>`;
   }
   // mostra o último preço de embalagem pago por esse insumo (qualquer fornecedor) assim que ele é escolhido —
@@ -10563,13 +10597,23 @@ function openPedidoModal(id, opts){
       const i = +row.dataset.i, l = draft.itens[i];
       const alertaEl = row.querySelector(".pd-alerta");
       const ultimoEl = row.querySelector(".pd-ultimo");
-      const baseEl = row.querySelector(".pd-base-preview");
+      const valorEl = row.querySelector(".pd-valor");
+      const custoBaseEl = row.querySelector(".pd-custobase");
+      const precoEl = row.querySelector(".pd-preco");
+      const fatorEl = row.querySelector(".pd-fator");
+      const outraWrap = row.querySelector(".pd-embtipo-outra-wrap");
       if(alertaEl) alertaEl.innerHTML = alertaPrecoHtml(l);
       if(ultimoEl) ultimoEl.innerHTML = ultimoPrecoHtml(l);
-      function refreshPreview(){
+      function refreshValor(){ valorEl.textContent = fmtMoney((l.quantidade||0)*(l.preco_unitario||0)); }
+      // 10/11/2026: "Custo por kg/L/un" e "Custo da embalagem" são mão dupla — l.preco_unitario (custo da
+      // embalagem) continua sendo o único valor realmente gravado no pedido; o campo "Custo por kg/L/un" é
+      // só uma forma alternativa de preenchê-lo. l._custoAnchor (não é salvo — fora da lista de campos do
+      // payload) guarda qual dos dois foi editado por último, pra saber qual recalcular quando o Peso/qtd.
+      // na embalagem mudar depois.
+      function recalcCustoBaseDisplay(){
         const fator = fatorEmbalagemItem(l);
-        const baseLabel = l.insumo_id ? unidadeCustoInsumo(insumos.get(l.insumo_id)) : "";
-        baseEl.textContent = (l.quantidade > 0 && fator > 0) ? `≈ ${fmtNum(qtdBaseItem(l),3)} ${baseLabel}${l.preco_unitario>0 ? ` a ${fmtMoney(precoBaseItem(l))}/${baseLabel}` : ""}` : "";
+        const base = (l.preco_unitario != null && fator > 0) ? l.preco_unitario / fator : null;
+        if(custoBaseEl && document.activeElement !== custoBaseEl) custoBaseEl.value = base != null ? numStr(base) : "";
       }
       row.querySelector(".pd-nome").addEventListener("change", e => {
         const texto = e.target.value;
@@ -10578,17 +10622,59 @@ function openPedidoModal(id, opts){
         if(match){
           l.insumo_id = match[0];
           const ins = match[1];
-          const fator = ins.unidade_convertida > 0 ? ins.unidade_convertida : 1;
+          const sug = fornecedorSugeridoParaInsumo(match[0]); // última compra desse insumo (qualquer fornecedor) — pré-preenche tudo
+          const fator = (sug && sug.fator_embalagem > 0) ? sug.fator_embalagem : (ins.unidade_convertida > 0 ? ins.unidade_convertida : 1);
           l.fator_embalagem = fator;
-          l.unidade = fator > 1 ? `${fmtNum(fator,3)} ${unidadeCustoInsumo(ins)}` : unidadeCustoInsumo(ins);
-          if(l.preco_unitario == null && ins.custo_unitario != null) l.preco_unitario = ins.custo_unitario; // custo_unitario do cadastro já é o preço da embalagem (fator aplicado)
-        } else { l.insumo_id = null; l.unidade = ""; l.fator_embalagem = null; }
+          if(sug){
+            l.embalagem_tipo = sug.embalagem_tipo || null;
+            l.embalagem_outra = sug.embalagem_outra || null;
+            if(l.preco_unitario == null) l.preco_unitario = sug.preco_unitario;
+          } else if(l.preco_unitario == null && ins.custo_unitario != null){
+            l.preco_unitario = ins.custo_unitario; // custo_unitario do cadastro já é o preço da embalagem (fator aplicado)
+          }
+          l.unidade = rotuloEmbalagemItem(l, ins);
+        } else { l.insumo_id = null; l.unidade = ""; l.fator_embalagem = null; l.embalagem_tipo = null; l.embalagem_outra = null; }
         renderLines(); refreshTotal();
       });
-      row.querySelector(".pd-qtd").addEventListener("input", e => { l.quantidade = e.target.value===""?null:parseFloat(e.target.value); row.querySelector(".val.small").textContent = fmtMoney((l.quantidade||0)*(l.preco_unitario||0)); refreshPreview(); refreshTotal(); });
-      row.querySelector(".pd-un").addEventListener("input", e => { l.unidade = e.target.value; });
-      row.querySelector(".pd-fator").addEventListener("input", e => { l.fator_embalagem = e.target.value===""?null:parseFloat(e.target.value); refreshPreview(); if(alertaEl) alertaEl.innerHTML = alertaPrecoHtml(l); });
-      row.querySelector(".pd-preco").addEventListener("input", e => { l.preco_unitario = e.target.value===""?null:parseFloat(e.target.value); row.querySelector(".val.small").textContent = fmtMoney((l.quantidade||0)*(l.preco_unitario||0)); if(alertaEl) alertaEl.innerHTML = alertaPrecoHtml(l); refreshPreview(); refreshTotal(); });
+      row.querySelector(".pd-qtd").addEventListener("input", e => { l.quantidade = e.target.value===""?null:parseFloat(e.target.value); refreshValor(); refreshTotal(); });
+      row.querySelector(".pd-embtipo").addEventListener("change", e => {
+        l.embalagem_tipo = e.target.value || null;
+        if(outraWrap) outraWrap.style.display = l.embalagem_tipo === "Outra" ? "" : "none";
+        l.unidade = rotuloEmbalagemItem(l, l.insumo_id ? insumos.get(l.insumo_id) : null);
+      });
+      if(row.querySelector(".pd-embtipo-outra")) row.querySelector(".pd-embtipo-outra").addEventListener("input", e => {
+        l.embalagem_outra = e.target.value;
+        l.unidade = rotuloEmbalagemItem(l, l.insumo_id ? insumos.get(l.insumo_id) : null);
+      });
+      fatorEl.addEventListener("input", e => {
+        l.fator_embalagem = e.target.value===""?null:parseFloat(e.target.value);
+        l.unidade = rotuloEmbalagemItem(l, l.insumo_id ? insumos.get(l.insumo_id) : null);
+        if(l._custoAnchor === "base"){
+          // âncora é o custo por kg/L/un digitado — recalcula o custo da embalagem (o que de fato é gravado)
+          const base = custoBaseEl ? parseFloat(custoBaseEl.value) : NaN;
+          if(!isNaN(base)){ l.preco_unitario = base * fatorEmbalagemItem(l); if(precoEl) precoEl.value = numStr(l.preco_unitario); }
+        } else {
+          recalcCustoBaseDisplay();
+        }
+        if(alertaEl) alertaEl.innerHTML = alertaPrecoHtml(l);
+        refreshValor(); refreshTotal();
+      });
+      custoBaseEl.addEventListener("input", e => {
+        l._custoAnchor = "base";
+        const base = e.target.value===""?null:parseFloat(e.target.value);
+        const fator = fatorEmbalagemItem(l);
+        l.preco_unitario = (base != null && !isNaN(base)) ? base * fator : null;
+        if(precoEl) precoEl.value = l.preco_unitario != null ? numStr(l.preco_unitario) : "";
+        if(alertaEl) alertaEl.innerHTML = alertaPrecoHtml(l);
+        refreshValor(); refreshTotal();
+      });
+      precoEl.addEventListener("input", e => {
+        l._custoAnchor = "embalagem";
+        l.preco_unitario = e.target.value===""?null:parseFloat(e.target.value);
+        recalcCustoBaseDisplay();
+        if(alertaEl) alertaEl.innerHTML = alertaPrecoHtml(l);
+        refreshValor(); refreshTotal();
+      });
       row.querySelector(".pd-rm").addEventListener("click", () => { draft.itens.splice(i,1); if(!draft.itens.length) draft.itens.push(novaLinhaPedido()); renderLines(); refreshTotal(); });
     });
   }
@@ -10618,8 +10704,11 @@ function openPedidoModal(id, opts){
         linha.nome = novo.nome;
         const fator = novo.unidade_convertida > 0 ? novo.unidade_convertida : 1;
         linha.fator_embalagem = fator;
-        linha.unidade = fator > 1 ? `${fmtNum(fator,3)} ${unidadeCustoInsumo(novo)}` : unidadeCustoInsumo(novo);
         if(linha.preco_unitario == null && novo.custo_unitario != null) linha.preco_unitario = novo.custo_unitario;
+        // insumo recém-criado não tem histórico de compra — fica sem tipo de embalagem definido (em branco,
+        // de propósito) até o operador escolher na linha; sem isso, "unidade" ficaria só com o peso, sem dizer
+        // o que é a embalagem.
+        linha.unidade = rotuloEmbalagemItem(linha, novo);
       }
       if(!linhaVazia) draft.itens.push(linha);
       openPedidoModal(id, { ...opts, draftOverride: draft });
@@ -10639,6 +10728,8 @@ function openPedidoModal(id, opts){
     abrirTextoFornecedorModal(texto);
   });
 
+  if(existing) document.getElementById("pd-imprimir-m").addEventListener("click", () => imprimirPedido(id));
+
   if(existing) document.getElementById("del-m").onclick = async () => {
     if(!(await confirmDialog(`Excluir o pedido de "${draft.fornecedor||"—"}"?`))) return;
     try{
@@ -10656,6 +10747,12 @@ function openPedidoModal(id, opts){
     if(!data_pedido){ errEl.textContent = "Informe a data do pedido."; return; }
     const itensValidos = draft.itens.filter(l => l.insumo_id && l.quantidade > 0);
     if(!itensValidos.length){ errEl.textContent = "Adicione ao menos um item com insumo e quantidade."; return; }
+    // 10/11/2026, pedido do Marcelo: exige a embalagem escolhida em cada item — é o campo que garante que o
+    // "Peso/qtd. na embalagem" (fator de conversão pro custo por kg/L/un) foi mesmo conferido, não só herdado
+    // de um padrão às cegas. Sem essa trava, era possível salvar com o fator errado (a causa do erro antigo:
+    // preço da caixa gravado como se fosse preço do quilo).
+    const semEmbalagem = itensValidos.find(l => !l.embalagem_tipo || (l.embalagem_tipo==="Outra" && !(l.embalagem_outra||"").trim()));
+    if(semEmbalagem){ errEl.textContent = `Escolha a embalagem de "${semEmbalagem.nome}" antes de salvar.`; return; }
     // conferência de preço: se algum item está >15% acima da média paga no mês anterior, pede confirmação antes
     // de salvar — quem lança pode voltar e corrigir se for erro de digitação, em vez de só reparar no aviso da linha.
     const itensAlerta = itensComAlertaDePreco(itensValidos, data_pedido);
@@ -10685,7 +10782,8 @@ function openPedidoModal(id, opts){
       destino_ids: dest.ids,
       semana: semanaDaData(data_pedido),
       semana_referencia: semrefVal === "" ? null : parseInt(semrefVal,10),
-      itens: itensValidos.map(l => ({ insumo_id:l.insumo_id, nome:l.nome, unidade:l.unidade, fator_embalagem:fatorEmbalagemItem(l), quantidade:l.quantidade, preco_unitario:l.preco_unitario||0,
+      itens: itensValidos.map(l => ({ insumo_id:l.insumo_id, nome:l.nome, unidade: rotuloEmbalagemItem(l, insumos.get(l.insumo_id)) || l.unidade, fator_embalagem:fatorEmbalagemItem(l), quantidade:l.quantidade, preco_unitario:l.preco_unitario||0,
+        embalagem_tipo:l.embalagem_tipo||null, embalagem_outra: l.embalagem_tipo==="Outra" ? (l.embalagem_outra||null) : null,
         ...(existing ? (() => { const orig=(existing.itens||[]).find(o=>o.insumo_id===l.insumo_id); return orig && orig.quantidade_recebida!=null ? {quantidade_recebida:orig.quantidade_recebida} : {}; })() : {}) })),
       valor_total: valorTotalItensPedido(itensValidos),
       observacoes: document.getElementById("pd-obs").value.trim() || null,
