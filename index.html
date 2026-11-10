@@ -10316,9 +10316,12 @@ async function atualizarCustosInsumosDoPedido(itensComCusto, dataPedido){
   }
   await loadInsumos();
 }
-// texto corrido pronto pra copiar e enviar ao fornecedor (whatsapp/e-mail) — só item/quantidade/unidade, sem
-// preço: o preço lançado no pedido é o custo já normalizado (por kg/L/un) usado nas fichas técnicas, que pode
-// não bater com a forma como o fornecedor cota (por pacote/caixa), então evita confusão na comunicação.
+// texto corrido pronto pra copiar e enviar ao fornecedor (whatsapp/e-mail).
+// 10/11/2026, pedido do Marcelo: passou a trazer o valor de cada item e o total do pedido (antes só tinha
+// nome+quantidade+embalagem, de propósito — l.preco_unitario na época era o custo já normalizado por kg/L/un,
+// que não batia com o jeito que o fornecedor cota, por pacote/caixa). Deixou de ser problema com o redesenho
+// da linha do item (mesmo dia): l.preco_unitario agora É o custo da embalagem, exatamente o que o fornecedor
+// cobra — mostrar o valor aqui virou seguro e, mais que isso, útil (fornecedor confirma preço antes de entregar).
 function textoPedidoFornecedor(p){
   const linhas = [
     `Pedido de compra — Grupo Villa Ramos`,
@@ -10327,7 +10330,13 @@ function textoPedidoFornecedor(p){
     p.data_entrega_prevista ? `Entrega prevista: ${fmtDataYMD(p.data_entrega_prevista)}` : null,
     "",
     "Itens:",
-    ...p.itens.map(l => `- ${l.nome} — ${fmtNum(l.quantidade,3)} ${l.unidade||""}`.trim()),
+    ...p.itens.map(l => {
+      const base = `- ${l.nome} — ${fmtNum(l.quantidade,3)} ${l.unidade||""}`.trim();
+      const valorItem = (l.quantidade||0) * (l.preco_unitario||0);
+      return l.preco_unitario ? `${base} — ${fmtMoney(l.preco_unitario)} cada = ${fmtMoney(valorItem)}` : base;
+    }),
+    "",
+    `Valor total do pedido: ${fmtMoney(valorTotalItensPedido(p.itens))}`,
   ].filter(l => l !== null);
   if(p.observacoes) linhas.push("", `Observações: ${p.observacoes}`);
   return linhas.join("\n");
@@ -10368,6 +10377,12 @@ function abrirTextoFornecedorModal(texto){
 function imprimirPedido(id){
   const p = pedidos.get(id);
   if(!p) return;
+  imprimirPedidoObjeto(p);
+}
+// 10/11/2026, pedido do Marcelo: "Imprimir pedido" passou a funcionar também num pedido ainda não salvo (na
+// tela de "Registrar pedido") — extraído o corpo de imprimirPedido(id) pra aceitar um objeto solto (mesmo
+// formato do payload salvo), montado na hora a partir do formulário, sem precisar de um id gravado.
+function imprimirPedidoObjeto(p){
   const w = window.open("", "_blank");
   if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
   const f = p.fornecedor_id ? fornecedores.get(p.fornecedor_id) : (fornecedorPorNome(p.fornecedor)||null);
@@ -10501,7 +10516,7 @@ function openPedidoModal(id, opts){
         <div class="modal-foot">
           <div style="display:flex; gap:8px;">
             ${existing ? `<button class="btn danger" id="del-m">Excluir pedido</button>` : ""}
-            ${existing ? `<button class="btn ghost" id="pd-imprimir-m" type="button">Imprimir pedido</button>` : ""}
+            <button class="btn ghost" id="pd-imprimir-m" type="button">Imprimir pedido</button>
             <button class="btn ghost" id="pd-texto-forn" type="button">Gerar texto para fornecedor</button>
           </div>
           <div style="display:flex; gap:8px;">
@@ -10723,7 +10738,23 @@ function openPedidoModal(id, opts){
     abrirTextoFornecedorModal(texto);
   });
 
-  if(existing) document.getElementById("pd-imprimir-m").addEventListener("click", () => imprimirPedido(id));
+  document.getElementById("pd-imprimir-m").addEventListener("click", () => {
+    if(existing){ imprimirPedido(id); return; }
+    const itensValidos = draft.itens.filter(l => l.insumo_id && l.quantidade > 0);
+    if(!itensValidos.length){ showAlert("Adicione ao menos um item com insumo e quantidade antes de imprimir."); return; }
+    const destIdx = +document.getElementById("pd-destino").value;
+    const dest = destinos[destIdx] || destinos[0];
+    imprimirPedidoObjeto({
+      fornecedor: document.getElementById("pd-fornecedor").value.trim(),
+      data_pedido: document.getElementById("pd-data").value,
+      data_entrega_prevista: document.getElementById("pd-entrega").value || null,
+      unidade: document.getElementById("pd-unidade").value,
+      destino_rotulo: dest.rotulo,
+      observacoes: document.getElementById("pd-obs").value.trim() || null,
+      valor_total: valorTotalItensPedido(itensValidos),
+      itens: itensValidos.map(l => ({ nome:l.nome, quantidade:l.quantidade, unidade: rotuloEmbalagemItem(l, insumos.get(l.insumo_id)) || l.unidade })),
+    });
+  });
 
   if(existing) document.getElementById("del-m").onclick = async () => {
     if(!(await confirmDialog(`Excluir o pedido de "${draft.fornecedor||"—"}"?`))) return;
