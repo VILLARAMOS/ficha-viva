@@ -13059,6 +13059,11 @@ let pcpConferirRevisados = new Set(); // chaves marcadas como "já vi/corrigido"
 // grava no banco; um Set por área (Estoque/Açougue) porque são telas independentes.
 let pcpReqDiasSel = new Set();
 let pcpAcgDiasSel = new Set();
+// dias marcados pra impressão em lote na "Produção da cozinha" (10/11/2026, pedido do Marcelo) — só da
+// sessão, não grava no banco. Começa vazio; ao renderizar a tela, se estiver vazio é semeado só com o dia
+// atualmente selecionado no toggle de dia do topo (pcpDiaSel), pra não mudar o comportamento de quem nunca
+// tocar nos checkboxes — marcar mais dias é o que liga a impressão em lote.
+let pcpProdDiasSel = new Set();
 // dias marcados pra impressão na tabela nova "Preparo da semana" do Açougue (corte×receita, 20/10/2026) —
 // Set PRÓPRIO, separado de pcpAcgDiasSel (que já era usado pela baixa de estoque/kardex acima), pra marcar
 // um dia numa tela não desmarcar o outro por engano.
@@ -16198,6 +16203,9 @@ async function renderPCP(){
   // Diferente do "Ambas" das outras sub-abas (que continua somando as duas, unidadeFiltro=null em `res`).
   const ehProducaoAmbas = ehProducao && pcpUnidadeSel === "todos";
   const listaRes = ehProducaoAmbas ? ["matriz", "filial"].map(u => pcpCalcularDia(pcpSemanaSel, pcpDiaSel, u, servicosFiltro)) : null;
+  // checkboxes de dia pra impressão em lote na Produção da cozinha (10/11/2026) — se ainda não foi tocado
+  // nesta sessão, semeia só com o dia atual (pcpDiaSel), pra não mudar o clique de quem nunca marcar nada.
+  if(ehProducao && !ehProducaoAmbas && !pcpProdDiasSel.size) pcpProdDiasSel.add(pcpDiaSel);
   // Substituições (16/10/2026, Tarefa 11): a grade sempre mostra 1 bloco por unidade REAL (nunca soma
   // Matriz+Filial numa tabela só, mesmo padrão de pcpProducaoAmbasHtml) — então em "Ambas" precisa dos dois
   // `res` separados, igual Produção já faz com `listaRes`.
@@ -16246,9 +16254,9 @@ async function renderPCP(){
       <button type="button" data-pcpsub="conferencia" class="${pcpSubView==="conferencia"?"active":""}">Conferência de expedição</button>
       <button type="button" data-pcpsub="romaneio" class="${pcpSubView==="romaneio"?"active":""}">Romaneio por rota</button>
     </div>
-    <div style="display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin-bottom:16px;">
+    <div class="menu-controls" style="margin-bottom:16px;">
       <div class="seg-toggle" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" data-pcpuni="${u.id}" class="${pcpUnidadeSel===u.id?"active":""}">${u.nome}${u.id !== "todos" ? ` <span style="opacity:.65; font-size:10.5px;">${pcpContagemUnidade(u.id)} clientes</span>` : ""}</button>`).join("")}</div>
-      <select id="pcp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===pcpSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))}</option>`).join("")}</select>
+      <select id="pcp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===pcpSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
       <div class="seg-toggle" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" data-pcpdia="${d}" class="${pcpDiaSel===d?"active":""}">${DIA_LABEL[d].slice(0,3)}</button>`).join("")}</div>
       <span class="chip neutral" style="height:auto; padding:6px 12px; font-weight:600;" title="Dia de operação em que esta aba está trabalhando">${diaSemanaExtenso(pcpDiaSel)} · ${fmtDataCompleta(dataDoDia(pcpSemanaSel, pcpDiaSel))}</span>
       ${servicosAplicavel ? `<div id="pcp-serv-tabs" style="display:flex; gap:12px; align-items:center;">${PCP_TURNOS.filter(t=>t.id!=="todos").map(t => `<label style="display:flex; align-items:center; gap:6px; font-size:13px; color:var(--text-muted); white-space:nowrap;"><input type="checkbox" data-pcp-serv="${t.id}" ${pcpServicosSel.has(t.id)?"checked":""}> ${t.nome}</label>`).join("")}</div>` : ""}
@@ -16349,8 +16357,14 @@ async function renderPCP(){
       ${res.servicos.length > 1 ? `<div class="es-kpis inner" style="margin-bottom:16px;">
         ${res.servicos.map(id => `<div class="vn-card"><div class="vn-label">${PCP_TURNOS.find(t=>t.id===id).nome}</div><div class="vn-value">${fmtNum(res.receitas.reduce((s,r)=>pcpGrupoForaDoPeso(r.grupo)?s:s+(r.porTurno[id]||0),0),1)} kg</div></div>`).join("")}
       </div>` : ""}
-      ${!ehProducaoAmbas ? `<div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px;">
-        <span class="footnote" style="margin:0;">Imprimir:</span>
+      ${!ehProducaoAmbas ? `<div class="panel" style="margin-bottom:14px;">
+        <div class="panel-body" style="display:flex; flex-wrap:wrap; gap:14px; align-items:center;">
+          <span class="footnote" style="margin:0; font-weight:600;">Dias para gerar a lista:</span>
+          ${DIAS_ORDEM.map(d => `<label style="display:flex; align-items:center; gap:6px; font-size:13px;"><input type="checkbox" data-pcp-proddia-sel="${d}" ${pcpProdDiasSel.has(d)?"checked":""}> ${DIA_LABEL[d].slice(0,3)}</label>`).join("")}
+        </div>
+      </div>
+      <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px;">
+        <span class="footnote" style="margin:0;">Imprimir${pcpProdDiasSel.size>1?` (${pcpProdDiasSel.size} dias marcados)`:""}:</span>
         <button class="btn small primary" data-pcp-ordem="todos">Todos os setores</button>
         <button class="btn small primary" data-pcp-ordem="cozinha">Composição principal</button>
         <button class="btn small primary" data-pcp-ordem="saladas">Saladas</button>
@@ -16380,7 +16394,13 @@ async function renderPCP(){
     renderPCP();
   });
   const btnCardapiosDia = document.getElementById("pcp-imprimir-cardapios-dia");
-  if(btnCardapiosDia) btnCardapiosDia.addEventListener("click", () => pcpImprimirCardapiosDoDia(ehProducaoAmbas ? listaRes : res));
+  if(btnCardapiosDia) btnCardapiosDia.addEventListener("click", () => {
+    if(ehProducaoAmbas){ pcpImprimirCardapiosDoDia(listaRes); return; }
+    const diasMarcados = DIAS_ORDEM.filter(d => pcpProdDiasSel.has(d));
+    if(diasMarcados.length <= 1){ pcpImprimirCardapiosDoDia(res); return; }
+    // vários dias marcados: pcpImprimirCardapiosDoDia já deduplica cardápio repetido entre os dias.
+    pcpImprimirCardapiosDoDia(diasMarcados.map(dia => pcpCalcularDia(pcpSemanaSel, dia, unidadeFiltro, servicosFiltro)));
+  });
   if(ehProducaoAmbas){
     content.querySelectorAll("button[data-pcp-imprimir-receita-uni]").forEach(btn => {
       const [fichaId, unidade] = btn.dataset.pcpImprimirReceitaUni.split("|");
@@ -16388,16 +16408,37 @@ async function renderPCP(){
       btn.addEventListener("click", () => pcpImprimirReceitaUnica(resUni, margemPct, fichaId));
     });
   } else if(ehProducao){
+    content.querySelectorAll("input[data-pcp-proddia-sel]").forEach(chk => {
+      chk.addEventListener("change", () => {
+        if(chk.checked) pcpProdDiasSel.add(chk.dataset.pcpProddiaSel); else pcpProdDiasSel.delete(chk.dataset.pcpProddiaSel);
+      });
+    });
     const btnReceitas = document.getElementById("pcp-imprimir-receitas-producao");
     if(btnReceitas) btnReceitas.addEventListener("click", async () => {
-      if(!(await pcpConfirmarSubstituicoesRevisadas(res.dia, unidadeFiltro))) return;
-      pcpImprimirReceitasProducao(res, margemPct);
+      const diasMarcados = DIAS_ORDEM.filter(d => pcpProdDiasSel.has(d));
+      if(diasMarcados.length <= 1){
+        if(!(await pcpConfirmarSubstituicoesRevisadas(res.dia, unidadeFiltro))) return;
+        pcpImprimirReceitasProducao(res, margemPct);
+        return;
+      }
+      for(const dia of diasMarcados){
+        if(!(await pcpConfirmarSubstituicoesRevisadas(dia, unidadeFiltro))) continue;
+        pcpImprimirReceitasProducao(pcpCalcularDia(pcpSemanaSel, dia, unidadeFiltro, servicosFiltro), margemPct);
+      }
     });
     content.querySelectorAll("button[data-pcp-imprimir-receita]").forEach(btn => {
       btn.addEventListener("click", () => pcpImprimirReceitaUnica(res, margemPct, btn.dataset.pcpImprimirReceita));
     });
     content.querySelectorAll("button[data-pcp-ordem]").forEach(btn => {
       btn.addEventListener("click", async () => {
+        const diasMarcados = DIAS_ORDEM.filter(d => pcpProdDiasSel.has(d));
+        if(diasMarcados.length > 1){
+          for(const dia of diasMarcados){
+            if(!(await pcpConfirmarSubstituicoesRevisadas(dia, unidadeFiltro))) continue;
+            pcpImprimirOrdemProducao(pcpCalcularDia(pcpSemanaSel, dia, unidadeFiltro, servicosFiltro), margemPct, btn.dataset.pcpOrdem);
+          }
+          return;
+        }
         if(!(await pcpConfirmarSubstituicoesRevisadas(res.dia, unidadeFiltro))) return;
         pcpImprimirOrdemProducao(res, margemPct, btn.dataset.pcpOrdem);
       });
