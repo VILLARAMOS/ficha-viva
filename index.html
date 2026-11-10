@@ -173,6 +173,13 @@ tbody tr:hover{background:var(--surface-alt);}
 .search-bar{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
 .search-bar input,.search-bar select{font:inherit;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:9px 11px;width:auto;min-width:170px;}
 .search-bar input[type=text]{flex:1;min-width:220px;}
+/* 10/11/2026, pedido do Marcelo (aba Compras → Pedidos): todos os filtros numa linha só, mesmo que
+   precise rolar na horizontal em telas estreitas — escopo só desta barra (.search-bar sozinha continua
+   quebrando linha nas outras abas que a usam). */
+.search-bar-nowrap{flex-wrap:nowrap; overflow-x:auto; padding-bottom:6px;}
+.search-bar-nowrap select{min-width:0; flex:0 0 auto;}
+.search-bar-nowrap input[type=text]{min-width:160px; flex:0 1 220px;}
+.search-bar-nowrap button{flex:0 0 auto;}
 .empty-state{color:var(--text-faint);font-size:13px;padding:24px;text-align:center;}
 .footnote{font-size:12px;color:var(--text-faint);margin-top:6px;line-height:1.5;}
 
@@ -9931,7 +9938,36 @@ function renderCompras(){
   renderComprasLista(content, tabsHtml, wireTabs);
 }
 
-/* ---- Pedidos (histórico de compras por fornecedor — inalterado) ---- */
+// 10/11/2026, pedido do Marcelo (painel novo no topo da aba Pedidos): orçado de 1 semana só, recortado
+// do mesmo motor da aba Orçamento (orcadoPorBlocoSemana, que soma por mês) — usa o mês "principal" da
+// semana (_infoSemana) e pega só a fatia daquela semana dentro dele. Mesma limitação já aceita na aba
+// Orçamento pra semana que atravessa a virada do mês (conta só os dias que caem no mês principal) — não é
+// novo ponto cego, é o mesmo que já existia lá.
+function pedidosOrcadoSemana(semana, escopo){
+  const info = _infoSemana(semana);
+  if(!info) return 0;
+  const orc = orcadoPorBlocoSemana(info.mesId, escopo);
+  if(!orc) return 0;
+  const sb = orc.porSemanaBloco.find(x => x.semana === semana);
+  let t = 0; if(sb) sb.porBloco.forEach(v => t += v);
+  return t;
+}
+// contexto do painel: 1 semana (com as datas, pedido do Marcelo) quando o filtro de semana está ativo;
+// senão o mês do filtro, ou o mês atual quando nenhum dos dois filtros está escolhido — mesmo padrão do
+// Painel/painelMesSel (nunca fica sem contexto nenhum).
+function contextoOrcamentoPedidos(){
+  if(pedidosSemanaFiltro !== "todas"){
+    return { tipo:"semana", semana: pedidosSemanaFiltro, label: rotuloSemana(pedidosSemanaFiltro), sub: intervaloSemana(pedidosSemanaFiltro) };
+  }
+  const mesId = pedidosMesFiltro !== "todos" ? pedidosMesFiltro : mesAtualId();
+  const mesInfo = MESES_REFERENCIA.find(m => m.id === mesId);
+  return { tipo:"mes", mesId, label: mesInfo ? mesInfo.nome : mesId, sub: pedidosMesFiltro==="todos" ? "mês atual — sem filtro de mês/semana" : "" };
+}
+function orcadoContextoPedidos(ctx, escopo){
+  return ctx.tipo === "semana" ? pedidosOrcadoSemana(ctx.semana, escopo) : totalOrcadoMes(ctx.mesId, escopo);
+}
+
+/* ---- Pedidos (histórico de compras por fornecedor) ---- */
 function renderTabPedidos(){
     const semanasComPedido = [...new Set([...pedidos.values()].map(p=>p.semana).filter(s=>s!=null))].sort((a,b)=>a-b);
     const semanaAtual = semanaDaData(hojeYMD()) || 1;
@@ -9945,7 +9981,7 @@ function renderTabPedidos(){
 
     const body = document.getElementById("cp-body");
     body.innerHTML = `
-      <div class="search-bar">
+      <div class="search-bar search-bar-nowrap">
         <select id="pd-mes-filtro" aria-label="Filtrar por mês">
           <option value="todos" ${pedidosMesFiltro==="todos"?"selected":""}>Todos os meses</option>
           ${opcoesMes.map(m=>`<option value="${m.id}" ${m.id===pedidosMesFiltro?"selected":""}>${escapeHtml(m.nome)}${m.id===mesAtualId()?" (atual)":""}</option>`).join("")}
@@ -9967,15 +10003,13 @@ function renderTabPedidos(){
         <input type="text" id="pd-busca" placeholder="Buscar fornecedor ou produto…" value="${escapeHtml(pedidosBusca)}">
         <button class="btn primary" id="pd-novo" style="margin-left:auto;">+ Registrar pedido</button>
       </div>
-      <div class="two-col-num" id="pd-kpis" style="margin-bottom:16px;"></div>
-      <div class="panel">
-        <div class="table-wrap">
-          <table class="cardapio-table">
-            <thead><tr><th>Data</th><th>Fornecedor</th><th>Unidade</th><th>Semana</th><th style="text-align:right;">Itens</th><th style="text-align:right;">Valor total</th><th>Situação</th><th></th></tr></thead>
-            <tbody id="pd-tbody"></tbody>
-            <tfoot id="pd-tfoot"></tfoot>
-          </table>
-        </div>
+      <div class="es-kpis" id="pd-painel" style="margin-bottom:16px;"></div>
+      <div class="table-wrap" style="max-height:none;">
+        <table class="cardapio-table">
+          <thead><tr><th>Data</th><th>Fornecedor</th><th>Unidade</th><th>Semana</th><th style="text-align:right;">Itens</th><th style="text-align:right;">Valor total</th><th>Situação</th><th></th></tr></thead>
+          <tbody id="pd-tbody"></tbody>
+          <tfoot id="pd-tfoot"></tfoot>
+        </table>
       </div>
     `;
 
@@ -10000,13 +10034,33 @@ function renderTabPedidos(){
     function updateTable(){
       const lista = filtrar();
       const total = lista.reduce((s,[,p]) => s + (p.valor_total||0), 0);
+      const totalMatriz = lista.filter(([,p]) => pedidoUnidade(p)==="matriz").reduce((s,[,p]) => s+(p.valor_total||0),0);
+      const totalFilial = lista.filter(([,p]) => pedidoUnidade(p)==="filial").reduce((s,[,p]) => s+(p.valor_total||0),0);
       const pendentes = lista.filter(([,p]) => ["aguardando","parcial"].includes(pedidoStatus(p).key)).length;
       const divergentes = lista.filter(([,p]) => pedidoStatus(p).key === "divergencia").length;
-      document.getElementById("pd-kpis").innerHTML = `
-        <div class="stat-block"><div class="label">Pedidos no filtro</div><div class="val">${lista.length}</div></div>
-        <div class="stat-block"><div class="label">Valor pedido</div><div class="val">${fmtMoney(total)}</div><div class="val small">Matriz ${fmtMoney(lista.filter(([,p]) => pedidoUnidade(p)==="matriz").reduce((s,[,p]) => s+(p.valor_total||0),0))} · Filial ${fmtMoney(lista.filter(([,p]) => pedidoUnidade(p)==="filial").reduce((s,[,p]) => s+(p.valor_total||0),0))}</div></div>
-        <div class="stat-block"><div class="label">Aguardando conferência</div><div class="val">${pendentes}</div></div>
-        <div class="stat-block"><div class="label">Com divergência</div><div class="val">${divergentes}</div></div>`;
+      const entregues = lista.filter(([,p]) => ["recebido","divergencia"].includes(pedidoStatus(p).key)).length;
+      // 10/11/2026, pedido do Marcelo: painel estilo "Painel" no topo de Pedidos — contexto (mês/semana,
+      // com as datas quando é 1 semana só) e Orçamento (Matriz/Filial/Grupo) reaproveitam o mesmo motor já
+      // usado na aba Orçamento (orcadoPorBlocoSemana/totalOrcadoMes), recortado pra 1 semana só quando o
+      // filtro de semana está ativo; "Valor gasto" e "Pedidos"/"Entregas" vêm do próprio filtro da tabela
+      // abaixo (mesmos pedidos, não um recorte separado) — Saldo compara contra o Orçamento da MESMA unidade
+      // escolhida no filtro "Matriz/Filial/Grupo" logo acima, pra não comparar maçã com laranja.
+      const ctx = contextoOrcamentoPedidos();
+      const orcMatriz = orcadoContextoPedidos(ctx, "matriz");
+      const orcFilial = orcadoContextoPedidos(ctx, "filial");
+      const orcGrupo = orcadoContextoPedidos(ctx, "todos");
+      const escopoAtual = pedidosUnidadeFiltro === "todas" ? "todos" : pedidosUnidadeFiltro;
+      const orcAtual = escopoAtual === "matriz" ? orcMatriz : escopoAtual === "filial" ? orcFilial : orcGrupo;
+      document.getElementById("pd-painel").innerHTML = [
+        estoqueKpiCard({label: ctx.tipo==="semana"?"Semana":"Mês", value: ctx.label, sub: ctx.sub||""}),
+        estoqueKpiCard({label:"Orçamento — Matriz", value: fmtMoney(orcMatriz)}),
+        estoqueKpiCard({label:"Orçamento — Filial", value: fmtMoney(orcFilial)}),
+        estoqueKpiCard({label:"Orçamento — Grupo", value: fmtMoney(orcGrupo)}),
+        estoqueKpiCard({label:"Valor gasto (pedidos no filtro)", value: fmtMoney(total), sub:`Matriz ${fmtMoney(totalMatriz)} · Filial ${fmtMoney(totalFilial)}`}),
+        estoqueKpiCard({tone: (orcAtual-total)<0?"critical":(orcAtual>0 && (orcAtual-total)/orcAtual<0.15)?"warn":"ok", label:`Saldo do orçamento (${escopoAtual==="matriz"?"Matriz":escopoAtual==="filial"?"Filial":"Grupo"})`, value: fmtMoney(orcAtual-total)}),
+        estoqueKpiCard({label:"Pedidos no filtro", value: lista.length}),
+        estoqueKpiCard({label:"Entregas feitas", value: entregues, sub:`Aguardando ${pendentes} · Divergência ${divergentes}`}),
+      ].join("");
       const vazio = pedidos.size === 0 ? "Nenhum pedido registrado ainda — clique em “+ Registrar pedido”." : "Nenhum pedido encontrado com esses filtros.";
       document.getElementById("pd-tbody").innerHTML = lista.map(([id,p]) => {
         const st = pedidoStatus(p);
