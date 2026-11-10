@@ -391,16 +391,9 @@ textarea{font:inherit;color:var(--text);background:var(--bg);border:1px solid va
 .seg-toggle{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;}
 .seg-toggle button{border:none;background:var(--surface);padding:8px 14px;font-size:12.5px;cursor:pointer;color:var(--text-muted);}
 .seg-toggle button.active{background:var(--accent);color:#fff;}
-/* PCP > Produção da cozinha: o seletor de dia usa o mesmo chip-dia/kk-dias-chips do resto do sistema (ver
-   Compras), só que cada chip combina 2 controles independentes dentro do mesmo pill — clique no texto do
-   dia troca o dia exibido na tela; o checkbox, à parte, marca o dia pra entrar junto na próxima impressão
-   em lote (Composição principal/Saladas/Sobremesas/Receitas/Cardápios do dia). Ver pcpDiaSel vs
-   pcpProdDiasSel. .pcp-dia-combo soma a classe chip-dia (herda cor/borda/fundo/.on) só precisando virar
-   flex pra alinhar o checkbox e o texto lado a lado dentro do mesmo pill. */
-.pcp-dia-combo{display:flex; align-items:center; gap:4px;}
-.pcp-dia-combo-chk{display:flex; align-items:center; cursor:pointer;}
-.pcp-dia-combo-chk input{cursor:pointer; margin:0;}
-.pcp-dia-combo-lbl{border:none; background:none; padding:0; font:inherit; color:inherit; cursor:pointer;}
+/* PCP > Produção da cozinha: seletor de dia é multi-seleção plena desde 10/11/2026 (pcp-prod-dia-chip),
+   mesmo chip-dia/kk-dias-chips do resto do sistema — cada dia marcado entra na tabela gerada em tela E na
+   impressão (substitui o antigo modelo de 1 dia exibido + checkbox de impressão em lote). */
 .week-grid{display:grid;grid-template-columns:repeat(7,minmax(190px,1fr));gap:12px;overflow-x:auto;padding-bottom:4px;}
 .day-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);display:flex;flex-direction:column;min-width:190px;}
 .day-card .day-head{padding:10px 14px;border-bottom:1px solid var(--border);background:var(--surface-alt);border-radius:var(--radius) var(--radius) 0 0;}
@@ -12496,7 +12489,11 @@ function pcpProducaoUnidadeItem(almocoIdx, produtoId, contrato, contratoId, nome
 // pcpTurnoDoProduto). Um Set com os 3 equivale a null (sem filtro) — nunca passe um Set vazio.
 // Mesmo filtrando, cada receita ainda carrega R.porTurno com os 3 turnos — serve pra tabela mostrar a
 // coluna de detalhamento, e pra "Todos selecionados" mostrar os 3 lado a lado sem recalcular 3x.
-function pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro){
+// clienteFiltro (opcional, Set de contratoId — 10/11/2026, seleção de clientes da Produção da cozinha):
+// corta a produção de verdade, não só a exibição — contrato fora do Set nem entra na soma de pessoas, kg,
+// receitas ou avisos deste dia. undefined/null = sem filtro extra (comportamento de sempre, usado por
+// todas as outras sub-abas do PCP que não passam esse argumento).
+function pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro, clienteFiltro){
   const almocoIdx = new Map();
   cardapiosAlmoco.forEach(row => almocoIdx.set(`${row.cardapio_num}|${row.semana}|${row.dia}`, row));
   const receitas = new Map(), diretos = new Map(), avisos = [], clientes = new Map(), semProducao = [];
@@ -12512,6 +12509,7 @@ function pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro){
   [...contratos.entries()]
     .filter(([, ct]) => ct.ativo !== false)
     .filter(([, ct]) => !unidadeFiltro || unidadeFiltro === "todos" || ct.unidade === unidadeFiltro)
+    .filter(([contratoId]) => !clienteFiltro || clienteFiltro.has(contratoId))
     .filter(([, ct]) => contratoVigenteNoDia(ct, semana, dia))
     .sort((a, b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)))
     .forEach(([contratoId, ct]) => {
@@ -13119,11 +13117,21 @@ let pcpConferirRevisados = new Set(); // chaves marcadas como "já vi/corrigido"
 // grava no banco; um Set por área (Estoque/Açougue) porque são telas independentes.
 let pcpReqDiasSel = new Set();
 let pcpAcgDiasSel = new Set();
-// dias marcados pra impressão em lote na "Produção da cozinha" (10/11/2026, pedido do Marcelo) — só da
-// sessão, não grava no banco. Começa vazio; ao renderizar a tela, se estiver vazio é semeado só com o dia
-// atualmente selecionado no toggle de dia do topo (pcpDiaSel), pra não mudar o comportamento de quem nunca
-// tocar nos checkboxes — marcar mais dias é o que liga a impressão em lote.
+// dias selecionados na "Produção da cozinha" (10/11/2026, pedido do Marcelo) — multi-seleção PLENA desde
+// 10/11/2026 (substitui o antigo toggle de 1 dia + checkbox de impressão em lote): cada dia marcado aqui
+// entra na tabela gerada em tela E na impressão. Só da sessão, não grava no banco. Começa vazio; ao
+// renderizar a tela, se estiver vazio é semeado só com o dia atualmente selecionado no toggle do topo
+// (pcpDiaSel), pra abrir a tela já com algo calculado.
 let pcpProdDiasSel = new Set();
+// clientes selecionados na Produção da cozinha (10/11/2026) — Set de contratoId, ou null = "Grupo
+// inteiro"/unidade inteira (sem filtro extra, recalculado a cada render a partir da unidade atual — nunca
+// fica com ids de uma unidade antiga porque null nunca "guarda" ids, só é materializado em Set quando o
+// usuário marca/desmarca um cliente específico). Só da sessão, não grava no banco.
+let pcpProdClientesSel = null;
+// true depois do primeiro clique em "Gerar tabela" na Produção — revela a tabela calculada; uma vez true
+// fica true pelo resto da sessão e a tabela continua reativa a qualquer mudança de filtro (mesmo padrão do
+// "Gerar lista de compra" em Compras — ver comprasListaGerada). Só da sessão, não grava no banco.
+let pcpProdGerado = false;
 // dias marcados pra impressão na tabela nova "Preparo da semana" do Açougue (corte×receita, 20/10/2026) —
 // Set PRÓPRIO, separado de pcpAcgDiasSel (que já era usado pela baixa de estoque/kardex acima), pra marcar
 // um dia numa tela não desmarcar o outro por engano.
@@ -16273,9 +16281,25 @@ async function renderPCP(){
   // Diferente do "Ambas" das outras sub-abas (que continua somando as duas, unidadeFiltro=null em `res`).
   const ehProducaoAmbas = ehProducao && pcpUnidadeSel === "todos";
   const listaRes = ehProducaoAmbas ? ["matriz", "filial"].map(u => pcpCalcularDia(pcpSemanaSel, pcpDiaSel, u, servicosFiltro)) : null;
-  // checkboxes de dia pra impressão em lote na Produção da cozinha (10/11/2026) — se ainda não foi tocado
-  // nesta sessão, semeia só com o dia atual (pcpDiaSel), pra não mudar o clique de quem nunca marcar nada.
+  // seleção de dias da Produção da cozinha (10/11/2026) — se ainda não foi tocada nesta sessão, semeia só
+  // com o dia atual (pcpDiaSel), pra abrir a tela já com algo calculado.
   if(ehProducao && !ehProducaoAmbas && !pcpProdDiasSel.size) pcpProdDiasSel.add(pcpDiaSel);
+  // Clientes da Produção da cozinha (10/11/2026) — lista de contratos ativos da unidade atual (Matriz OU
+  // Filial, nunca as duas — em "Ambas" essa seleção não se aplica, mesma fronteira que já existia pra
+  // impressão). `prodClienteFiltro` vai sempre como um Set concreto pro pcpCalcularDia (nunca null), pra
+  // não precisar sincronizar pcpProdClientesSel contra ids de uma unidade antiga depois de trocar a aba.
+  const prodContratosUnidade = ehProducao && !ehProducaoAmbas
+    ? [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === unidadeFiltro).sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)))
+    : [];
+  const idsMatrizProd = ehProducao && !ehProducaoAmbas ? [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === "matriz").map(([id]) => id) : [];
+  const idsFilialProd = ehProducao && !ehProducaoAmbas ? [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === "filial").map(([id]) => id) : [];
+  const prodIdsTodos = prodContratosUnidade.map(([id]) => id);
+  const prodSelIds = pcpProdClientesSel === null ? prodIdsTodos : prodIdsTodos.filter(id => pcpProdClientesSel.has(id));
+  const prodClienteFiltro = new Set(prodSelIds);
+  const prodDiasAtivos = DIAS_ORDEM.filter(d => pcpProdDiasSel.has(d));
+  // 1 pcpCalcularDia por dia marcado — é a mesma conta que a impressão em lote já fazia, só que agora
+  // alimenta a tabela em tela também (10/11/2026).
+  const prodResList = ehProducao && !ehProducaoAmbas ? prodDiasAtivos.map(d => pcpCalcularDia(pcpSemanaSel, d, unidadeFiltro, servicosFiltro, prodClienteFiltro)) : null;
   // Substituições (16/10/2026, Tarefa 11): a grade sempre mostra 1 bloco por unidade REAL (nunca soma
   // Matriz+Filial numa tabela só, mesmo padrão de pcpProducaoAmbasHtml) — então em "Ambas" precisa dos dois
   // `res` separados, igual Produção já faz com `listaRes`.
@@ -16327,7 +16351,7 @@ async function renderPCP(){
     <div class="menu-controls" style="margin-bottom:16px;">
       <div class="kk-dias-chips" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" class="chip-dia ${pcpUnidadeSel===u.id?"on":""}" data-pcpuni="${u.id}">${u.nome}${u.id !== "todos" ? ` · ${pcpContagemUnidade(u.id)}` : ""}</button>`).join("")}</div>
       <select id="pcp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===pcpSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
-      ${ehProducao && !ehProducaoAmbas ? `<div class="kk-dias-chips" id="pcp-dia-tabs" title="Clique no dia pra ver na tela; marque o checkbox pra incluir na próxima impressão em lote">${DIAS_ORDEM.map(d => `<div class="chip-dia pcp-dia-combo ${pcpDiaSel===d?"on":""}"><label class="pcp-dia-combo-chk"><input type="checkbox" class="pcp-proddia-chk" data-dia="${d}" ${pcpProdDiasSel.has(d)?"checked":""}></label><button type="button" class="pcp-dia-combo-lbl" data-pcpdia="${d}">${DIA_LABEL[d]}</button></div>`).join("")}</div>` : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
+      ${ehProducao && !ehProducaoAmbas ? `<div class="kk-dias-chips" id="pcp-dia-tabs" title="Multi-seleção — cada dia marcado entra na tabela e na impressão">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia pcp-prod-dia-chip ${pcpProdDiasSel.has(d)?"on":""}" data-dia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>` : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
       ${servicosAplicavel ? `<div class="kk-dias-chips" id="pcp-serv-tabs">${PCP_TURNOS.filter(t=>t.id!=="todos").map(t => `<button type="button" class="chip-dia ${pcpServicosSel.has(t.id)?"on":""}" data-pcp-serv="${t.id}">${t.nome}</button>`).join("")}</div>` : ""}
     </div>
     ${ehAcougue ? `
@@ -16416,36 +16440,89 @@ async function renderPCP(){
       pcpSalSobProducaoHtml(res, salSobTrocasAposImpressao, pcpDiaSel) +
       pcpSalSobCardapioDiaHtml(salSobCardapiosUsados, pcpSemanaSel, pcpDiaSel) +
       pcpSalSobEtiquetasHtml(salSobEtqLinhas)
-    ) : `
+    ) : ehProducaoAmbas ? `
       <div class="es-kpis" style="margin-bottom:16px;">
-        <div class="vn-card"><div class="vn-label">Pessoas previstas</div><div class="vn-value">${fmtNum(res.pessoasTot,0)}</div>${ehProducaoAmbas ? `<div class="vn-sub">Matriz ${fmtNum(listaRes[0].pessoasTot,0)} · Filial ${fmtNum(listaRes[1].pessoasTot,0)}</div>` : ""}</div>
-        <div class="vn-card"><div class="vn-label">Kg a produzir</div><div class="vn-value">${fmtNum(res.kgTotal,1)}</div>${ehProducaoAmbas ? `<div class="vn-sub">Matriz ${fmtNum(listaRes[0].kgTotal,1)} · Filial ${fmtNum(listaRes[1].kgTotal,1)}</div>` : ""}</div>
-        <div class="vn-card"><div class="vn-label">Receitas</div><div class="vn-value">${res.receitas.length}</div>${ehProducaoAmbas ? `<div class="vn-sub">Matriz ${listaRes[0].receitas.length} · Filial ${listaRes[1].receitas.length}</div>` : ""}</div>
-        <div class="vn-card"><div class="vn-label">Clientes</div><div class="vn-value">${res.clientes.length}</div>${ehProducaoAmbas ? `<div class="vn-sub">Matriz ${listaRes[0].clientes.length} · Filial ${listaRes[1].clientes.length}</div>` : ""}</div>
+        <div class="vn-card"><div class="vn-label">Pessoas previstas</div><div class="vn-value">${fmtNum(res.pessoasTot,0)}</div><div class="vn-sub">Matriz ${fmtNum(listaRes[0].pessoasTot,0)} · Filial ${fmtNum(listaRes[1].pessoasTot,0)}</div></div>
+        <div class="vn-card"><div class="vn-label">Kg a produzir</div><div class="vn-value">${fmtNum(res.kgTotal,1)}</div><div class="vn-sub">Matriz ${fmtNum(listaRes[0].kgTotal,1)} · Filial ${fmtNum(listaRes[1].kgTotal,1)}</div></div>
+        <div class="vn-card"><div class="vn-label">Receitas</div><div class="vn-value">${res.receitas.length}</div><div class="vn-sub">Matriz ${listaRes[0].receitas.length} · Filial ${listaRes[1].receitas.length}</div></div>
+        <div class="vn-card"><div class="vn-label">Clientes</div><div class="vn-value">${res.clientes.length}</div><div class="vn-sub">Matriz ${listaRes[0].clientes.length} · Filial ${listaRes[1].clientes.length}</div></div>
       </div>
       ${res.servicos.length > 1 ? `<div class="es-kpis inner" style="margin-bottom:16px;">
         ${res.servicos.map(id => `<div class="vn-card"><div class="vn-label">${PCP_TURNOS.find(t=>t.id===id).nome}</div><div class="vn-value">${fmtNum(res.receitas.reduce((s,r)=>pcpGrupoForaDoPeso(r.grupo)?s:s+(r.porTurno[id]||0),0),1)} kg</div></div>`).join("")}
       </div>` : ""}
-      ${!ehProducaoAmbas ? `<div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px;">
-        <span class="footnote" style="margin:0;">Imprimir${pcpProdDiasSel.size>1?` (${pcpProdDiasSel.size} dias marcados)`:""}:</span>
+      <p class="footnote" style="margin:0 0 14px;">Pra imprimir a ordem de produção ou as receitas do dia inteiras, escolha Matriz ou Filial acima — impressão por cozinha, nunca as duas juntas numa folha só. <button class="btn small primary" id="pcp-imprimir-cardapios-dia" style="margin-left:6px;">Cardápios do dia</button></p>
+      ${pcpProducaoAmbasHtml(listaRes, margemPct)}
+      <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="scale"></i>Volume por cliente</h3></div>
+      <p class="footnote" style="margin:0 0 10px; font-weight:600;">Matriz</p>${pcpVolumeHtml(listaRes[0])}<p class="footnote" style="margin:16px 0 10px; font-weight:600;">Filial</p>${pcpVolumeHtml(listaRes[1])}
+      ${pcpConferirHtml(res)}
+    ` : (() => {
+      // Produção da cozinha, Matriz OU Filial (10/11/2026) — painel de Clientes + "Gerar tabela" (padrão
+      // de Compras): a tabela só aparece/imprime depois do 1º clique em Gerar; a partir daí fica reativa a
+      // qualquer mudança de dia/cliente/atendimento, igual comprasListaGerada já faz em Compras.
+      const prodRotuloCli = pcpProdClientesSel === null ? "Grupo inteiro" : (prodSelIds.length === prodIdsTodos.length ? "Grupo inteiro" : (prodSelIds.length === 1 ? (contratos.get(prodSelIds[0])?.nome_cliente || "1 cliente") : (prodSelIds.length ? "Seleção personalizada" : "Nenhum cliente")));
+      const clientesPanel = `
+      <div class="panel" style="margin-bottom:14px;">
+        <div class="panel-head">
+          <h3>Clientes</h3>
+          <span class="hint">${escapeHtml(prodRotuloCli)} · ${prodSelIds.length} de ${prodIdsTodos.length}</span>
+        </div>
+        <div class="panel-body">
+          <div class="kk-dias-chips" style="margin-bottom:10px; flex-wrap:wrap; align-items:center;">
+            <button type="button" class="chip-dia" data-prod-atalho="todos">Grupo inteiro (${idsMatrizProd.length + idsFilialProd.length})</button>
+            <button type="button" class="chip-dia ${pcpUnidadeSel==="matriz"?"on":""}" data-prod-atalho="matriz">Matriz (${idsMatrizProd.length})</button>
+            <button type="button" class="chip-dia ${pcpUnidadeSel==="filial"?"on":""}" data-prod-atalho="filial">Filial (${idsFilialProd.length})</button>
+            <button type="button" class="btn small ghost" id="pcp-prod-cli-limpar" ${pcpProdClientesSel===null?"disabled":""} style="margin-left:6px;">Limpar seleção</button>
+          </div>
+          <div class="kk-dias-chips" style="flex-wrap:wrap;">
+            ${prodContratosUnidade.length ? prodContratosUnidade.map(([id,c]) => `<button type="button" class="chip-dia pcp-prod-cli-chip ${prodClienteFiltro.has(id)?"on":""}" data-id="${id}">${escapeHtml(c.nome_cliente)}</button>`).join("") : `<div class="footnote">Nenhum contrato ativo nesta unidade.</div>`}
+          </div>
+        </div>
+      </div>`;
+      const gerarBtn = `<div style="display:flex; justify-content:flex-end; margin-bottom:14px;">
+        <button class="btn primary" id="pcp-prod-gerar" ${prodDiasAtivos.length ? "" : "disabled"}>${pcpProdGerado ? "Atualizar tabela" : "Gerar tabela"}</button>
+      </div>`;
+      if(!prodDiasAtivos.length) return clientesPanel + gerarBtn + `<div class="empty-state">Marque pelo menos 1 dia da semana (no topo) pra gerar a tabela.</div>`;
+      if(!pcpProdGerado) return clientesPanel + gerarBtn + `<div class="empty-state">Marque os dias, clientes e atendimento desejados e clique em "Gerar tabela".</div>`;
+      const pessoasSum = prodResList.reduce((s,r)=>s+r.pessoasTot,0);
+      const kgSum = prodResList.reduce((s,r)=>s+r.kgTotal,0);
+      const receitasSum = prodResList.reduce((s,r)=>s+r.receitas.length,0);
+      const clientesUnicos = new Set(); prodResList.forEach(r => r.clientes.forEach(c => clientesUnicos.add(c.id)));
+      const multiDia = prodDiasAtivos.length > 1;
+      const subDias = (campo) => prodDiasAtivos.map((d,i) => `${DIA_LABEL[d].slice(0,3)} ${fmtNum(prodResList[i][campo],campo==="pessoasTot"?0:1)}`).join(" · ");
+      const servicosUniao = PCP_TURNOS.filter(t => t.id!=="todos" && prodResList.some(r => r.servicos.includes(t.id))).map(t=>t.id);
+      return clientesPanel + gerarBtn + `
+      <div class="es-kpis" style="margin-bottom:16px;">
+        <div class="vn-card"><div class="vn-label">Pessoas previstas</div><div class="vn-value">${fmtNum(pessoasSum,0)}</div>${multiDia ? `<div class="vn-sub">${subDias("pessoasTot")}</div>` : ""}</div>
+        <div class="vn-card"><div class="vn-label">Kg a produzir</div><div class="vn-value">${fmtNum(kgSum,1)}</div>${multiDia ? `<div class="vn-sub">${subDias("kgTotal")}</div>` : ""}</div>
+        <div class="vn-card"><div class="vn-label">Receitas</div><div class="vn-value">${receitasSum}</div></div>
+        <div class="vn-card"><div class="vn-label">Clientes</div><div class="vn-value">${clientesUnicos.size}</div></div>
+      </div>
+      ${servicosUniao.length > 1 ? `<div class="es-kpis inner" style="margin-bottom:16px;">
+        ${servicosUniao.map(id => `<div class="vn-card"><div class="vn-label">${PCP_TURNOS.find(t=>t.id===id).nome}</div><div class="vn-value">${fmtNum(prodResList.reduce((s,r)=>s+r.receitas.reduce((s2,rr)=>pcpGrupoForaDoPeso(rr.grupo)?s2:s2+(rr.porTurno[id]||0),0),0),1)} kg</div></div>`).join("")}
+      </div>` : ""}
+      <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px;">
+        <span class="footnote" style="margin:0;">Imprimir${multiDia?` (${prodDiasAtivos.length} dias selecionados)`:""}:</span>
         <button class="btn small primary" data-pcp-ordem="cozinha">Composição principal</button>
         <button class="btn small primary" data-pcp-ordem="saladas">Saladas</button>
         <button class="btn small primary" data-pcp-ordem="sobremesas">Sobremesas</button>
         <button class="btn small primary" id="pcp-imprimir-receitas-producao">Receitas do dia</button>
         <button class="btn small primary" id="pcp-imprimir-cardapios-dia">Cardápios do dia</button>
-      </div>` : `<p class="footnote" style="margin:0 0 14px;">Pra imprimir a ordem de produção ou as receitas do dia inteiras, escolha Matriz ou Filial acima — impressão por cozinha, nunca as duas juntas numa folha só. <button class="btn small primary" id="pcp-imprimir-cardapios-dia" style="margin-left:6px;">Cardápios do dia</button></p>`}
-      ${ehProducaoAmbas ? pcpProducaoAmbasHtml(listaRes, margemPct) : pcpProducaoHtml(res, margemPct)}
+      </div>
+      ${prodResList.map((r,i) => `<div data-pcp-dia-bloco="${prodDiasAtivos[i]}">${multiDia ? `<div class="panel-head" style="margin:20px 0 10px; border:none;"><h3>${DIA_LABEL[prodDiasAtivos[i]]}</h3></div>` : ""}${pcpProducaoHtml(r, margemPct)}</div>`).join("")}
       <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="scale"></i>Volume por cliente</h3></div>
-      ${ehProducaoAmbas
-        ? `<p class="footnote" style="margin:0 0 10px; font-weight:600;">Matriz</p>${pcpVolumeHtml(listaRes[0])}<p class="footnote" style="margin:16px 0 10px; font-weight:600;">Filial</p>${pcpVolumeHtml(listaRes[1])}`
-        : pcpVolumeHtml(res)}
-      ${pcpConferirHtml(res)}
-    `}
+      ${prodResList.map((r,i) => `${multiDia ? `<p class="footnote" style="margin:0 0 10px; font-weight:600;">${DIA_LABEL[prodDiasAtivos[i]]}</p>` : ""}${pcpVolumeHtml(r)}`).join("")}
+      ${pcpConferirHtml(prodResList[0])}
+      `;
+    })()}
   `;
 
   content.querySelector("#pcp-subview-tabs").addEventListener("click", e => { const b = e.target.closest("button[data-pcpsub]"); if(!b) return; pcpSubView = b.dataset.pcpsub; renderPCP(); });
-  content.querySelector("#pcp-uni-tabs").addEventListener("click", e => { const b = e.target.closest("button[data-pcpuni]"); if(!b) return; pcpUnidadeSel = b.dataset.pcpuni; renderPCP(); });
-  content.querySelector("#pcp-dia-tabs").addEventListener("click", e => { const b = e.target.closest("button[data-pcpdia]"); if(!b) return; pcpDiaSel = b.dataset.pcpdia; renderPCP(); });
+  content.querySelector("#pcp-uni-tabs").addEventListener("click", e => { const b = e.target.closest("button[data-pcpuni]"); if(!b) return; pcpUnidadeSel = b.dataset.pcpuni; pcpProdClientesSel = null; renderPCP(); });
+  content.querySelector("#pcp-dia-tabs").addEventListener("click", e => {
+    const bProd = e.target.closest("button.pcp-prod-dia-chip");
+    if(bProd){ const d = bProd.dataset.dia; if(pcpProdDiasSel.has(d)) pcpProdDiasSel.delete(d); else pcpProdDiasSel.add(d); renderPCP(); return; }
+    const b = e.target.closest("button[data-pcpdia]"); if(!b) return; pcpDiaSel = b.dataset.pcpdia; renderPCP();
+  });
   content.querySelector("#pcp-semana").addEventListener("change", e => { pcpSemanaSel = parseInt(e.target.value,10); renderPCP(); });
   const servTabs = content.querySelector("#pcp-serv-tabs");
   if(servTabs) servTabs.addEventListener("click", e => {
@@ -16459,10 +16536,8 @@ async function renderPCP(){
   const btnCardapiosDia = document.getElementById("pcp-imprimir-cardapios-dia");
   if(btnCardapiosDia) btnCardapiosDia.addEventListener("click", () => {
     if(ehProducaoAmbas){ pcpImprimirCardapiosDoDia(listaRes); return; }
-    const diasMarcados = DIAS_ORDEM.filter(d => pcpProdDiasSel.has(d));
-    if(diasMarcados.length <= 1){ pcpImprimirCardapiosDoDia(res); return; }
-    // vários dias marcados: pcpImprimirCardapiosDoDia já deduplica cardápio repetido entre os dias.
-    pcpImprimirCardapiosDoDia(diasMarcados.map(dia => pcpCalcularDia(pcpSemanaSel, dia, unidadeFiltro, servicosFiltro)));
+    // vários dias selecionados: pcpImprimirCardapiosDoDia já deduplica cardápio repetido entre os dias.
+    pcpImprimirCardapiosDoDia(prodResList.length <= 1 ? prodResList[0] : prodResList);
   });
   if(ehProducaoAmbas){
     content.querySelectorAll("button[data-pcp-imprimir-receita-uni]").forEach(btn => {
@@ -16471,41 +16546,47 @@ async function renderPCP(){
       btn.addEventListener("click", () => pcpImprimirReceitaUnica(resUni, margemPct, fichaId));
     });
   } else if(ehProducao){
-    content.querySelectorAll(".pcp-proddia-chk").forEach(chk => {
-      chk.addEventListener("change", () => {
-        const dia = chk.dataset.dia;
-        if(chk.checked) pcpProdDiasSel.add(dia); else pcpProdDiasSel.delete(dia);
-        renderPCP();
-      });
-    });
+    // Clientes (10/11/2026): atalhos Grupo inteiro/Matriz/Filial trocam a unidade do topo (fonte única de
+    // verdade pra "qual unidade" — evita o filtro de cliente cruzar com uma unidade que não é mais a
+    // exibida) e sempre voltam pcpProdClientesSel pra null ("todos" da unidade nova). Chip individual e
+    // "Limpar seleção" operam só dentro da unidade já selecionada.
+    content.querySelectorAll("[data-prod-atalho]").forEach(b => b.addEventListener("click", () => {
+      const k = b.dataset.prodAtalho;
+      pcpUnidadeSel = k === "todos" ? "todos" : k;
+      pcpProdClientesSel = null;
+      renderPCP();
+    }));
+    content.querySelectorAll(".pcp-prod-cli-chip").forEach(b => b.addEventListener("click", () => {
+      const id = b.dataset.id;
+      const base = pcpProdClientesSel === null ? new Set(prodIdsTodos) : new Set(pcpProdClientesSel);
+      if(base.has(id)) base.delete(id); else base.add(id);
+      pcpProdClientesSel = base;
+      renderPCP();
+    }));
+    const btnCliLimpar = document.getElementById("pcp-prod-cli-limpar");
+    if(btnCliLimpar) btnCliLimpar.addEventListener("click", () => { pcpProdClientesSel = null; renderPCP(); });
+    const btnGerar = document.getElementById("pcp-prod-gerar");
+    if(btnGerar) btnGerar.addEventListener("click", () => { pcpProdGerado = true; renderPCP(); });
     const btnReceitas = document.getElementById("pcp-imprimir-receitas-producao");
     if(btnReceitas) btnReceitas.addEventListener("click", async () => {
-      const diasMarcados = DIAS_ORDEM.filter(d => pcpProdDiasSel.has(d));
-      if(diasMarcados.length <= 1){
-        if(!(await pcpConfirmarSubstituicoesRevisadas(res.dia, unidadeFiltro))) return;
-        pcpImprimirReceitasProducao(res, margemPct);
-        return;
-      }
-      for(const dia of diasMarcados){
-        if(!(await pcpConfirmarSubstituicoesRevisadas(dia, unidadeFiltro))) continue;
-        pcpImprimirReceitasProducao(pcpCalcularDia(pcpSemanaSel, dia, unidadeFiltro, servicosFiltro), margemPct);
+      for(const r of prodResList){
+        if(!(await pcpConfirmarSubstituicoesRevisadas(r.dia, unidadeFiltro))) continue;
+        pcpImprimirReceitasProducao(r, margemPct);
       }
     });
     content.querySelectorAll("button[data-pcp-imprimir-receita]").forEach(btn => {
-      btn.addEventListener("click", () => pcpImprimirReceitaUnica(res, margemPct, btn.dataset.pcpImprimirReceita));
+      btn.addEventListener("click", () => {
+        const wrap = btn.closest("[data-pcp-dia-bloco]");
+        const idx = wrap ? prodDiasAtivos.indexOf(wrap.dataset.pcpDiaBloco) : -1;
+        pcpImprimirReceitaUnica(idx >= 0 ? prodResList[idx] : res, margemPct, btn.dataset.pcpImprimirReceita);
+      });
     });
     content.querySelectorAll("button[data-pcp-ordem]").forEach(btn => {
       btn.addEventListener("click", async () => {
-        const diasMarcados = DIAS_ORDEM.filter(d => pcpProdDiasSel.has(d));
-        if(diasMarcados.length > 1){
-          for(const dia of diasMarcados){
-            if(!(await pcpConfirmarSubstituicoesRevisadas(dia, unidadeFiltro))) continue;
-            pcpImprimirOrdemProducao(pcpCalcularDia(pcpSemanaSel, dia, unidadeFiltro, servicosFiltro), margemPct, btn.dataset.pcpOrdem);
-          }
-          return;
+        for(const r of prodResList){
+          if(!(await pcpConfirmarSubstituicoesRevisadas(r.dia, unidadeFiltro))) continue;
+          pcpImprimirOrdemProducao(r, margemPct, btn.dataset.pcpOrdem);
         }
-        if(!(await pcpConfirmarSubstituicoesRevisadas(res.dia, unidadeFiltro))) return;
-        pcpImprimirOrdemProducao(res, margemPct, btn.dataset.pcpOrdem);
       });
     });
   } else if(ehSalSob){
