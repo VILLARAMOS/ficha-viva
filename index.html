@@ -9571,7 +9571,6 @@ function renderComprasLista(content, tabsHtml, wireTabs){
     comprasSemana = opcoesSemana.includes(semanaAtual+1) ? semanaAtual+1 : (opcoesSemana.includes(semanaAtual) ? semanaAtual : opcoesSemana[0]);
   }
   if(!opcoesSemana.includes(comprasSemana)) comprasSemana = opcoesSemana[0];
-  const idxSem = opcoesSemana.indexOf(comprasSemana);
 
   if(comprasSelecao === null) comprasSelecao = new Set(idsTodos);
   comprasSelecao = new Set([...comprasSelecao].filter(id => idsTodos.includes(id)));
@@ -9607,10 +9606,7 @@ function renderComprasLista(content, tabsHtml, wireTabs){
   content.innerHTML = `
     ${tabsHtml}
     <div class="menu-controls">
-      <button type="button" class="btn" id="cx-sem-ant" ${idxSem>0?"":"disabled"} title="Semana anterior">←</button>
-      <select id="cp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===comprasSemana?"selected":""}>${escapeHtml(rotuloSemana(s))}${s===semanaAtual+1?" · próxima":""}</option>`).join("")}</select>
-      <button type="button" class="btn" id="cx-sem-prox" ${idxSem<opcoesSemana.length-1?"":"disabled"} title="Próxima semana">→</button>
-      <span class="footnote" style="margin:0;">${escapeHtml(intervaloSemana(comprasSemana))}</span>
+      <select id="cp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===comprasSemana?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})${s===semanaAtual+1?" · próxima":""}</option>`).join("")}</select>
       <span style="flex:1 1 auto;"></span>
       <span id="cx-pend-info">${nPend ? `<span class="chip warn">${nPend} ${nPend===1?"alteração":"alterações"} não salva${nPend===1?"":"s"}</span>` : ""}</span>
       <button type="button" class="btn small ghost" id="cx-descartar" style="${nPend?"":"display:none;"}">Descartar</button>
@@ -9673,8 +9669,6 @@ function renderComprasLista(content, tabsHtml, wireTabs){
   const limparOverridesTotais = () => { comprasTotaisOverride = new Map(); comprasTotaisCategoriaOverride = new Map(); };
   const limparFiltroDias = () => { comprasDiasSelecionados = new Set(DIAS_ORDEM); };
   document.getElementById("cp-semana").addEventListener("change", e => { comprasSemana = parseInt(e.target.value,10); limparOverridesTotais(); limparFiltroDias(); renderCompras(); });
-  document.getElementById("cx-sem-ant").addEventListener("click", () => { comprasSemana = opcoesSemana[idxSem-1]; limparOverridesTotais(); limparFiltroDias(); renderCompras(); });
-  document.getElementById("cx-sem-prox").addEventListener("click", () => { comprasSemana = opcoesSemana[idxSem+1]; limparOverridesTotais(); limparFiltroDias(); renderCompras(); });
   content.querySelectorAll(".cp-dia-chip").forEach(b => b.addEventListener("click", () => {
     const dia = b.dataset.dia;
     if(comprasDiasSelecionados.has(dia)) comprasDiasSelecionados.delete(dia); else comprasDiasSelecionados.add(dia);
