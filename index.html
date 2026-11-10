@@ -16320,7 +16320,7 @@ async function renderPCP(){
       <button type="button" data-pcpsub="romaneio" class="${pcpSubView==="romaneio"?"active":""}">Romaneio por rota</button>
     </div>
     <div class="menu-controls" style="margin-bottom:16px;">
-      <div class="kk-dias-chips" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" class="chip-dia ${pcpUnidadeSel===u.id?"on":""}" data-pcpuni="${u.id}">${u.nome}${u.id !== "todos" ? ` · ${pcpContagemUnidade(u.id)}` : ""}</button>`).join("")}</div>
+      ${ehProducao && !ehProducaoAmbas ? "" : `<div class="kk-dias-chips" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" class="chip-dia ${pcpUnidadeSel===u.id?"on":""}" data-pcpuni="${u.id}">${u.nome}${u.id !== "todos" ? ` · ${pcpContagemUnidade(u.id)}` : ""}</button>`).join("")}</div>`}
       <select id="pcp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===pcpSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
       ${ehProducao && !ehProducaoAmbas ? "" : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
       ${servicosAplicavel ? `<div class="kk-dias-chips" id="pcp-serv-tabs">${PCP_TURNOS.filter(t=>t.id!=="todos").map(t => `<button type="button" class="chip-dia ${pcpServicosSel.has(t.id)?"on":""}" data-pcp-serv="${t.id}">${t.nome}</button>`).join("")}</div>` : ""}
@@ -16505,7 +16505,12 @@ async function renderPCP(){
   `;
 
   content.querySelector("#pcp-subview-tabs").addEventListener("click", e => { const b = e.target.closest("button[data-pcpsub]"); if(!b) return; pcpSubView = b.dataset.pcpsub; renderPCP(); });
-  content.querySelector("#pcp-uni-tabs").addEventListener("click", e => { const b = e.target.closest("button[data-pcpuni]"); if(!b) return; pcpUnidadeSel = b.dataset.pcpuni; pcpProdClientesSel = null; renderPCP(); });
+  // 10/11/2026: o seletor Matriz/Filial/Ambas do topo some na Produção da cozinha (unidade única) — ficou
+  // redundante com os atalhos Grupo inteiro/Matriz/Filial do painel "Clientes" logo abaixo (achado do
+  // Marcelo); continua existindo normalmente em "Ambas" (onde o painel Clientes não aparece) e nas demais
+  // sub-abas do PCP, por isso o elemento pode não existir — wiring defensivo.
+  const uniTabs = content.querySelector("#pcp-uni-tabs");
+  if(uniTabs) uniTabs.addEventListener("click", e => { const b = e.target.closest("button[data-pcpuni]"); if(!b) return; pcpUnidadeSel = b.dataset.pcpuni; pcpProdClientesSel = null; renderPCP(); });
   content.querySelector("#pcp-dia-tabs").addEventListener("click", e => {
     const bProd = e.target.closest("button.pcp-prod-dia-chip");
     if(bProd){ const d = bProd.dataset.dia; if(pcpProdDiasSel.has(d)) pcpProdDiasSel.delete(d); else pcpProdDiasSel.add(d); renderPCP(); return; }
