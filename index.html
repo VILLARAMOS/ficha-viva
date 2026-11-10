@@ -16322,7 +16322,7 @@ async function renderPCP(){
     <div class="menu-controls" style="margin-bottom:16px;">
       <div class="kk-dias-chips" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" class="chip-dia ${pcpUnidadeSel===u.id?"on":""}" data-pcpuni="${u.id}">${u.nome}${u.id !== "todos" ? ` · ${pcpContagemUnidade(u.id)}` : ""}</button>`).join("")}</div>
       <select id="pcp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===pcpSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
-      ${ehProducao && !ehProducaoAmbas ? `<div class="kk-dias-chips" id="pcp-dia-tabs" title="Multi-seleção — cada dia marcado entra na tabela e na impressão">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia pcp-prod-dia-chip ${pcpProdDiasSel.has(d)?"on":""}" data-dia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>` : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
+      ${ehProducao && !ehProducaoAmbas ? "" : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
       ${servicosAplicavel ? `<div class="kk-dias-chips" id="pcp-serv-tabs">${PCP_TURNOS.filter(t=>t.id!=="todos").map(t => `<button type="button" class="chip-dia ${pcpServicosSel.has(t.id)?"on":""}" data-pcp-serv="${t.id}">${t.nome}</button>`).join("")}</div>` : ""}
     </div>
     ${ehAcougue ? `
@@ -16431,6 +16431,22 @@ async function renderPCP(){
       // de Compras): a tabela só aparece/imprime depois do 1º clique em Gerar; a partir daí fica reativa a
       // qualquer mudança de dia/cliente/atendimento, igual comprasListaGerada já faz em Compras.
       const prodRotuloCli = pcpProdClientesSel === null ? "Grupo inteiro" : (prodSelIds.length === prodIdsTodos.length ? "Grupo inteiro" : (prodSelIds.length === 1 ? (contratos.get(prodSelIds[0])?.nome_cliente || "1 cliente") : (prodSelIds.length ? "Seleção personalizada" : "Nenhum cliente")));
+      // "Dias da semana" ganhou painel próprio (10/11/2026, mesmo padrão do card de Compras — título +
+      // contagem à direita, texto explicativo, chips) em vez de ficar junto com Unidade/Semana/Atendimento
+      // na barra de filtros do topo; mantém o id pcp-dia-tabs (o wiring de clique é o mesmo de sempre).
+      const diasPanel = `
+      <div class="panel" style="margin-bottom:14px;">
+        <div class="panel-head">
+          <h3>Dias da semana</h3>
+          <span class="hint">${pcpProdDiasSel.size} de ${DIAS_ORDEM.length}</span>
+        </div>
+        <div class="panel-body">
+          <div class="footnote" style="margin:0 0 10px;">Marque os dias que entram na tabela e na impressão — pode marcar mais de um, cada dia marcado vira um bloco separado.</div>
+          <div class="kk-dias-chips" id="pcp-dia-tabs" style="flex-wrap:wrap;">
+            ${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia pcp-prod-dia-chip ${pcpProdDiasSel.has(d)?"on":""}" data-dia="${d}">${DIA_LABEL[d]}</button>`).join("")}
+          </div>
+        </div>
+      </div>`;
       const clientesPanel = `
       <div class="panel" style="margin-bottom:14px;">
         <div class="panel-head">
@@ -16452,8 +16468,8 @@ async function renderPCP(){
       const gerarBtn = `<div style="display:flex; justify-content:flex-end; margin-bottom:14px;">
         <button class="btn primary" id="pcp-prod-gerar" ${prodDiasAtivos.length ? "" : "disabled"}>${pcpProdGerado ? "Atualizar tabela" : "Gerar tabela"}</button>
       </div>`;
-      if(!prodDiasAtivos.length) return clientesPanel + gerarBtn + `<div class="empty-state">Marque pelo menos 1 dia da semana (no topo) pra gerar a tabela.</div>`;
-      if(!pcpProdGerado) return clientesPanel + gerarBtn + `<div class="empty-state">Marque os dias, clientes e atendimento desejados e clique em "Gerar tabela".</div>`;
+      if(!prodDiasAtivos.length) return diasPanel + clientesPanel + gerarBtn + `<div class="empty-state">Marque pelo menos 1 dia da semana acima pra gerar a tabela.</div>`;
+      if(!pcpProdGerado) return diasPanel + clientesPanel + gerarBtn + `<div class="empty-state">Marque os dias, clientes e atendimento desejados e clique em "Gerar tabela".</div>`;
       const pessoasSum = prodResList.reduce((s,r)=>s+r.pessoasTot,0);
       const kgSum = prodResList.reduce((s,r)=>s+r.kgTotal,0);
       const receitasSum = prodResList.reduce((s,r)=>s+r.receitas.length,0);
@@ -16461,7 +16477,7 @@ async function renderPCP(){
       const multiDia = prodDiasAtivos.length > 1;
       const subDias = (campo) => prodDiasAtivos.map((d,i) => `${DIA_LABEL[d].slice(0,3)} ${fmtNum(prodResList[i][campo],campo==="pessoasTot"?0:1)}`).join(" · ");
       const servicosUniao = PCP_TURNOS.filter(t => t.id!=="todos" && prodResList.some(r => r.servicos.includes(t.id))).map(t=>t.id);
-      return clientesPanel + gerarBtn + `
+      return diasPanel + clientesPanel + gerarBtn + `
       <div class="es-kpis" style="margin-bottom:16px;">
         <div class="vn-card"><div class="vn-label">Pessoas previstas</div><div class="vn-value">${fmtNum(pessoasSum,0)}</div>${multiDia ? `<div class="vn-sub">${subDias("pessoasTot")}</div>` : ""}</div>
         <div class="vn-card"><div class="vn-label">Kg a produzir</div><div class="vn-value">${fmtNum(kgSum,1)}</div>${multiDia ? `<div class="vn-sub">${subDias("kgTotal")}</div>` : ""}</div>
