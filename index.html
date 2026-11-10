@@ -2229,14 +2229,14 @@ function renderEstoqueContagem(){
       <div class="panel-head">
         <h3><i class="ico" data-lucide="clipboard-list"></i>Contagem física</h3>
         <div class="es-tools">
-          <button class="btn" id="es-imprimir"><i class="ico" data-lucide="printer"></i>Imprimir lista</button>
+          <button class="btn small primary" id="es-imprimir"><i class="ico" data-lucide="printer"></i>Imprimir lista</button>
           <button class="btn primary" id="es-gerar-ajustes"><i class="ico" data-lucide="refresh-cw"></i>Gerar ajustes</button>
         </div>
       </div>
       <div class="panel-body">
-        <div class="es-tools" style="margin-bottom:14px;">
+        <div class="menu-controls" style="margin-bottom:14px;">
           <div class="seg-toggle" id="es-un-tabs">${UNIDADES_COMPRA.map(u => `<button type="button" data-esun="${u.id}" class="${estoqueUnidadeSel===u.id?"active":""}">${u.nome}</button>`).join("")}</div>
-          <select id="es-semana">${opcoesSemana.map(s=>`<option value="${s}" ${s===estoqueSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))}${s===semanaSugerida?" (próxima)":""}</option>`).join("")}</select>
+          <select id="es-semana">${opcoesSemana.map(s=>`<option value="${s}" ${s===estoqueSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})${s===semanaSugerida?" (próxima)":""}</option>`).join("")}</select>
         </div>
         <div class="es-kpis inner">
           ${estoqueKpiCard({label:`Insumos contados · ${nomeUn}`, value: String(nInsumosContados)})}
@@ -3437,8 +3437,8 @@ function renderCardapio(){
       ${grupo !== "cafe" ? `<button class="btn" id="btn-sugerir-semana" title="Preenche o rascunho da semana automaticamente — não salva sozinho">🎲 Sugerir semana</button>` : ""}
       <button class="btn primary" id="btn-salvar-semana">Salvar semana</button>
       <button class="btn" id="btn-copiar-semana">⧉ Copiar semana</button>
-      <button class="btn" id="btn-imprimir-cardapio-completo">Imprimir completo</button>
-      <button class="btn" id="btn-imprimir-cardapio-simples" title="Imprime só os nomes dos pratos da semana, sem peso nem custo">Imprimir só cardápio</button>
+      <button class="btn small primary" id="btn-imprimir-cardapio-completo">Imprimir completo</button>
+      <button class="btn small primary" id="btn-imprimir-cardapio-simples" title="Imprime só os nomes dos pratos da semana, sem peso nem custo">Imprimir só cardápio</button>
       <button class="btn danger" id="btn-excluir-semana">Excluir semana</button>
     </div>
     <div id="card-cmv-panel"></div>
@@ -6687,8 +6687,8 @@ function renderFichaModal(id, draft){
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
             ${id ? `<button class="btn danger" id="del-m">Excluir ficha</button>` : ""}
             <button class="btn" id="dup-m">⧉ Duplicar</button>
-            <button class="btn" id="print-m">Imprimir ficha de produção</button>
-            <button class="btn" id="print-completa-m">Imprimir ficha completa</button>
+            <button class="btn small primary" id="print-m">Imprimir ficha de produção</button>
+            <button class="btn small primary" id="print-completa-m">Imprimir ficha completa</button>
           </div>
           <div style="display:flex; gap:8px;">
             <button class="btn" id="cancel-m">Cancelar</button>
@@ -7454,7 +7454,7 @@ function renderGradeLancamento(){
           <input type="date" id="vd-pr-ini">
           <span class="footnote">a</span>
           <input type="date" id="vd-pr-fim">
-          <button type="button" class="btn primary" id="vd-pr-ir" style="margin-left:auto;">🖨️ Imprimir agora</button>
+          <button type="button" class="btn small primary" id="vd-pr-ir" style="margin-left:auto;">🖨️ Imprimir agora</button>
         </div>
         <div id="vd-pr-dias" style="margin-top:10px;"></div>
       </div>
@@ -9430,7 +9430,7 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale, ca
     <div class="panel">
       <div class="panel-head">
         <h3>Lista de compra — insumos</h3>
-        <button type="button" class="btn small ghost" id="cx-imprimir-lista">Imprimir</button>
+        <button type="button" class="btn small primary" id="cx-imprimir-lista">Imprimir</button>
       </div>
       <div class="table-wrap">
         <table class="tb-lista-compra">
@@ -14096,7 +14096,7 @@ function pcpReqSemanaSecaoHtml(dias, diasSelState, semana, unidadeFiltro, area){
   return `
     <div class="panel" style="margin-bottom:14px;">
       <div class="panel-body" style="display:flex; flex-wrap:wrap; gap:14px; align-items:center;">
-        ${dias.map(d => `<label style="display:flex; align-items:center; gap:6px; font-size:13px;"><input type="checkbox" data-pcp-reqdia-sel="${d.dia}" ${diasSelState.has(d.dia)?"checked":""}> ${escapeHtml(PCP_DIA_LABEL_FEIRA[d.dia]||d.dia)}</label>`).join("")}
+        <div class="kk-dias-chips">${dias.map(d => `<button type="button" class="chip-dia pcp-reqdia-chip ${diasSelState.has(d.dia)?"on":""}" data-dia="${d.dia}" data-area="${area}">${escapeHtml((PCP_DIA_LABEL_FEIRA[d.dia]||d.dia).slice(0,3))}</button>`).join("")}</div>
         <span style="flex:1 1 auto;"></span>
         <button class="btn small primary" data-pcp-reqdia-fichas="1">Imprimir fichas técnicas (dias marcados)</button>
         <button class="btn small primary" data-pcp-reqdia-imprimir="1">Imprimir dias marcados</button>
@@ -14108,9 +14108,11 @@ function pcpReqSemanaSecaoHtml(dias, diasSelState, semana, unidadeFiltro, area){
   `;
 }
 function pcpReqSemanaSecaoBind(content, semana, unidadeFiltro, unidadeLabel, area, diasSelState, servicosFiltro, margemPct){
-  content.querySelectorAll("input[data-pcp-reqdia-sel]").forEach(chk => {
-    chk.addEventListener("change", () => {
-      if(chk.checked) diasSelState.add(chk.dataset.pcpReqdiaSel); else diasSelState.delete(chk.dataset.pcpReqdiaSel);
+  content.querySelectorAll(".pcp-reqdia-chip").forEach(b => {
+    b.addEventListener("click", () => {
+      const dia = b.dataset.dia;
+      if(diasSelState.has(dia)) diasSelState.delete(dia); else diasSelState.add(dia);
+      renderPCP();
     });
   });
   const btnImprimir = content.querySelector("button[data-pcp-reqdia-imprimir]");
@@ -14185,7 +14187,7 @@ function pcpAcgPreparoSemanaHtml(preparoSemana, diasSelState){
     <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="calendar-days"></i>Preparo da semana</h3></div>
     <div class="panel" style="margin-bottom:14px;">
       <div class="panel-body" style="display:flex; flex-wrap:wrap; gap:14px; align-items:center;">
-        ${preparoSemana.map(d => `<label style="display:flex; align-items:center; gap:6px; font-size:13px;"><input type="checkbox" data-pcp-acgprep-sel="${d.dia}" ${diasSelState.has(d.dia)?"checked":""}> ${escapeHtml(DIA_LABEL[d.dia]||d.dia)}</label>`).join("")}
+        <div class="kk-dias-chips">${preparoSemana.map(d => `<button type="button" class="chip-dia pcp-acgprep-chip ${diasSelState.has(d.dia)?"on":""}" data-dia="${d.dia}">${escapeHtml((DIA_LABEL[d.dia]||d.dia).slice(0,3))}</button>`).join("")}</div>
         <span style="flex:1 1 auto;"></span>
         <button class="btn small primary" id="pcp-acgprep-imprimir">Imprimir dias marcados</button>
       </div>
@@ -14215,9 +14217,11 @@ function pcpImprimirAcgPreparoDiasEscolhidos(dias, preparoSemana, semana, unidad
   w.document.close(); w.focus(); w.print();
 }
 function pcpAcgPreparoSemanaBind(content, preparoSemana, diasSelState, semana, unidadeLabel){
-  content.querySelectorAll("input[data-pcp-acgprep-sel]").forEach(chk => {
-    chk.addEventListener("change", () => {
-      if(chk.checked) diasSelState.add(chk.dataset.pcpAcgprepSel); else diasSelState.delete(chk.dataset.pcpAcgprepSel);
+  content.querySelectorAll(".pcp-acgprep-chip").forEach(b => {
+    b.addEventListener("click", () => {
+      const dia = b.dataset.dia;
+      if(diasSelState.has(dia)) diasSelState.delete(dia); else diasSelState.add(dia);
+      renderPCP();
     });
   });
   const btn = content.querySelector("#pcp-acgprep-imprimir");
@@ -16360,7 +16364,7 @@ async function renderPCP(){
       ${!ehProducaoAmbas ? `<div class="panel" style="margin-bottom:14px;">
         <div class="panel-body" style="display:flex; flex-wrap:wrap; gap:14px; align-items:center;">
           <span class="footnote" style="margin:0; font-weight:600;">Dias para gerar a lista:</span>
-          ${DIAS_ORDEM.map(d => `<label style="display:flex; align-items:center; gap:6px; font-size:13px;"><input type="checkbox" data-pcp-proddia-sel="${d}" ${pcpProdDiasSel.has(d)?"checked":""}> ${DIA_LABEL[d].slice(0,3)}</label>`).join("")}
+          <div class="kk-dias-chips">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia pcp-proddia-chip ${pcpProdDiasSel.has(d)?"on":""}" data-dia="${d}">${DIA_LABEL[d].slice(0,3)}</button>`).join("")}</div>
         </div>
       </div>
       <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px;">
@@ -16410,9 +16414,11 @@ async function renderPCP(){
       btn.addEventListener("click", () => pcpImprimirReceitaUnica(resUni, margemPct, fichaId));
     });
   } else if(ehProducao){
-    content.querySelectorAll("input[data-pcp-proddia-sel]").forEach(chk => {
-      chk.addEventListener("change", () => {
-        if(chk.checked) pcpProdDiasSel.add(chk.dataset.pcpProddiaSel); else pcpProdDiasSel.delete(chk.dataset.pcpProddiaSel);
+    content.querySelectorAll(".pcp-proddia-chip").forEach(b => {
+      b.addEventListener("click", () => {
+        const dia = b.dataset.dia;
+        if(pcpProdDiasSel.has(dia)) pcpProdDiasSel.delete(dia); else pcpProdDiasSel.add(dia);
+        renderPCP();
       });
     });
     // atalho pedido pelo Marcelo (10/11/2026): "Ajustes do dia" já existe (quantidade de atendimento =
