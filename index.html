@@ -13182,16 +13182,7 @@ function pcpProducaoHtml(res, margemPct){
       </div>
     </div>
     ${pcpSubsPanelHtml(res.subs, margemPct)}
-    ${pcpDiretosPanelHtml(res.diretos)}
   `;
-}
-function pcpDiretosPanelHtml(diretos){
-  if(!diretos.length) return "";
-  const linhas = diretos.map(d => `<tr><td class="name-cell">${escapeHtml(d.nome)}</td><td class="num-cell">${fmtNum(d.total,2)} ${escapeHtml(d.unidade||"")}</td><td class="num-cell">${d.porCliente.size}</td><td class="footnote" style="margin:0;">${[...new Set([...d.porCliente.values()].map(p=>p.nome))].join(", ")}</td></tr>`).join("");
-  return `<div class="panel">
-      <div class="panel-head"><h3><i class="ico" data-lucide="package"></i>Itens prontos (sem ficha técnica)</h3></div>
-      <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Item</th><th style="text-align:right;">Quantidade</th><th style="text-align:right;">Clientes</th><th>Atende</th></tr></thead><tbody>${linhas}</tbody></table></div></div>
-    </div>`;
 }
 // Fase 4: painel "Sub-receitas (preparar antes)" — fichas usadas como ingrediente de outra receita do
 // cardápio do dia (ver pcpSubReceitasDoDia). `unidade`, quando informado, é só pra apontar o botão de
@@ -13257,7 +13248,6 @@ function pcpProducaoAmbasHtml(listaRes, margemPct){
       </div>
     </div>
     ${listaRes.map(res => pcpSubsPanelHtml(res.subs, margemPct, res.unidade)).join("")}
-    ${listaRes.map(res => pcpDiretosPanelHtml(res.diretos)).join("")}
   `;
 }
 function iconeImprimir(){ return `<i class="ico" data-lucide="printer" style="width:14px; height:14px;"></i>`; }
@@ -13579,10 +13569,26 @@ function pcpImprimirOrdemProducao(res, margemPct, setorFiltro){
       `<tr><td>${escapeHtml(r.nome)}</td><td class="peso destaque">${pcpFmtQtd(kg)}</td><td class="peso">${pcpCubaTxt(r.fichaId, kg)}</td></tr>`;
   }).join("");
   const substHtml = (setorFiltro === "todos" || setorFiltro === "cozinha") ? pcpSubstituicoesImpressaoHtml(res) : "";
+  // Tabelas por cliente junto da impressão da Composição principal (pedido Marcelo, 10/11/2026) — mesmos
+  // itens já filtrados em "lista" acima (o que sai na composição agregada é o que aparece detalhado por
+  // cliente); quantidade líquida, sem margem de produção — mesma régua já usada em "Volume por cliente"
+  // (ver pcpImprimirVolumePorCliente), a margem só entra na tabela agregada de quanto produzir.
+  const blocosClientesHtml = setorFiltro === "cozinha" ? res.clientes.map(cli => {
+    const linhasCli = [];
+    lista.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhasCli.push({nome: r.nome, qtd: p.qtd, fichaId: r.fichaId}); });
+    if(!linhasCli.length) return "";
+    return `<div style="break-inside:avoid; page-break-inside:avoid; margin-bottom:14px;">
+      <h2 style="margin-bottom:6px;">${escapeHtml(cli.nome)} <span style="font-weight:400; text-transform:none; letter-spacing:0; color:#777;">— ${fmtNum(cli.pessoas,0)} pessoas · ${escapeHtml(nomeUnidadeCompra(cli.unidade))}</span></h2>
+      <table><thead><tr><th>Item</th><th style="width:120px; text-align:right;">Peso</th><th style="width:120px; text-align:right;">Cubas</th></tr></thead><tbody>
+        ${linhasCli.map(l => `<tr><td>${escapeHtml(l.nome)}</td><td class="peso">${pcpFmtQtd(l.qtd)}</td><td class="peso">${l.fichaId ? pcpCubaTxt(l.fichaId, l.qtd) : "—"}</td></tr>`).join("")}
+      </tbody></table>
+    </div>`;
+  }).join("") : "";
   const corpo = `<h1>Ordem de produção — ${escapeHtml(nomesSetor[setorFiltro])}</h1>
     <table><thead><tr><th>Receita</th><th style="width:140px; text-align:right;">Quantidade</th><th style="width:140px; text-align:right;">Cubas</th></tr></thead><tbody>${linhas}</tbody></table>
     ${substHtml}
-    <div class="assinatura" style="margin-top:40px; display:flex; gap:40px;"><div style="flex:1; border-top:1px solid #333; padding-top:4px; font-size:12px;">Produzido por</div><div style="flex:1; border-top:1px solid #333; padding-top:4px; font-size:12px;">Conferido por</div></div>`;
+    <div class="assinatura" style="margin-top:40px; display:flex; gap:40px;"><div style="flex:1; border-top:1px solid #333; padding-top:4px; font-size:12px;">Produzido por</div><div style="flex:1; border-top:1px solid #333; padding-top:4px; font-size:12px;">Conferido por</div></div>
+    ${blocosClientesHtml ? `<h2 style="page-break-before:always;">Por cliente</h2>${blocosClientesHtml}` : ""}`;
   pcpAbrirImpressaoReceitas(`Ordem de produção — ${nomesSetor[setorFiltro]}`, pcpContextoImpressao(res, margemPct), corpo);
 }
 
