@@ -9485,7 +9485,10 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale, ca
     <div class="panel">
       <div class="panel-head">
         <h3>Lista de compra — insumos</h3>
-        <button type="button" class="btn small primary" id="cx-imprimir-lista">Imprimir</button>
+        <div style="display:flex; gap:8px;">
+          <button type="button" class="btn small primary" id="cx-imprimir-lista">Imprimir</button>
+          <button type="button" class="btn small primary" id="cx-imprimir-cardapios">Imprimir cardápios</button>
+        </div>
       </div>
       <div class="table-wrap">
         <table class="tb-lista-compra">
@@ -9503,6 +9506,7 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale, ca
     <div class="panel" style="margin-top:16px;" id="cx-sugestoes-panel"></div>
   `;
   document.getElementById("cx-imprimir-lista")?.addEventListener("click", () => imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto));
+  document.getElementById("cx-imprimir-cardapios")?.addEventListener("click", () => imprimirCardapiosListaCompra(semana, contratoIds));
   renderSugestoesPedido(semana, linhas);
 }
 
@@ -9563,6 +9567,54 @@ function renderSugestoesPedido(semana, linhas){
   }));
 }
 
+// Cardápios usados pelos clientes de uma lista de compra (10/11/2026) — extraído pra fora de
+// imprimirListaCompra pra poder alimentar também o botão novo "Imprimir cardápios" (separado da lista de
+// insumos, pedido do Marcelo 10/11/2026: a lista de compra deve imprimir só os itens; quem quiser ver a
+// composição dos cardápios usa o botão dedicado). Um registro por (grupo, número) distinto entre todos os
+// contratos, cobrindo refeição/marmita/café e as variantes "especial" quando ativas, sem filtrar por
+// vigência no dia (grade da semana inteira, vigente ou não em cada dia específico).
+function cardapiosUsadosDeContratos(contratoIds){
+  const cardapiosUsadosMap = new Map(); // "grupo|num" -> {grupo, num}
+  contratoIds.forEach(id => {
+    const ct = contratos.get(id);
+    if(!ct) return;
+    const add = (grupo, num) => { if(num != null) cardapiosUsadosMap.set(`${grupo}|${num}`, {grupo, num}); };
+    add("refeicao", ct.cardapio_refeicao_num);
+    add("marmita", ct.cardapio_marmita_num);
+    if(ct.marmita_especial_ativo) add("marmita", ct.cardapio_marmita_especial_num);
+    add("cafe", ct.cardapio_cafe_num);
+    if(ct.cafe_especial_ativo) add("cafe", ct.cardapio_cafe_especial_num);
+  });
+  const ORDEM_GRUPO_CARDAPIO = { refeicao: 0, marmita: 1, cafe: 2 };
+  return [...cardapiosUsadosMap.values()].sort((a,b) => (ORDEM_GRUPO_CARDAPIO[a.grupo]-ORDEM_GRUPO_CARDAPIO[b.grupo]) || (a.num-b.num));
+}
+// Impressão separada dos cardápios referentes à lista de compra (botão "Imprimir cardápios") — mesmo
+// conteúdo que antes saía embutido no fim da impressão da lista de insumos, agora em janela própria.
+function imprimirCardapiosListaCompra(semana, contratoIds){
+  const w = window.open("", "_blank");
+  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
+  const cardapiosUsados = cardapiosUsadosDeContratos(contratoIds);
+  // semQuebraPagina=true só no 1º bloco, pra não abrir com uma página em branco antes dele (os demais
+  // mantêm a quebra de página normal entre si, 1 cardápio por folha).
+  const blocosCardapiosHtml = cardapiosUsados.map((c,i) => cardapioBlocoHtml(c.grupo, c.num, semana, false, i===0)).join("");
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Cardápios — Lista de compra — ${escapeHtml(rotuloSemana(semana))}</title>
+    <style>
+      @page{ size: landscape; margin: 8mm; }
+      body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;}
+      h1{font-size:18px; margin:0 0 4px;}
+      .sub{font-size:12px; color:#555; margin-bottom:16px;}
+      @media print{ .no-print{display:none;} }
+      ${printHeadStyle()}
+      ${cardapioBlocoStyle()}
+    </style></head><body>
+    ${printHeadHtml()}
+    <h1>Cardápios — Lista de compra</h1>
+    <div class="sub">${escapeHtml(rotuloSemana(semana))} (${escapeHtml(intervaloSemana(semana))}) — ${contratoIds.length} ${contratoIds.length===1?"cliente":"clientes"}</div>
+    ${blocosCardapiosHtml || `<div class="sub">Nenhum cardápio de referência cadastrado nos contratos desta lista.</div>`}
+    <script>window.onload = () => window.print();<\/script>
+    </body></html>`);
+  w.document.close();
+}
 function imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto){
   const diasExcluidos = DIAS_ORDEM.filter(d => !comprasDiaAtivo(d));
   const w = window.open("", "_blank");
@@ -9586,26 +9638,6 @@ function imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto)
     return { nome: ct.nome_cliente, unidade: ct.unidade === "filial" ? "Filial" : "Matriz", cardapios, totalRefeicoes };
   }).filter(Boolean).sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
   const totalRefeicoesGeral = clientesInfo.reduce((s,c) => s + c.totalRefeicoes, 0);
-
-  // Cardápios da semana usados pelos clientes desta lista (10/11/2026) — pra imprimir a composição dos
-  // pratos no mesmo documento, não só o nome do cardápio na tabela de clientes acima. Um por (grupo,
-  // número) distinto entre todos os contratos incluídos, cobrindo refeição/marmita/café e as variantes
-  // "especial" quando ativas — mesma régua já usada em clientesInfo acima, sem filtrar por vigência no
-  // dia (é a mesma grade de pratos da semana inteira, vigente ou não em cada dia específico).
-  const cardapiosUsadosMap = new Map(); // "grupo|num" -> {grupo, num}
-  contratoIds.forEach(id => {
-    const ct = contratos.get(id);
-    if(!ct) return;
-    const add = (grupo, num) => { if(num != null) cardapiosUsadosMap.set(`${grupo}|${num}`, {grupo, num}); };
-    add("refeicao", ct.cardapio_refeicao_num);
-    add("marmita", ct.cardapio_marmita_num);
-    if(ct.marmita_especial_ativo) add("marmita", ct.cardapio_marmita_especial_num);
-    add("cafe", ct.cardapio_cafe_num);
-    if(ct.cafe_especial_ativo) add("cafe", ct.cardapio_cafe_especial_num);
-  });
-  const ORDEM_GRUPO_CARDAPIO = { refeicao: 0, marmita: 1, cafe: 2 };
-  const cardapiosUsados = [...cardapiosUsadosMap.values()].sort((a,b) => (ORDEM_GRUPO_CARDAPIO[a.grupo]-ORDEM_GRUPO_CARDAPIO[b.grupo]) || (a.num-b.num));
-  const blocosCardapiosHtml = cardapiosUsados.map(c => cardapioBlocoHtml(c.grupo, c.num, semana, false)).join("");
 
   // Separa a lista em blocos por função do prato (pedido Marcelo, 10/11/2026) — ver blocoComprasDoGrupoFicha.
   // Insumo compartilhado entre categorias aparece só no bloco de maior uso na semana (l.bloco já vem
@@ -9647,7 +9679,6 @@ function imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto)
       tfoot td{font-weight:700; background:#f7f7f7;}
       @media print{ .no-print{display:none;} }
       ${printHeadStyle()}
-      ${cardapioBlocoStyle()}
     </style></head><body>
     ${printHeadHtml()}
     <h1>Lista de compra — insumos</h1>
@@ -9666,7 +9697,6 @@ function imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto)
       <tfoot><tr><td><strong>Total geral</strong></td><td></td>${totalPorDia.map(kg => `<td class="num">${kg>0?fmtNum(kg,3):"—"}</td>`).join("")}<td class="num"><strong>${fmtNum(linhas.reduce((s,l)=>s+l.kg,0),3)}</strong></td><td></td></tr></tfoot>
     </table>
     <div class="sub">Custo total estimado: ${fmtMoney(totCusto)}. A coluna "Total semana" dos insumos pode incluir ajuste de segurança lançado para a semana (não detalhado por dia). Insumo usado em mais de um bloco aparece só no bloco de maior consumo na semana.${diasExcluidos.length ? ` <strong>${diasExcluidos.map(d => DIA_LABEL[d]).join(", ")} excluído${diasExcluidos.length===1?"":"s"} desta lista</strong> (sem expediente) — aparece zerado, não é falta de previsão.` : ""}</div>
-    ${blocosCardapiosHtml || `<div class="cps-bloco" style="page-break-before:always;"><div class="sub">Nenhum cardápio de referência cadastrado nos contratos desta lista.</div></div>`}
     <script>window.onload = () => window.print();<\/script>
     </body></html>`);
   w.document.close();
