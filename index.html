@@ -173,13 +173,15 @@ tbody tr:hover{background:var(--surface-alt);}
 .search-bar{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
 .search-bar input,.search-bar select{font:inherit;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:9px 11px;width:auto;min-width:170px;}
 .search-bar input[type=text]{flex:1;min-width:220px;}
-/* 10/11/2026, pedido do Marcelo (aba Compras → Pedidos): todos os filtros numa linha só, mesmo que
-   precise rolar na horizontal em telas estreitas — escopo só desta barra (.search-bar sozinha continua
-   quebrando linha nas outras abas que a usam). */
+/* 10/11/2026, pedido do Marcelo (aba Compras → Pedidos): todos os filtros numa linha só — escopo só desta
+   barra (.search-bar sozinha continua quebrando linha nas outras abas que a usam). Fonte/padding menores
+   (pedido dele, mesmo dia) pra caber tudo sem precisar rolar na horizontal na maioria das telas; ainda
+   rola se precisar (tela muito estreita). */
 .search-bar-nowrap{flex-wrap:nowrap; overflow-x:auto; padding-bottom:6px;}
+.search-bar-nowrap select,.search-bar-nowrap input[type=text]{font-size:12.5px; padding:6px 8px;}
 .search-bar-nowrap select{min-width:0; flex:0 0 auto;}
-.search-bar-nowrap input[type=text]{min-width:160px; flex:0 1 220px;}
-.search-bar-nowrap button{flex:0 0 auto;}
+.search-bar-nowrap input[type=text]{min-width:140px; flex:0 1 180px;}
+.search-bar-nowrap button{flex:0 0 auto; font-size:12.5px; padding:6px 10px;}
 .empty-state{color:var(--text-faint);font-size:13px;padding:24px;text-align:center;}
 .footnote{font-size:12px;color:var(--text-faint);margin-top:6px;line-height:1.5;}
 
@@ -9952,26 +9954,42 @@ function pedidosOrcadoSemana(semana, escopo){
   let t = 0; if(sb) sb.porBloco.forEach(v => t += v);
   return t;
 }
-// contexto do painel: 1 semana (com as datas, pedido do Marcelo) quando o filtro de semana está ativo;
-// senão o mês do filtro, ou o mês atual quando nenhum dos dois filtros está escolhido — mesmo padrão do
-// Painel/painelMesSel (nunca fica sem contexto nenhum).
+// contexto do painel: 1 semana (com as datas) quando o filtro de semana está ativo; senão o mês do filtro.
+// 10/11/2026, ajuste pedido por Marcelo: sem mês nem semana escolhidos o painel fica sem período (tipo
+// "nenhum" — orçamento/saldo mostram "—" em vez de assumir o mês atual escondido) — antes isso gerava um
+// saldo enganoso (comparava o orçamento de 1 mês só contra TODOS os pedidos de todos os meses).
 function contextoOrcamentoPedidos(){
   if(pedidosSemanaFiltro !== "todas"){
     return { tipo:"semana", semana: pedidosSemanaFiltro, label: rotuloSemana(pedidosSemanaFiltro), sub: intervaloSemana(pedidosSemanaFiltro) };
   }
-  const mesId = pedidosMesFiltro !== "todos" ? pedidosMesFiltro : mesAtualId();
-  const mesInfo = MESES_REFERENCIA.find(m => m.id === mesId);
-  return { tipo:"mes", mesId, label: mesInfo ? mesInfo.nome : mesId, sub: pedidosMesFiltro==="todos" ? "mês atual — sem filtro de mês/semana" : "" };
+  if(pedidosMesFiltro !== "todos"){
+    const mesInfo = MESES_REFERENCIA.find(m => m.id === pedidosMesFiltro);
+    return { tipo:"mes", mesId: pedidosMesFiltro, label: mesInfo ? mesInfo.nome : pedidosMesFiltro, sub: "" };
+  }
+  return { tipo:"nenhum", label: "—", sub: "selecione um mês ou semana" };
 }
 function orcadoContextoPedidos(ctx, escopo){
-  return ctx.tipo === "semana" ? pedidosOrcadoSemana(ctx.semana, escopo) : totalOrcadoMes(ctx.mesId, escopo);
+  if(ctx.tipo === "semana") return pedidosOrcadoSemana(ctx.semana, escopo);
+  if(ctx.tipo === "mes") return totalOrcadoMes(ctx.mesId, escopo);
+  return 0;
+}
+// opções do filtro de semana — restritas às semanas do mês escolhido (pedido de Marcelo, 10/11/2026: antes
+// mostrava semanas de qualquer mês mesmo com um mês já selecionado no filtro ao lado).
+function calcOpcoesSemanaPedidos(){
+  const semanasComPedido = [...new Set([...pedidos.values()].map(p=>p.semana).filter(s=>s!=null))].sort((a,b)=>a-b);
+  const semanaAtual = semanaDaData(hojeYMD()) || 1;
+  let opcoes = [...new Set([...semanasComPedido, semanaAtual])].sort((a,b)=>a-b);
+  if(pedidosMesFiltro !== "todos"){
+    const semanasDoMes = (MESES_REFERENCIA.find(m => m.id === pedidosMesFiltro) || {}).semanas || [];
+    opcoes = opcoes.filter(s => semanasDoMes.includes(s));
+  }
+  return { opcoes, semanaAtual };
 }
 
 /* ---- Pedidos (histórico de compras por fornecedor) ---- */
 function renderTabPedidos(){
-    const semanasComPedido = [...new Set([...pedidos.values()].map(p=>p.semana).filter(s=>s!=null))].sort((a,b)=>a-b);
-    const semanaAtual = semanaDaData(hojeYMD()) || 1;
-    const opcoesFiltro = [...new Set([...semanasComPedido, semanaAtual])].sort((a,b)=>a-b);
+    // 10/11/2026: opções de semana dependem do mês escolhido (calcOpcoesSemanaPedidos) — ver função acima.
+    const { opcoes: opcoesFiltro, semanaAtual } = calcOpcoesSemanaPedidos();
     if(pedidosSemanaFiltro !== "todas" && !opcoesFiltro.includes(pedidosSemanaFiltro)) pedidosSemanaFiltro = "todas";
     const mesesComPedido = [...new Set([...pedidos.values()].map(p => (p.data_pedido||"").slice(0,7)).filter(Boolean))];
     const opcoesMes = MESES_REFERENCIA.filter(m => mesesComPedido.includes(m.id) || m.id === mesAtualId());
@@ -10051,13 +10069,17 @@ function renderTabPedidos(){
       const orcGrupo = orcadoContextoPedidos(ctx, "todos");
       const escopoAtual = pedidosUnidadeFiltro === "todas" ? "todos" : pedidosUnidadeFiltro;
       const orcAtual = escopoAtual === "matriz" ? orcMatriz : escopoAtual === "filial" ? orcFilial : orcGrupo;
+      // 10/11/2026: sem mês/semana escolhido (ctx.tipo "nenhum") os cards de orçamento/saldo mostram "—" em
+      // vez de um número — antes assumiam o mês atual por baixo dos panos e o saldo saía errado (comparava
+      // 1 mês de orçamento contra o total de pedidos de todos os meses).
+      const semCtx = ctx.tipo === "nenhum";
       document.getElementById("pd-painel").innerHTML = [
-        estoqueKpiCard({label: ctx.tipo==="semana"?"Semana":"Mês", value: ctx.label, sub: ctx.sub||""}),
-        estoqueKpiCard({label:"Orçamento — Matriz", value: fmtMoney(orcMatriz)}),
-        estoqueKpiCard({label:"Orçamento — Filial", value: fmtMoney(orcFilial)}),
-        estoqueKpiCard({label:"Orçamento — Grupo", value: fmtMoney(orcGrupo)}),
+        estoqueKpiCard({label: ctx.tipo==="semana"?"Semana":ctx.tipo==="mes"?"Mês":"Período", value: ctx.label, sub: ctx.sub||""}),
+        estoqueKpiCard({label:"Orçamento — Matriz", value: semCtx?"—":fmtMoney(orcMatriz)}),
+        estoqueKpiCard({label:"Orçamento — Filial", value: semCtx?"—":fmtMoney(orcFilial)}),
+        estoqueKpiCard({label:"Orçamento — Grupo", value: semCtx?"—":fmtMoney(orcGrupo)}),
         estoqueKpiCard({label:"Valor gasto (pedidos no filtro)", value: fmtMoney(total), sub:`Matriz ${fmtMoney(totalMatriz)} · Filial ${fmtMoney(totalFilial)}`}),
-        estoqueKpiCard({tone: (orcAtual-total)<0?"critical":(orcAtual>0 && (orcAtual-total)/orcAtual<0.15)?"warn":"ok", label:`Saldo do orçamento (${escopoAtual==="matriz"?"Matriz":escopoAtual==="filial"?"Filial":"Grupo"})`, value: fmtMoney(orcAtual-total)}),
+        estoqueKpiCard({tone: semCtx?"":((orcAtual-total)<0?"critical":(orcAtual>0 && (orcAtual-total)/orcAtual<0.15)?"warn":"ok"), label:`Saldo do orçamento (${escopoAtual==="matriz"?"Matriz":escopoAtual==="filial"?"Filial":"Grupo"})`, value: semCtx?"—":fmtMoney(orcAtual-total)}),
         estoqueKpiCard({label:"Pedidos no filtro", value: lista.length}),
         estoqueKpiCard({label:"Entregas feitas", value: entregues, sub:`Aguardando ${pendentes} · Divergência ${divergentes}`}),
       ].join("");
@@ -10073,11 +10095,11 @@ function renderTabPedidos(){
           <td class="num-cell">${fmtMoney(p.valor_total)}</td>
           <td>${statusChip(st)}</td>
           <td style="text-align:right; white-space:nowrap;">
-            <button class="btn small ghost pd-imprimir" data-id="${id}">imprimir</button>
-            <button class="btn small ghost pd-conferir" data-id="${id}">conferir</button>
-            <button class="btn small ghost pd-dup" data-id="${id}">duplicar</button>
-            <button class="btn small ghost pd-editar" data-id="${id}">editar</button>
-            <button class="btn small ghost pd-excluir" data-id="${id}" style="color:var(--critical);">excluir</button>
+            <button type="button" class="btn small ghost pd-imprimir" data-id="${id}" title="Imprimir">🖨️</button>
+            <button type="button" class="btn small ghost pd-conferir" data-id="${id}" title="Conferir">✓</button>
+            <button type="button" class="btn small ghost pd-dup" data-id="${id}" title="Duplicar">⧉</button>
+            <button type="button" class="btn small ghost pd-editar" data-id="${id}" title="Editar">✎</button>
+            <button type="button" class="btn small ghost pd-excluir" data-id="${id}" title="Excluir" style="color:var(--critical);">🗑</button>
           </td>
         </tr>`;
       }).join("") || `<tr><td colspan="8" class="empty-state">${vazio}</td></tr>`;
@@ -10100,7 +10122,18 @@ function renderTabPedidos(){
     updateTable();
 
     document.getElementById("pd-semana-filtro").addEventListener("change", e => { pedidosSemanaFiltro = e.target.value === "todas" ? "todas" : parseInt(e.target.value,10); updateTable(); });
-    document.getElementById("pd-mes-filtro").addEventListener("change", e => { pedidosMesFiltro = e.target.value; updateTable(); });
+    // 10/11/2026: trocar o mês reconstrói as opções do select de semana (restritas às semanas daquele mês,
+    // calcOpcoesSemanaPedidos) em vez de só filtrar a tabela — sem isso o select de semana continuava
+    // oferecendo semanas de outros meses depois de escolher um mês.
+    document.getElementById("pd-mes-filtro").addEventListener("change", e => {
+      pedidosMesFiltro = e.target.value;
+      const { opcoes, semanaAtual: semAtualNova } = calcOpcoesSemanaPedidos();
+      if(pedidosSemanaFiltro !== "todas" && !opcoes.includes(pedidosSemanaFiltro)) pedidosSemanaFiltro = "todas";
+      const selSemana = document.getElementById("pd-semana-filtro");
+      selSemana.innerHTML = `<option value="todas" ${pedidosSemanaFiltro==="todas"?"selected":""}>Todas as semanas</option>`
+        + opcoes.map(s=>`<option value="${s}" ${s===pedidosSemanaFiltro?"selected":""}>${escapeHtml(rotuloSemana(s))}${s===semAtualNova?" (atual)":""}</option>`).join("");
+      updateTable();
+    });
     document.getElementById("pd-forn-filtro").addEventListener("change", e => { pedidosFornecedorFiltro = e.target.value; updateTable(); });
     document.getElementById("pd-status-filtro").addEventListener("change", e => { pedidosStatusFiltro = e.target.value; updateTable(); });
     document.getElementById("pd-unidade-filtro").addEventListener("change", e => { pedidosUnidadeFiltro = e.target.value; updateTable(); });
