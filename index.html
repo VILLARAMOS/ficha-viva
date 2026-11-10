@@ -10019,9 +10019,11 @@ function renderTabPedidos(){
           ${[["todos","Todas as situações"],["aguardando","Aguardando entrega"],["parcial","Conferência parcial"],["recebido","Recebido"],["divergencia","Recebido c/ divergência"]].map(([v,l])=>`<option value="${v}" ${pedidosStatusFiltro===v?"selected":""}>${l}</option>`).join("")}
         </select>
         <input type="text" id="pd-busca" placeholder="Buscar fornecedor ou produto…" value="${escapeHtml(pedidosBusca)}">
-        <button class="btn primary" id="pd-novo" style="margin-left:auto;">+ Registrar pedido</button>
       </div>
       <div class="es-kpis" id="pd-painel" style="margin-bottom:16px;"></div>
+      <div style="display:flex; margin-bottom:16px;">
+        <button class="btn primary" id="pd-novo" style="margin-left:auto;">+ Registrar pedido</button>
+      </div>
       <div class="table-wrap" style="max-height:none;">
         <table class="cardapio-table">
           <thead><tr><th>Data</th><th>Fornecedor</th><th>Unidade</th><th>Semana</th><th style="text-align:right;">Itens</th><th style="text-align:right;">Valor total</th><th>Situação</th><th></th></tr></thead>
