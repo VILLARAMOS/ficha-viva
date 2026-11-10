@@ -685,7 +685,7 @@ const ORIENTACOES_POR_VIEW = {
   `,
   cardapio: `
     <p>Edição direto na tabela — refeição, marmita e café da manhã.</p>
-    <p><strong>Composições completas da semana:</strong> Prato Especial, Prato Fit, Lanche — ficha única (grupo "Prato Completo") que substitui Proteína+Base+Guarnição juntos quando escolhida no PCP. A estimativa de pessoas/semana alimenta a Lista de compras e a Requisição de insumos enquanto não há histórico real — depois de algumas semanas, passa a sugerir pela mediana. Sem ficha definida, o tipo não aparece na grade de Substituições do PCP.</p>
+    <p><strong>Pratos especiais:</strong> Prato Especial, Prato Fit, Lanche — ficha única que substitui Proteína+Base+Guarnição juntos quando escolhida no PCP. O custo/produção sai pelo peso do prato cadastrado aqui (padrão 850g por pessoa, editável por tipo/semana) × custo/kg da ficha escolhida — qualquer ficha serve, não precisa ter rendimento por unidade cadastrado. Só quando a ficha é do grupo "Prato Completo" o desconto de efetivo na produção tira Proteína+Base+Guarnição juntos; senão tira só a Proteína (aviso "⚠ não é Prato completo" avisa disso, não bloqueia nada). A estimativa de pessoas/semana alimenta a Lista de compras e a Requisição de insumos enquanto não há histórico real — depois de algumas semanas, passa a sugerir pela mediana. Sem ficha definida, o tipo não aparece na grade de Substituições do PCP.</p>
   `,
   contratos: `
     <p>Visão do negócio por cliente, cadastro de contratos, cardápio de referência e itens contratados.</p>
@@ -1313,7 +1313,7 @@ async function loadPcpSubstituicoesTudo(){
 function custoSubstituicao(item){
   const f = fichas.get(item.fichaId);
   if(!f) return 0;
-  const g = pcpGramagemSubstituicao(f);
+  const g = pcpGramagemItemSubstituicao(item.fichaId);
   if(g == null) return 0;
   const cc = computeFicha(f, item.fichaId);
   if(cc.custoKg == null) return 0;
@@ -1364,12 +1364,32 @@ function composicaoTiposAtivos(){
   return [...composicoesTipos.values()].filter(t => t.ativo !== false).sort((a,b) => a.ordem - b.ordem);
 }
 function composicaoDaSemana(tipoId, semana){ return composicoesSemanaCache.get(`${tipoId}|${semana}`) || null; }
-async function salvarComposicaoSemana(tipoId, semana, fichaId, estimativaPessoas){
-  const row = { tipo_id: tipoId, semana, ficha_id: fichaId || null, estimativa_pessoas: (estimativaPessoas === "" || estimativaPessoas == null) ? null : Number(estimativaPessoas), alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
+// 10/11/2026, pedido do Marcelo ("galinhada deu erro 'não é prato completo'"): gramagemG é o peso do
+// prato (g) por pessoa, PADRÃO 850g (coluna no banco já nasce com esse default — ver migration
+// add_gramagem_g_pcp_composicoes_semana), editável por tipo/semana. Antes o custo/produção desse tipo só
+// saía se a ficha escolhida tivesse rendimento_und cadastrado (pcpGramagemSubstituicao = rendimento_kg/
+// rendimento_und) — ficha normal (ex. galinhada, sem cadastro "por unidade") ficava sem custo. Com o peso
+// aqui, o custo sai sempre: peso × custo/kg da ficha (computeFicha), independente de rendimento_und e
+// independente do grupo da ficha ser "PRATO COMPLETO" ou não (ver pcpGramagemItemSubstituicao). O grupo
+// "PRATO COMPLETO" continua decidindo só uma coisa DIFERENTE: se o desconto de efetivo na produção tira
+// Proteína+Base+Guarnição juntos ou só a Proteína (fichaEhComposicaoCompleta) — o aviso "⚠ não é Prato
+// completo" no painel é sobre ISSO, não é mais sobre custo/produção.
+async function salvarComposicaoSemana(tipoId, semana, fichaId, estimativaPessoas, gramagemG){
+  const row = { tipo_id: tipoId, semana, ficha_id: fichaId || null, estimativa_pessoas: (estimativaPessoas === "" || estimativaPessoas == null) ? null : Number(estimativaPessoas), gramagem_g: (gramagemG === "" || gramagemG == null || isNaN(Number(gramagemG))) ? 850 : Number(gramagemG), alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
   const { data, error } = await sb.from('pcp_composicoes_semana').upsert(row, { onConflict: 'tipo_id,semana' }).select().single();
   if(error){ showAlert("Erro ao salvar composição da semana: " + error.message); return false; }
   composicoesSemanaCache.set(`${tipoId}|${semana}`, data);
   return true;
+}
+// peso (kg/pessoa) pra custear/produzir um item de "Pratos especiais" (ex. galinhada escolhida pro tipo
+// "Prato Especial" nesta semana): usa o peso cadastrado no painel (gramagem_g, padrão 850g — ver
+// salvarComposicaoSemana acima), NUNCA o rendimento_und da ficha. Só cai pra pcpGramagemSubstituicao
+// (rendimento_kg/rendimento_und) quando a ficha não vier de "Pratos especiais" — itens substitutos comuns
+// (ovo, omelete, filé — pcpItensSubstitutos) continuam exatamente como antes.
+function pcpGramagemItemSubstituicao(fichaId){
+  const row = [...composicoesSemanaCache.values()].find(r => r.ficha_id === fichaId);
+  if(row) return (Number(row.gramagem_g) || 850) / 1000;
+  return pcpGramagemSubstituicao(fichas.get(fichaId));
 }
 async function adicionarTipoComposicao(nome){
   const n = (nome || "").trim();
@@ -1423,6 +1443,10 @@ function composicoesSemanaPainelHtml(semana, titulo){
     const row = composicaoDaSemana(t.id, semana);
     const fichaSel = row && row.ficha_id ? fichas.get(row.ficha_id) : null;
     const naoPratoCompleto = fichaSel && pcpGrupoFicha(fichaSel) !== "PRATO COMPLETO";
+    // 10/11/2026: peso do prato (g/pessoa) — padrão 850 (default do banco), editável por tipo/semana;
+    // é o que vira custo/produção agora (ver pcpGramagemItemSubstituicao), não depende mais de a ficha ter
+    // rendimento_und cadastrado nem de ser classificada "PRATO COMPLETO".
+    const gramagemG = row && row.gramagem_g != null ? row.gramagem_g : 850;
     return `<tr data-comp-tipo="${t.id}">
       <td class="name-cell">${escapeHtml(t.nome)}</td>
       <td>
@@ -1432,13 +1456,14 @@ function composicoesSemanaPainelHtml(semana, titulo){
         </div>
       </td>
       <td><input type="number" min="0" step="1" class="comp-estimativa" data-comp-estimativa="${t.id}" value="${row && row.estimativa_pessoas != null ? row.estimativa_pessoas : ""}" placeholder="pessoas/semana" style="width:120px;"></td>
-      <td>${naoPratoCompleto ? `<span class="chip" style="background:#fde2e1; color:#9a2a2a;" title="Esta ficha não é 'Prato completo' — o desconto de efetivo na produção será só da Proteína, não da refeição (Proteína+Base+Guarnição) inteira.">⚠ não é Prato completo</span>` : ""}</td>
+      <td><input type="number" min="1" step="1" class="comp-gramagem" data-comp-gramagem="${t.id}" value="${gramagemG}" title="Peso do prato por pessoa — usado pra calcular o custo (peso × custo/kg da ficha)" style="width:80px;"> g</td>
+      <td>${naoPratoCompleto ? `<span class="chip" style="background:#fde2e1; color:#9a2a2a;" title="Esta ficha não é 'Prato completo' — o custo/produção já sai normalmente pelo peso ao lado; só o desconto de efetivo na produção fica diferente: tira só a Proteína, não a refeição (Proteína+Base+Guarnição) inteira.">⚠ não é Prato completo</span>` : ""}</td>
       <td><button type="button" class="btn small ghost" data-comp-remover-tipo="${t.id}" title="Remover este tipo da configuração (lançamentos já feitos continuam valendo)">✕</button></td>
     </tr>`;
   }).join("");
   return `<div class="panel" style="margin-bottom:14px;"><div class="panel-body">
-    <div class="panel-head" style="border:none; padding:0 0 8px;"><h3 style="font-size:14px;">${escapeHtml(titulo || "Composições completas da semana")}</h3></div>
-    ${tipos.length ? `<div class="table-wrap"><table><thead><tr><th>Tipo</th><th>Ficha desta semana</th><th>Estimativa (pessoas/semana)</th><th></th><th></th></tr></thead><tbody>${linhas}</tbody></table></div>` : `<div class="empty-state">Nenhum tipo configurado — adicione abaixo (ex. Prato Especial).</div>`}
+    <div class="panel-head" style="border:none; padding:0 0 8px;"><h3 style="font-size:14px;">${escapeHtml(titulo || "Pratos especiais")}</h3></div>
+    ${tipos.length ? `<div class="table-wrap"><table><thead><tr><th>Tipo</th><th>Ficha desta semana</th><th>Estimativa (pessoas/semana)</th><th>Peso do prato</th><th></th><th></th></tr></thead><tbody>${linhas}</tbody></table></div>` : `<div class="empty-state">Nenhum tipo configurado — adicione abaixo (ex. Prato Especial).</div>`}
     <div style="display:flex; gap:8px; align-items:center; margin-top:10px;">
       <input type="text" id="comp-tipo-novo" placeholder="Novo tipo (ex. Prato Vegetariano)" style="max-width:260px;">
       <button type="button" class="btn small primary" id="comp-tipo-add">+ Adicionar tipo</button>
@@ -1458,7 +1483,8 @@ function composicoesSemanaPainelBind(area, semana, onSaved){
       hidden.value = fichaId || "";
       const linha = inp.closest("tr[data-comp-tipo]");
       const estInp = linha.querySelector("input.comp-estimativa");
-      const ok = await salvarComposicaoSemana(tipoId, semana, fichaId, estInp.value);
+      const gramInp = linha.querySelector("input.comp-gramagem");
+      const ok = await salvarComposicaoSemana(tipoId, semana, fichaId, estInp.value, gramInp ? gramInp.value : null);
       if(ok) onSaved();
     };
     const mostrarOpcoes = () => {
@@ -1494,12 +1520,16 @@ function composicoesSemanaPainelBind(area, semana, onSaved){
     });
   });
   area.addEventListener("change", async e => {
-    const inp = e.target.closest("input.comp-estimativa");
+    // 10/11/2026: mesmo handler cobre tanto a estimativa (pessoas/semana) quanto o peso do prato (g) —
+    // sempre manda os dois valores atuais da linha pro salvar, pra nenhum dos dois sobrescrever o outro.
+    const inp = e.target.closest("input.comp-estimativa, input.comp-gramagem");
     if(!inp) return;
-    const tipoId = inp.dataset.compEstimativa;
+    const tipoId = inp.dataset.compEstimativa || inp.dataset.compGramagem;
     const linha = e.target.closest("tr[data-comp-tipo]");
     const hidden = linha.querySelector(".comp-ficha-id");
-    const ok = await salvarComposicaoSemana(tipoId, semana, hidden.value || null, inp.value);
+    const estInp = linha.querySelector("input.comp-estimativa");
+    const gramInp = linha.querySelector("input.comp-gramagem");
+    const ok = await salvarComposicaoSemana(tipoId, semana, hidden.value || null, estInp.value, gramInp.value);
     if(ok) onSaved();
   });
   area.addEventListener("click", async e => {
@@ -9384,7 +9414,9 @@ function renderListaCompraResultado(semana, contratoIds, totaisOverrideScale, ca
     composicaoTiposAtivos().forEach(t => {
       const rowComp = composicaoDaSemana(t.id, semana);
       if(!rowComp || !rowComp.ficha_id || !(rowComp.estimativa_pessoas > 0)) return;
-      const gramagemComp = pcpGramagemSubstituicao(fichas.get(rowComp.ficha_id));
+      // 10/11/2026: peso cadastrado no painel (gramagem_g, padrão 850g), não mais rendimento_und da ficha
+      // — ver pcpGramagemItemSubstituicao.
+      const gramagemComp = pcpGramagemItemSubstituicao(rowComp.ficha_id);
       if(gramagemComp == null) return; // sem rendimento cadastrado na ficha — mesmo aviso já cobre isso no PCP
       const pessoasPorDiaComp = rowComp.estimativa_pessoas / diasAtivosComp.length;
       const fichaComp = fichas.get(rowComp.ficha_id);
@@ -12367,7 +12399,9 @@ function pcpUnidadesSubstituicao(item){
 function pcpAplicarSubstituicoesReceitas(dia, contratoId, nomeCliente, receitas, avisos, turno){
   pcpListaSubstituicoes(dia, contratoId).filter(s => (s.servico || "almoco") === turno).forEach(s => {
     const f = fichas.get(s.fichaId);
-    const gramagem = pcpGramagemSubstituicao(f);
+    // 10/11/2026: peso de "Pratos especiais" (gramagem_g do painel) tem prioridade sobre o rendimento_und
+    // da ficha — ver pcpGramagemItemSubstituicao.
+    const gramagem = pcpGramagemItemSubstituicao(s.fichaId);
     if(gramagem == null){
       avisos.push({ tipo: "warn", txt: `${nomeCliente}: substituição por "${f ? f.nome : s.fichaId}" não tem rendimento (kg/un) cadastrado — não entrou na produção.` });
       return;
@@ -12395,8 +12429,7 @@ function pcpAplicarSubstituicoesReceitas(dia, contratoId, nomeCliente, receitas,
 // toda substituição do dia igual já fazia antes do serviço existir.
 function pcpAplicarSubstituicoesInsumos(dia, contratoId, buckets){
   pcpListaSubstituicoes(dia, contratoId).forEach(s => {
-    const f = fichas.get(s.fichaId);
-    const gramagem = pcpGramagemSubstituicao(f);
+    const gramagem = pcpGramagemItemSubstituicao(s.fichaId);
     if(gramagem == null) return; // já avisado em pcpAplicarSubstituicoesReceitas
     // 21/10/2026: mesma régua de pcpAplicarSubstituicoesReceitas — unidades de verdade, não pessoas cru.
     const porInsumo = insumosParaKgNecessario(s.fichaId, gramagem * pcpUnidadesSubstituicao(s));
