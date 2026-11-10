@@ -16371,6 +16371,8 @@ async function renderPCP(){
         <button class="btn small primary" data-pcp-ordem="sobremesas">Sobremesas</button>
         <button class="btn small primary" id="pcp-imprimir-receitas-producao">Receitas do dia</button>
         <button class="btn small primary" id="pcp-imprimir-cardapios-dia">Cardápios do dia</button>
+        <span style="flex:1 1 auto;"></span>
+        <button class="btn small ghost" id="pcp-ir-ajustes" title="Abre a aba Ajustes do dia já no dia/semana/unidade atual, pra mudar quantidade de atendimento ou peso por pessoa antes de imprimir">Ajustar quantidade/peso deste dia</button>
       </div>` : `<p class="footnote" style="margin:0 0 14px;">Pra imprimir a ordem de produção ou as receitas do dia inteiras, escolha Matriz ou Filial acima — impressão por cozinha, nunca as duas juntas numa folha só. <button class="btn small primary" id="pcp-imprimir-cardapios-dia" style="margin-left:6px;">Cardápios do dia</button></p>`}
       ${ehProducaoAmbas ? pcpProducaoAmbasHtml(listaRes, margemPct) : pcpProducaoHtml(res, margemPct)}
       <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="scale"></i>Volume por cliente</h3></div>
@@ -16413,6 +16415,11 @@ async function renderPCP(){
         if(chk.checked) pcpProdDiasSel.add(chk.dataset.pcpProddiaSel); else pcpProdDiasSel.delete(chk.dataset.pcpProddiaSel);
       });
     });
+    // atalho pedido pelo Marcelo (10/11/2026): "Ajustes do dia" já existe (quantidade de atendimento =
+    // "Valor efetivo" + peso por prato/cliente), só não tinha acesso rápido daqui — mantém semana/dia/
+    // unidade atuais, só troca a sub-aba.
+    const btnIrAjustes = document.getElementById("pcp-ir-ajustes");
+    if(btnIrAjustes) btnIrAjustes.addEventListener("click", () => { pcpSubView = "ajustes"; renderPCP(); });
     const btnReceitas = document.getElementById("pcp-imprimir-receitas-producao");
     if(btnReceitas) btnReceitas.addEventListener("click", async () => {
       const diasMarcados = DIAS_ORDEM.filter(d => pcpProdDiasSel.has(d));
