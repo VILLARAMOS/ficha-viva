@@ -4819,7 +4819,28 @@ function abrirEstruturaCardapioModal(grupo, num, onSaved){
   };
 }
 
-function imprimirCardapioCompleto(grupo, num, semana, semCustos){
+/* ===== Bloco reaproveitável de impressão do cardápio da semana (tabela de categorias × dias + resumo) =====
+   Extraído de imprimirCardapioCompleto (10/11/2026) pra poder ser embutido também na impressão da Lista
+   de compra, sem duplicar a lógica de montagem da tabela/custos. Classes com prefixo "cps-" (Cardápio
+   Print Sheet) pra não colidir com o CSS de nenhum outro documento onde o bloco for inserido. */
+function cardapioBlocoStyle(){
+  return `
+    .cps-bloco{ page-break-before: always; }
+    .cps-bloco h2{font-size:16px; margin:0 0 2px;}
+    .cps-bloco .meta{color:#555; font-size:11px; margin-bottom:6px;}
+    .cps-bloco table{width:100%; border-collapse:collapse; table-layout:fixed; margin-bottom:0;}
+    .cps-bloco table col.col-cat{width:10%;}
+    .cps-bloco td, .cps-bloco th{border:1px solid #ccc; padding:3px 4px; text-align:left; vertical-align:top; font-size:10px; line-height:1.25; overflow:hidden;}
+    .cps-bloco th{background:#f3f0ea; font-size:9.5px; text-transform:uppercase; letter-spacing:.02em; padding:4px 4px;}
+    .cps-bloco td .sub{color:#666; font-size:8.5px; margin-top:1px;}
+    .cps-bloco td.vazio{color:#aaa;}
+    .cps-bloco tr.tot td{background:#f3f0ea; font-weight:700;}
+    .cps-bloco td.num{text-align:right; font-family:'Courier New',monospace;}
+    .cps-bloco .resumo{margin-top:6px; font-size:11px;}
+    .cps-bloco table, .cps-bloco tr{ page-break-inside:avoid; }
+  `;
+}
+function cardapioBlocoHtml(grupo, num, semana, semCustos, semQuebraPagina){
   const titulo = semCustos
     ? `Cardápio — ${labelNumeroCardapio(grupo, num)} — ${rotuloSemana(semana)}`
     : `Cardápio completo — ${labelNumeroCardapio(grupo, num)} — ${rotuloSemana(semana)}`;
@@ -4876,35 +4897,34 @@ function imprimirCardapioCompleto(grupo, num, semana, semCustos){
     ? `<strong>Custo médio do café/dia:</strong> ${resumoSemana.custoMedioDia!=null?fmtMoney(resumoSemana.custoMedioDia):"—"}`
     : `<strong>Custo médio da refeição/dia:</strong> ${resumoSemana.custoMedioDia!=null?fmtMoney(resumoSemana.custoMedioDia):"—"} &nbsp;·&nbsp; <strong>CMV médio da semana:</strong> ${resumoSemana.cmv!=null?fmtPct(resumoSemana.cmv):"—"}`;
 
+  return `<div class="cps-bloco" style="${semQuebraPagina?"page-break-before:auto;":""}">
+    <h2>${escapeHtml(titulo)}</h2>
+    <div class="meta">${escapeHtml(intervaloSemana(semana))}</div>
+    <table><colgroup><col class="col-cat">${DIAS_ORDEM.map(()=>`<col>`).join("")}</colgroup><thead><tr><th>${grupo==="cafe"?"Item":"Categoria"}</th>${DIAS_ORDEM.map(dia => `<th>${DIA_LABEL[dia]}</th>`).join("")}</tr></thead>
+    <tbody>${linhasHtml}${linhaPreco}${linhaTotal}</tbody></table>
+    ${semCustos ? "" : `<div class="resumo"><strong>Custo total da semana:</strong> ${fmtMoney(somaSemana)} &nbsp;·&nbsp; ${resumoSemanaHtml}</div>`}
+  </div>`;
+}
+
+function imprimirCardapioCompleto(grupo, num, semana, semCustos){
+  const titulo = semCustos
+    ? `Cardápio — ${labelNumeroCardapio(grupo, num)} — ${rotuloSemana(semana)}`
+    : `Cardápio completo — ${labelNumeroCardapio(grupo, num)} — ${rotuloSemana(semana)}`;
+
   const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(titulo)}</title>
   <style>
     @page{ size: landscape; margin: 6mm; }
     *{ box-sizing:border-box; }
     html, body{ height:100%; }
     body{font-family:Arial,Helvetica,sans-serif; color:#111; margin:0; font-size:11px;}
-    h1{font-size:16px; margin:0 0 2px;}
-    .meta{color:#555; font-size:11px; margin-bottom:6px;}
-    table{width:100%; border-collapse:collapse; table-layout:fixed;}
-    table col.col-cat{width:10%;}
-    td, th{border:1px solid #ccc; padding:3px 4px; text-align:left; vertical-align:top; font-size:10px; line-height:1.25; overflow:hidden;}
-    th{background:#f3f0ea; font-size:9.5px; text-transform:uppercase; letter-spacing:.02em; padding:4px 4px;}
-    td .sub{color:#666; font-size:8.5px; margin-top:1px;}
-    td.vazio{color:#aaa;}
-    tr.tot td{background:#f3f0ea; font-weight:700;}
-    td.num{text-align:right; font-family:'Courier New',monospace;}
-    .resumo{margin-top:6px; font-size:11px;}
-    table, tr{ page-break-inside:avoid; }
+    ${cardapioBlocoStyle()}
     ${printHeadStyle()}
     .print-head{margin-bottom:6px; padding-bottom:6px;}
     .print-head img{height:22px;}
     .print-head .org{font-size:8px;}
   </style></head><body>
     ${printHeadHtml()}
-    <h1>${escapeHtml(titulo)}</h1>
-    <div class="meta">${escapeHtml(intervaloSemana(semana))}</div>
-    <table><colgroup><col class="col-cat">${DIAS_ORDEM.map(()=>`<col>`).join("")}</colgroup><thead><tr><th>${grupo==="cafe"?"Item":"Categoria"}</th>${DIAS_ORDEM.map(dia => `<th>${DIA_LABEL[dia]}</th>`).join("")}</tr></thead>
-    <tbody>${linhasHtml}${linhaPreco}${linhaTotal}</tbody></table>
-    ${semCustos ? "" : `<div class="resumo"><strong>Custo total da semana:</strong> ${fmtMoney(somaSemana)} &nbsp;·&nbsp; ${resumoSemanaHtml}</div>`}
+    ${cardapioBlocoHtml(grupo, num, semana, semCustos, true)}
     <script>
       // ajusta o zoom da página inteira pra ocupar o máximo possível da altura útil de uma folha A4
       // paisagem (210mm - 2×6mm de margem ≈ 748px a 96dpi) sem passar disso — encolhe se não coubesse
@@ -9512,6 +9532,26 @@ function imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto)
   }).filter(Boolean).sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
   const totalRefeicoesGeral = clientesInfo.reduce((s,c) => s + c.totalRefeicoes, 0);
 
+  // Cardápios da semana usados pelos clientes desta lista (10/11/2026) — pra imprimir a composição dos
+  // pratos no mesmo documento, não só o nome do cardápio na tabela de clientes acima. Um por (grupo,
+  // número) distinto entre todos os contratos incluídos, cobrindo refeição/marmita/café e as variantes
+  // "especial" quando ativas — mesma régua já usada em clientesInfo acima, sem filtrar por vigência no
+  // dia (é a mesma grade de pratos da semana inteira, vigente ou não em cada dia específico).
+  const cardapiosUsadosMap = new Map(); // "grupo|num" -> {grupo, num}
+  contratoIds.forEach(id => {
+    const ct = contratos.get(id);
+    if(!ct) return;
+    const add = (grupo, num) => { if(num != null) cardapiosUsadosMap.set(`${grupo}|${num}`, {grupo, num}); };
+    add("refeicao", ct.cardapio_refeicao_num);
+    add("marmita", ct.cardapio_marmita_num);
+    if(ct.marmita_especial_ativo) add("marmita", ct.cardapio_marmita_especial_num);
+    add("cafe", ct.cardapio_cafe_num);
+    if(ct.cafe_especial_ativo) add("cafe", ct.cardapio_cafe_especial_num);
+  });
+  const ORDEM_GRUPO_CARDAPIO = { refeicao: 0, marmita: 1, cafe: 2 };
+  const cardapiosUsados = [...cardapiosUsadosMap.values()].sort((a,b) => (ORDEM_GRUPO_CARDAPIO[a.grupo]-ORDEM_GRUPO_CARDAPIO[b.grupo]) || (a.num-b.num));
+  const blocosCardapiosHtml = cardapiosUsados.map(c => cardapioBlocoHtml(c.grupo, c.num, semana, false)).join("");
+
   const linhasHtml = linhas.map(l => `<tr>
       <td>${escapeHtml(l.nome)}<div class="sub-receita">${l.usoPorDia.map(d => `<strong>${DIA_LABEL[d.dia].slice(0,3)}:</strong> ${d.receitas.map(r => `${escapeHtml(r.receita)} (${fmtNum(r.kg,2)})`).join(", ")}`).join(" · ")}</div></td>
       <td>${escapeHtml(l.grupo)}</td>
@@ -9522,6 +9562,7 @@ function imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto)
 
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Lista de compra — ${escapeHtml(rotuloSemana(semana))}</title>
     <style>
+      @page{ size: landscape; margin: 8mm; }
       body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;}
       h1{font-size:18px; margin:0 0 4px;}
       h2{font-size:14px; margin:22px 0 8px;}
@@ -9535,6 +9576,7 @@ function imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto)
       tfoot td{font-weight:700; background:#f7f7f7;}
       @media print{ .no-print{display:none;} }
       ${printHeadStyle()}
+      ${cardapioBlocoStyle()}
     </style></head><body>
     ${printHeadHtml()}
     <h1>Lista de compra — insumos</h1>
@@ -9554,6 +9596,7 @@ function imprimirListaCompra(semana, contratoIds, linhas, totalPorDia, totCusto)
       <tfoot><tr><td>Total</td><td></td>${totalPorDia.map(kg => `<td class="num">${kg>0?fmtNum(kg,3):"—"}</td>`).join("")}<td></td><td></td></tr></tfoot>
     </table>
     <div class="sub">Custo total estimado: ${fmtMoney(totCusto)}. A coluna "Total semana" dos insumos pode incluir ajuste de segurança lançado para a semana (não detalhado por dia).${diasExcluidos.length ? ` <strong>${diasExcluidos.map(d => DIA_LABEL[d]).join(", ")} excluído${diasExcluidos.length===1?"":"s"} desta lista</strong> (sem expediente) — aparece zerado, não é falta de previsão.` : ""}</div>
+    ${blocosCardapiosHtml || `<div class="cps-bloco" style="page-break-before:always;"><div class="sub">Nenhum cardápio de referência cadastrado nos contratos desta lista.</div></div>`}
     <script>window.onload = () => window.print();<\/script>
     </body></html>`);
   w.document.close();
