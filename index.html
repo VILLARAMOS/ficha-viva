@@ -563,6 +563,12 @@ table.cardapio-table .autocomplete{position:relative;}
     </div>
 
     <div class="nav-group">
+      <div class="group-label">Em construção</div>
+      <button class="nav-btn" data-view="desperdicio" title="Desperdício"><i class="ico" data-lucide="trash-2"></i><span class="label">Desperdício</span></button>
+      <button class="nav-btn" data-view="suprimento" title="Suprimento"><i class="ico" data-lucide="package-plus"></i><span class="label">Suprimento</span></button>
+    </div>
+
+    <div class="nav-group">
       <div class="group-label">Suporte</div>
       <button class="nav-btn" data-view="ajuda" title="Ajuda"><i class="ico" data-lucide="help-circle"></i><span class="label">Ajuda</span></button>
     </div>
@@ -681,8 +687,25 @@ const VIEWS = {
   compras: renderCompras,
   orcamento: renderOrcamento,
   pcp: renderPCP,
+  desperdicio: () => renderEmConstrucao("Desperdício", "trash-2"),
+  suprimento: () => renderEmConstrucao("Suprimento", "package-plus"),
   ajuda: renderAjuda,
 };
+
+// Módulos ainda não construídos — placeholder simples, só pra já existir o botão/rota.
+// Visível pra todo mundo por ora (sem área de permissão própria ainda); quando o módulo for
+// construído de verdade, revisar VIEW_AREA/possoVerView junto com o Marcelo.
+function renderEmConstrucao(titulo, icone){
+  document.getElementById("page-title").textContent = titulo;
+  document.getElementById("page-desc").textContent = "";
+  document.getElementById("topbar-actions").innerHTML = "";
+  document.getElementById("content").innerHTML = `
+    <div class="empty-state">
+      <i class="ico" data-lucide="${icone}" style="width:28px;height:28px;color:var(--text-faint);margin-bottom:8px;"></i><br>
+      Módulo "${escapeHtml(titulo)}" ainda em construção.
+    </div>`;
+  if(window.lucide) lucide.createIcons();
+}
 
 // Conteúdo do botão "Orientações" (topbar, ao lado do título) — um texto por tela.
 // 09/11/2026: estendido pra todo o sistema (era só a tela "painel", piloto inicial) — o texto que
@@ -909,7 +932,7 @@ const VIEW_AREA = {
   fornecedores: 'compras', compras: 'compras', orcamento: 'compras', pcp: 'pcp'
 };
 function possoVerView(view){
-  if(view === 'ajuda' || view === 'inicio') return true;
+  if(view === 'ajuda' || view === 'inicio' || view === 'desperdicio' || view === 'suprimento') return true;
   if(meusAcessos.diretoria) return true;
   if(view === 'painel') return temAcesso('faturamento','leitura') || temAcesso('compras','leitura') || temAcesso('pcp','leitura');
   const area = VIEW_AREA[view];
