@@ -15474,11 +15474,21 @@ function pcpSalSobAjusteDoItem(dia, contratoId, fichaId, produtoId){
   const row = pcpSalSobAjustesCache.get(`${dia}|${contratoId}|${fichaId}|${produtoId}`);
   return row ? Number(row.porcao) : null;
 }
+// update-se-existe/insert-senão em vez de upsert com onConflict (11/11/2026): o PostgREST deste projeto
+// ficou inconsistente resolvendo a constraint composta de 5 colunas logo depois da migração (cache de
+// schema desatualizado em algum nó atrás do load balancer — às vezes funcionava, às vezes dava "there is
+// no unique or exclusion constraint matching the ON CONFLICT specification"). Fazendo update por id
+// quando já existe (sabemos pelo cache, que é carregado inteiro no início da tela) e insert quando não
+// existe, a gravação não depende de o Postgres reconhecer a constraint pelo ON CONFLICT.
 async function pcpSalvarAjusteSalSob(semana, dia, contratoId, fichaId, produtoId, porcao){
-  const row = { semana, dia, contrato_id: contratoId, ficha_id: fichaId, produto_id: produtoId, porcao, alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
-  const { error } = await sb.from('pcp_ajustes_salsob').upsert(row, { onConflict: "semana,dia,contrato_id,ficha_id,produto_id" });
+  const chave = `${dia}|${contratoId}|${fichaId}|${produtoId}`;
+  const existente = pcpSalSobAjustesCache.get(chave);
+  const campos = { semana, dia, contrato_id: contratoId, ficha_id: fichaId, produto_id: produtoId, porcao, alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
+  const { data, error } = existente
+    ? await sb.from('pcp_ajustes_salsob').update(campos).eq('id', existente.id).select().single()
+    : await sb.from('pcp_ajustes_salsob').insert(campos).select().single();
   if(error){ showAlert("Erro ao salvar o ajuste: " + error.message); return false; }
-  pcpSalSobAjustesCache.set(`${dia}|${contratoId}|${fichaId}|${produtoId}`, row);
+  pcpSalSobAjustesCache.set(chave, data);
   return true;
 }
 async function pcpRemoverAjusteSalSob(semana, dia, contratoId, fichaId, produtoId){
