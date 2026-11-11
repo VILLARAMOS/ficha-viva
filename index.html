@@ -15074,23 +15074,28 @@ function pcpSalSobMapaSemanaHtml(mapaSemana, unidadeLabel){
   if(!mapaSemana.pratos.length) return `<div class="panel" style="margin-bottom:14px;"><div class="panel-head"><h3>Mapa da semana</h3></div><div class="panel-body"><div class="empty-state">Sem salada/sobremesa na semana.</div></div></div>`;
   const cab = mapaSemana.porDia.map(pd => `<th style="text-align:right;">${DIA_LABEL[pd.dia].slice(0,3)}</th>`).join("");
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3>Mapa da semana</h3><button class="btn small primary" id="pcp-salsob-mapa-sem-imprimir" style="margin-left:auto;">Imprimir semana</button></div>
+    <div class="panel-head"><h3>Mapa da semana</h3><div style="margin-left:auto; display:flex; gap:8px;"><button class="btn small" id="pcp-salsob-mapa-sem-imprimir-salada">Imprimir só salada</button><button class="btn small" id="pcp-salsob-mapa-sem-imprimir-sobremesa">Imprimir só sobremesa</button><button class="btn small primary" id="pcp-salsob-mapa-sem-imprimir">Imprimir semana</button></div></div>
     <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Prato</th>${cab}<th style="text-align:right;">Total</th></tr></thead><tbody>
       ${mapaSemana.pratos.map(p => `<tr><td class="name-cell">${escapeHtml(p.nome)}</td>${p.porDia.map(q => `<td class="num-cell">${q ? fmtNum(q,2) : "—"}</td>`).join("")}<td class="num-cell"><strong>${fmtNum(p.total,2)}</strong></td></tr>`).join("")}
     </tbody></table></div>
     </div>
   </div>`;
 }
-function pcpImprimirSalSobMapaSemana(mapaSemana, semana, unidadeLabel){
+// 11/11/2026, pedido do Marcelo: além do "semana completa" (SALADA+SOBREMESA juntos), 2 botões extras pra
+// imprimir cada grupo separado — útil quando quem recebe a folha só precisa de um dos dois (ex. time de
+// sobremesa não precisa ver salada). grupoFiltro opcional: "SALADA", "SOBREMESA" ou vazio/undefined = tudo.
+function pcpImprimirSalSobMapaSemana(mapaSemana, semana, unidadeLabel, grupoFiltro){
+  const pratos = grupoFiltro ? mapaSemana.pratos.filter(p => p.grupo === grupoFiltro) : mapaSemana.pratos;
+  const tituloGrupo = grupoFiltro ? (grupoFiltro === "SALADA" ? "saladas" : "sobremesas") : "mapa da semana";
   const cab = mapaSemana.porDia.map(pd => `<th style="text-align:right; padding-bottom:2px;">${DIA_LABEL[pd.dia].slice(0,3)}</th>`).join("");
-  const linhas = mapaSemana.pratos.map(p => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(p.nome)}</td>${p.porDia.map(q => `<td style="padding:4px 0; border-top:1px solid #ddd; text-align:right;">${q ? fmtNum(q,2) : "—"}</td>`).join("")}<td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(p.total,2)}</td></tr>`).join("");
+  const linhas = pratos.map(p => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(p.nome)}</td>${p.porDia.map(q => `<td style="padding:4px 0; border-top:1px solid #ddd; text-align:right;">${q ? fmtNum(q,2) : "—"}</td>`).join("")}<td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(p.total,2)}</td></tr>`).join("");
   const w = window.open("", "_blank");
   if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
-  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Mapa da semana — Saladas/Sobremesas</title>
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${grupoFiltro ? escapeHtml(tituloGrupo[0].toUpperCase()+tituloGrupo.slice(1)) : "Mapa da semana"} — Saladas/Sobremesas</title>
     <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()}</style></head><body>
-    ${printHeadHtml()}<h1>Saladas/Sobremesas — mapa da semana</h1>
+    ${printHeadHtml()}<h1>Saladas/Sobremesas — ${escapeHtml(tituloGrupo)}</h1>
     <div style="font-size:12px; color:#666; margin-bottom:14px;">${escapeHtml(unidadeLabel)} · ${escapeHtml(rotuloSemana(semana))}</div>
-    <table style="width:100%; border-collapse:collapse; font-size:12px;"><thead><tr><th style="text-align:left; padding-bottom:2px;">Prato</th>${cab}<th style="text-align:right; padding-bottom:2px;">Total</th></tr></thead><tbody>${linhas || `<tr><td colspan="9">Sem salada/sobremesa na semana.</td></tr>`}</tbody></table>
+    <table style="width:100%; border-collapse:collapse; font-size:12px;"><thead><tr><th style="text-align:left; padding-bottom:2px;">Prato</th>${cab}<th style="text-align:right; padding-bottom:2px;">Total</th></tr></thead><tbody>${linhas || `<tr><td colspan="9">Sem ${escapeHtml(tituloGrupo)} na semana.</td></tr>`}</tbody></table>
     </body></html>`);
   w.document.close(); w.focus(); w.print();
 }
@@ -17494,6 +17499,10 @@ async function renderPCP(){
     }));
     const btnMapaSem = document.getElementById("pcp-salsob-mapa-sem-imprimir");
     if(btnMapaSem) btnMapaSem.addEventListener("click", () => pcpImprimirSalSobMapaSemana(salSobMapaSemana, pcpSemanaSel, unidadeLabel));
+    const btnMapaSemSalada = document.getElementById("pcp-salsob-mapa-sem-imprimir-salada");
+    if(btnMapaSemSalada) btnMapaSemSalada.addEventListener("click", () => pcpImprimirSalSobMapaSemana(salSobMapaSemana, pcpSemanaSel, unidadeLabel, "SALADA"));
+    const btnMapaSemSobremesa = document.getElementById("pcp-salsob-mapa-sem-imprimir-sobremesa");
+    if(btnMapaSemSobremesa) btnMapaSemSobremesa.addEventListener("click", () => pcpImprimirSalSobMapaSemana(salSobMapaSemana, pcpSemanaSel, unidadeLabel, "SOBREMESA"));
     const btnEtiquetas = document.getElementById("pcp-salsob-etiquetas-abrir");
     if(btnEtiquetas) btnEtiquetas.addEventListener("click", () => pcpAbrirEtiquetasSalSob(salSobEtqLinhas, unidadeLabel));
     // troca extraordinária: reconsulta os itens/clientes frescos do painel (não embala JSON em atributo
