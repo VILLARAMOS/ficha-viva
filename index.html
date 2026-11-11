@@ -15494,10 +15494,12 @@ function pcpSalSobProducaoHtml(res, trocasAposImpressao, dia, diaLabelPrefixo, s
     const linhasC = itensComTroca.map(l => `<tr data-salsob-ajuste-ficha="${l.fichaId || ""}">
         <td class="name-cell" style="font-size:12px;">${escapeHtml(l.prato)} <span class="footnote" style="margin:0;">(${escapeHtml(l.grupo)}${(contagemFicha.get(l.fichaId)>1 && l.produtoNome) ? " · "+escapeHtml(l.produtoNome) : ""})</span>${l.ajustado ? ` <span class="chip warn" title="Porção ajustada pontualmente para este dia — padrão seria ${pcpFmtPorcao(l.qtdOriginal)}">ajustado</span>` : ""}</td>
         <td><input type="number" min="0" step="0.01" class="salsob-cli-qtd" style="width:64px;" data-salsob-dia="${dia}" data-salsob-cli="${escapeHtml(c.id)}" data-salsob-ficha="${l.fichaId || ""}" data-salsob-produto="${escapeHtml(l.produtoId || "")}" value="${l.qtd}"></td>
-        <td style="white-space:nowrap;">
-          ${l.fichaId ? `<button type="button" class="btn small ghost" data-salsob-qtd-salvar="${dia}" data-salsob-qtd-cli="${escapeHtml(c.id)}" data-salsob-qtd-ficha="${l.fichaId}" data-salsob-qtd-produto="${escapeHtml(l.produtoId || "")}">Salvar</button>` : ""}
-          ${l.ajustado ? `<button type="button" class="btn small ghost" data-salsob-qtd-redefinir="${dia}" data-salsob-qtd-cli="${escapeHtml(c.id)}" data-salsob-qtd-ficha="${l.fichaId}" data-salsob-qtd-produto="${escapeHtml(l.produtoId || "")}">Redefinir</button>` : ""}
-          ${l.trocaInfo ? `<button type="button" class="btn small ghost" data-salsob-trocar-dia="${dia}" data-salsob-trocar-num="${l.trocaInfo.num}" data-salsob-trocar-grupo="${escapeHtml(l.trocaInfo.grupoCardapio)}" data-salsob-trocar-cat="${escapeHtml(l.trocaInfo.categoria)}">Trocar</button>` : ""}
+        <td>
+          <div style="display:flex; flex-wrap:wrap; gap:4px; justify-content:flex-end;">
+            ${l.fichaId ? `<button type="button" class="btn small ghost" data-salsob-qtd-salvar="${dia}" data-salsob-qtd-cli="${escapeHtml(c.id)}" data-salsob-qtd-ficha="${l.fichaId}" data-salsob-qtd-produto="${escapeHtml(l.produtoId || "")}">Salvar</button>` : ""}
+            ${l.ajustado ? `<button type="button" class="btn small ghost" data-salsob-qtd-redefinir="${dia}" data-salsob-qtd-cli="${escapeHtml(c.id)}" data-salsob-qtd-ficha="${l.fichaId}" data-salsob-qtd-produto="${escapeHtml(l.produtoId || "")}">Redefinir</button>` : ""}
+            ${l.trocaInfo ? `<button type="button" class="btn small ghost" data-salsob-trocar-dia="${dia}" data-salsob-trocar-num="${l.trocaInfo.num}" data-salsob-trocar-grupo="${escapeHtml(l.trocaInfo.grupoCardapio)}" data-salsob-trocar-cat="${escapeHtml(l.trocaInfo.categoria)}">Trocar</button>` : ""}
+          </div>
         </td>
       </tr>`).join("");
     // histórico de trocas já registradas nos cardápios desse cliente (o cardápio é compartilhado — se
