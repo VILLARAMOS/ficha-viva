@@ -146,7 +146,9 @@ button{font-family:inherit;}
 .home-title em{color:var(--accent);font-style:normal;}
 .home-sub{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-faint);margin-top:6px;}
 .home-logo{width:108px;height:108px;flex:none;border-radius:50%;object-fit:cover;box-shadow:0 0 0 1px var(--border),var(--shadow);background:var(--surface);}
-.home-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:12px;max-width:902px;margin:0 auto;padding:0 clamp(16px,6vw,64px) 36px;}
+.home-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;max-width:902px;margin:0 auto;padding:0 clamp(16px,6vw,64px) 36px;}
+@media (max-width:760px){ .home-grid{grid-template-columns:repeat(3,1fr);} }
+@media (max-width:480px){ .home-grid{grid-template-columns:repeat(2,1fr);} }
 .home-card{display:flex;flex-direction:column;align-items:center;gap:9px;padding:20px 12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);cursor:pointer;font:inherit;font-size:13px;font-weight:500;color:var(--text);text-align:center;transition:transform .1s ease,border-color .1s ease;perspective:400px;}
 .home-card:hover{border-color:var(--accent);transform:translateY(-2px);}
 .home-card .ico{width:22px;height:22px;color:var(--accent);transition:transform .18s ease;}
