@@ -800,13 +800,12 @@ if(window.lucide) lucide.createIcons();
 
 const sidebarEl = document.getElementById("sidebar");
 const sidebarToggleBtn = document.getElementById("sidebar-toggle");
-// Padrão ao logar: menu recolhido. Só fica expandido se o operador já tiver expandido antes
-// nesse navegador (aí localStorage guarda "0" e respeitamos a escolha dele daí em diante).
-if(localStorage.getItem("fv-sidebar-collapsed") !== "0") sidebarEl.classList.add("collapsed");
-sidebarToggleBtn.title = sidebarEl.classList.contains("collapsed") ? "Expandir menu" : "Recolher menu";
+// Sempre recolhido ao abrir/logar — não guarda preferência entre sessões. O operador pode
+// expandir durante o uso (fica expandido até recarregar a página ou deslogar).
+sidebarEl.classList.add("collapsed");
+sidebarToggleBtn.title = "Expandir menu";
 sidebarToggleBtn.addEventListener("click", () => {
   const collapsed = sidebarEl.classList.toggle("collapsed");
-  localStorage.setItem("fv-sidebar-collapsed", collapsed ? "1" : "0");
   sidebarToggleBtn.title = collapsed ? "Expandir menu" : "Recolher menu";
 });
 
