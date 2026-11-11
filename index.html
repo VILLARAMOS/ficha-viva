@@ -14969,6 +14969,16 @@ function pcpFmtPorcao(q){
 // cadastro permanente; se recarregar a página, volta tudo marcado.
 let pcpSalSobExcluidos = new Map();
 function pcpSalSobExcluidosDoDia(dia){ return pcpSalSobExcluidos.get(dia) || new Set(); }
+// 11/11/2026, pedido do Marcelo: "quantidade de pessoas atendidas" editável na tela, pra conferir/ajustar
+// na hora — mesmo espírito da exclusão de cliente acima: decisão operacional do dia, SÓ sessão (não grava
+// no banco), reseta ao recarregar. O valor de partida vem do contrato (c.pessoas, calculado em
+// pcpSalSobProducaoPorCliente); aqui só guardamos o override quando o usuário efetivamente mexe.
+let pcpSalSobPessoasAjuste = new Map(); // dia -> Map(contratoId -> número)
+function pcpSalSobPessoasEfetivo(dia, c){
+  const mapa = pcpSalSobPessoasAjuste.get(dia);
+  const v = mapa ? mapa.get(c.id) : undefined;
+  return (v !== undefined && v !== null && isFinite(v)) ? v : c.pessoas;
+}
 // 19/10/2026, pedido do Marcelo: 1 bloco por cliente com todos os pratos de salada/sobremesa que ele
 // recebe naquele dia, no mesmo estilo de "Fichas de corte" do Açougue. Suco fica de fora de propósito.
 function pcpSalSobProducaoPorCliente(res){
@@ -14997,7 +15007,19 @@ function pcpSalSobTotalPreparar(porClienteIncluidos){
   }));
   return [...porOpcao.values()].sort((a,b) => a.grupo.localeCompare(b.grupo,'pt-BR') || b.qtd - a.qtd);
 }
-function pcpSalSobProducaoHtml(res, trocasAposImpressao, dia, diaLabelPrefixo){
+// 11/11/2026, pedido do Marcelo: pra cada item que um cliente recebe, saber TAMBÉM qual cardápio e a
+// categoria exata dentro dele (pra poder oferecer o botão "Trocar" certo, igual o antigo painel "Ajuste
+// do dia" oferecia) — casa cada linha do cliente (c.linhas, vem de pcpSalSobProducaoPorCliente) com o
+// item do cardápio que tem o MESMO fichaId, dentre os cardápios em que esse cliente aparece.
+function pcpSalSobItensClienteComCardapio(c, cardapiosUsados, semana, dia){
+  const cardapiosDoCliente = cardapiosUsados.filter(cc => cc.contratos.some(x => x.id === c.id));
+  const itensCardapio = cardapiosDoCliente.flatMap(cc => pcpSalSobCardapioDiaItens(cc.num, semana, dia).map(it => ({...it, _num: cc.num, _grupoCardapio: cc.grupoCardapio})));
+  return c.linhas.map(l => {
+    const it = itensCardapio.find(x => x.ficha_id === l.fichaId);
+    return { ...l, trocaInfo: it ? { num: it._num, grupoCardapio: it._grupoCardapio, categoria: it.categoria } : null };
+  });
+}
+function pcpSalSobProducaoHtml(res, trocasAposImpressao, dia, diaLabelPrefixo, semana, cardapiosUsados){
   const porClienteTudo = pcpSalSobProducaoPorCliente(res);
   const alertaReimpressao = (trocasAposImpressao && trocasAposImpressao.length)
     ? `<div class="chip critical" style="display:block; white-space:normal; height:auto; padding:8px 10px; margin-bottom:12px;">⚠ Cardápio alterado após a última impressão — ${trocasAposImpressao.length} troca${trocasAposImpressao.length===1?"":"s"} extraordinária${trocasAposImpressao.length===1?"":"s"} registrada${trocasAposImpressao.length===1?"":"s"} depois de imprimir. Reimprima antes de mandar pra bancada.</div>`
@@ -15005,29 +15027,68 @@ function pcpSalSobProducaoHtml(res, trocasAposImpressao, dia, diaLabelPrefixo){
   // 11/11/2026 (pedido do Marcelo, "mesmo padrão de caixas de Substituições"): virou multi-dia — cada dia
   // marcado no painel "Dias da semana" gera o seu próprio bloco de Produção do dia, com checkbox de
   // exclusão e botão de impressão PRÓPRIOS (data-salsob-dia/data-salsob-producao-imprimir, em vez do id
-  // fixo de antes, que só existia 1 vez na tela).
-  if(!porClienteTudo.length) return `<div class="panel" style="margin-bottom:14px;"><div class="panel-body">${diaLabelPrefixo || ""}${alertaReimpressao}<div class="empty-state">Nenhuma salada ou sobremesa prevista para este dia.</div></div></div>`;
+  // fixo de antes, que só existia 1 vez na tela). A data completa foi pro cabeçalho (antes só o nome do
+  // dia) — pedido do Marcelo pra não depender de contar "hoje é quinta" de cabeça.
+  const dataTxt = `<span class="hint">${escapeHtml(fmtDataCompleta(dataDoDia(semana, dia)))}</span>`;
+  if(!porClienteTudo.length) return `<div class="panel" style="margin-bottom:14px;"><div class="panel-head">${diaLabelPrefixo || ""}<h3 style="font-size:15px;">Produção do dia</h3>${dataTxt}</div><div class="panel-body">${alertaReimpressao}<div class="empty-state">Nenhuma salada ou sobremesa prevista para este dia.</div></div></div>`;
   const excluidos = pcpSalSobExcluidosDoDia(dia);
   const incluidos = porClienteTudo.filter(c => !excluidos.has(c.id));
   const totalPreparar = pcpSalSobTotalPreparar(incluidos);
+  // 11/11/2026, pedido do Marcelo: abaixo de cada opção do Total, mostrar qual cardápio e quais clientes
+  // recebem aquele prato hoje — mesma ideia do detalhe do Mapa da semana, mas de só 1 dia (não precisa
+  // separar por dia aqui, já é o bloco de um dia só).
+  const detalhePorFicha = pcpSalSobCardapioClientesPorFicha(cardapiosUsados, semana, dia);
   let grupoAtual = null;
   const linhasTotal = totalPreparar.map(o => {
     const novoGrupo = o.grupo !== grupoAtual; grupoAtual = o.grupo;
+    const det = detalhePorFicha.get(o.fichaId);
+    const detalheHtml = det ? `<tr><td colspan="3" class="footnote" style="margin:0; padding:0 0 8px 8px; line-height:1.5;">${pcpSalSobDetalheHtml(det)}</td></tr>` : "";
     return (novoGrupo ? `<tr><th colspan="3" style="background:var(--surface-alt); font-size:11.5px; text-transform:uppercase; letter-spacing:.04em; color:var(--text-muted);">${escapeHtml(o.grupo)}</th></tr>` : "") +
-      `<tr><td class="name-cell">${escapeHtml(o.nome)}</td><td class="num-cell">${pcpFmtPorcao(o.qtd)}</td><td class="num-cell">${o.fichaId ? `<button class="btn small primary" data-pcp-imprimir-receita="${o.fichaId}" title="Imprimir esta receita">${iconeImprimir()}</button>` : "—"}</td></tr>`;
+      `<tr><td class="name-cell">${escapeHtml(o.nome)}</td><td class="num-cell">${pcpFmtPorcao(o.qtd)}</td><td class="num-cell">${o.fichaId ? `<button class="btn small primary" data-pcp-imprimir-receita="${o.fichaId}" title="Imprimir esta receita">${iconeImprimir()}</button>` : "—"}</td></tr>${detalheHtml}`;
   }).join("");
-  const blocosCliente = porClienteTudo.map(c => {
+  // 11/11/2026, pedido do Marcelo: cliente a cliente virou card no estilo do Café/Padaria (mini-tabela por
+  // cliente, não mais linha de tabela) — cada card já traz o ajuste e a troca pontual do prato (antes era
+  // um painel "Ajuste do dia" separado, que deixou de existir: a troca aqui É a mesma pcpSalSobAbrirTroca
+  // de sempre, com o mesmo aviso de "vale pra todos os clientes desse cardápio" dentro do modal — só mudou
+  // de lugar na tela, o comportamento e o registro em pcp_trocas_salsob continuam os mesmos).
+  const cardsCliente = porClienteTudo.map(c => {
     const excluido = excluidos.has(c.id);
-    const linhasC = c.linhas.map(l => `<tr style="${excluido ? "opacity:.45;" : ""}"><td class="name-cell" style="padding-left:28px;">${escapeHtml(l.prato)} <span class="footnote" style="margin:0;">(${escapeHtml(l.grupo)})</span></td><td class="num-cell">${pcpFmtPorcao(l.qtd)}</td><td></td></tr>`).join("");
-    return `<tr style="background:var(--surface-alt);"><td colspan="3"><label style="display:flex; align-items:center; gap:8px; font-weight:600; cursor:pointer; margin:0;"><input type="checkbox" class="salsob-cli-incluir" data-salsob-dia="${dia}" data-salsob-cli="${escapeHtml(c.id)}" ${excluido ? "" : "checked"}> ${escapeHtml(c.nome)} <span class="footnote" style="margin:0; font-weight:400;">atende ${fmtNum(c.pessoas,0)} · ${excluido ? "fora do total e da impressão" : `total ${pcpFmtPorcao(c.total)}`}</span></label></td></tr>${linhasC}`;
+    const pessoasEf = pcpSalSobPessoasEfetivo(dia, c);
+    const itensComTroca = pcpSalSobItensClienteComCardapio(c, cardapiosUsados, semana, dia);
+    const linhasC = itensComTroca.map(l => `<tr>
+        <td class="name-cell" style="font-size:12px;">${escapeHtml(l.prato)} <span class="footnote" style="margin:0;">(${escapeHtml(l.grupo)})</span></td>
+        <td class="num-cell">${pcpFmtPorcao(l.qtd)}</td>
+        <td>${l.trocaInfo ? `<button type="button" class="btn small ghost" data-salsob-trocar-dia="${dia}" data-salsob-trocar-num="${l.trocaInfo.num}" data-salsob-trocar-grupo="${escapeHtml(l.trocaInfo.grupoCardapio)}" data-salsob-trocar-cat="${escapeHtml(l.trocaInfo.categoria)}">Trocar</button>` : ""}</td>
+      </tr>`).join("");
+    // histórico de trocas já registradas nos cardápios desse cliente (o cardápio é compartilhado — se
+    // outro cliente do mesmo cardápio trocou, aparece aqui também, igual aparecia no antigo painel
+    // "Ajuste do dia" por cardápio; é a mesma informação, só repetida por cliente em vez de por cardápio).
+    const cardapiosDoCliente = cardapiosUsados.filter(cc => cc.contratos.some(x => x.id === c.id));
+    const trocasDoCliente = cardapiosDoCliente.flatMap(cc => pcpSalSobTrocasDoNum(dia, cc.num));
+    const trocasHtml = trocasDoCliente.length ? `<p class="footnote" style="margin:8px 0 0;">${trocasDoCliente.map(t =>
+      `Trocado: ${escapeHtml(t.ficha_original_nome || "—")} → <strong>${escapeHtml(t.ficha_nova_nome)}</strong> — ${escapeHtml(t.motivo)}${t.observacao ? " ("+escapeHtml(t.observacao)+")" : ""}`
+    ).join("<br>")}</p>` : "";
+    return `<div class="panel cafe-card" style="${excluido ? "opacity:.6;" : ""}">
+      <div class="panel-head"><h3 style="font-size:14px;">${escapeHtml(c.nome)}</h3>
+        <label style="display:flex; align-items:center; gap:6px; font-size:11.5px; font-weight:400; cursor:pointer; margin:0;"><input type="checkbox" class="salsob-cli-incluir" data-salsob-dia="${dia}" data-salsob-cli="${escapeHtml(c.id)}" ${excluido ? "" : "checked"}> incluir</label>
+      </div>
+      <div class="panel-body" style="padding:10px 14px;">
+        <div class="field" style="max-width:180px; margin:0 0 8px;"><label style="font-size:11px;">Pessoas atendidas</label>
+          <input type="number" min="0" step="1" class="salsob-cli-pessoas" data-salsob-dia="${dia}" data-salsob-cli="${escapeHtml(c.id)}" value="${fmtNum(pessoasEf,0)}">
+        </div>
+        <div class="table-wrap"><table style="font-size:12px;"><tbody>${linhasC}</tbody></table></div>
+        ${trocasHtml}
+        <div class="footnote" style="margin:8px 0 0;">${excluido ? "fora do total e da impressão" : `total ${pcpFmtPorcao(c.total)}`}</div>
+      </div>
+    </div>`;
   }).join("");
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head">${diaLabelPrefixo || ""}<h3><i class="ico" data-lucide="salad"></i>Produção do dia</h3><button class="btn small primary" data-salsob-producao-imprimir="${dia}" style="margin-left:auto;">Imprimir</button></div>
-    <div class="panel-body">${alertaReimpressao}<div class="table-wrap"><table><thead><tr><th>Opção / Cliente</th><th style="text-align:right;">Quantidade</th><th></th></tr></thead><tbody>
-      <tr><th colspan="3" style="background:var(--surface-alt); text-transform:uppercase; letter-spacing:.04em; font-size:11.5px;">Total a preparar${excluidos.size ? ` <span class="footnote" style="text-transform:none; font-weight:400; margin:0;">(sem ${excluidos.size} cliente${excluidos.size===1?"":"s"} desmarcado${excluidos.size===1?"":"s"})</span>` : ""}</th></tr>
+    <div class="panel-head">${diaLabelPrefixo || ""}<h3 style="font-size:15px;"><i class="ico" data-lucide="salad"></i>Produção do dia</h3>${dataTxt}<button class="btn small primary" data-salsob-producao-imprimir="${dia}" style="margin-left:auto;">Imprimir</button></div>
+    <div class="panel-body">${alertaReimpressao}<div class="table-wrap"><table><thead><tr><th>Total a preparar</th><th style="text-align:right;">Quantidade</th><th></th></tr></thead><tbody>
+      <tr><th colspan="3" style="background:var(--surface-alt); text-transform:uppercase; letter-spacing:.04em; font-size:11.5px;">Total${excluidos.size ? ` <span class="footnote" style="text-transform:none; font-weight:400; margin:0;">(sem ${excluidos.size} cliente${excluidos.size===1?"":"s"} desmarcado${excluidos.size===1?"":"s"})</span>` : ""}</th></tr>
       ${linhasTotal || `<tr><td colspan="3" class="footnote" style="margin:0;">Nenhum cliente incluído no total.</td></tr>`}
-      ${blocosCliente}
     </tbody></table></div>
+    <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px; margin-top:14px;">${cardsCliente}</div>
     </div>
   </div>`;
 }
@@ -15052,32 +15113,83 @@ function pcpImprimirSalSobProducaoDia(porClienteIncluidos, totalPreparar, semana
     ${printHeadHtml()}${paginas || "<p>Nada a produzir.</p>"}</body></html>`);
   w.document.close(); w.focus(); w.print();
 }
+// cardápio(s) + clientes atendidos de cada ficha (prato) de Salada/Sobremesa num dia — reaproveita
+// pcpSalSobCardapiosUsados (quais cardápios estão em uso) + pcpSalSobCardapioDiaItens (os itens de cada
+// um) pra montar, por fichaId, a lista de {num, grupoCardapio, contratos} que serve aquele prato naquele
+// dia. 11/11/2026, pedido do Marcelo: alimenta o detalhe "abaixo do item" tanto do Mapa da semana (por
+// dia, já que o mesmo prato pode ir pra clientes diferentes em dias diferentes) quanto da tabela "Total a
+// preparar" de Produção do dia.
+function pcpSalSobCardapioClientesPorFicha(cardapiosUsados, semana, dia){
+  const porFicha = new Map(); // fichaId -> [{num, grupoCardapio, contratos}]
+  cardapiosUsados.forEach(c => {
+    pcpSalSobCardapioDiaItens(c.num, semana, dia).forEach(it => {
+      if(!it.ficha_id) return;
+      const arr = porFicha.get(it.ficha_id) || [];
+      arr.push({ num: c.num, grupoCardapio: c.grupoCardapio, contratos: c.contratos });
+      porFicha.set(it.ficha_id, arr);
+    });
+  });
+  return porFicha;
+}
+function pcpSalSobDetalheHtml(detalhe){
+  if(!detalhe || !detalhe.length) return "";
+  return detalhe.map(d => `${escapeHtml(labelNumeroCardapio(d.grupoCardapio, d.num))} — ${d.contratos.map(x=>escapeHtml(x.nome)).join(", ")}`).join("<br>");
+}
 // mapa da semana: Salada/Sobremesa só — 1 linha por prato, 1 coluna por dia, mesma ideia de
-// pcpMapaCarnesSemana, sem "dia de preparo" (não há cobertura aqui, cada dia já é independente).
+// pcpMapaCarnesSemana, sem "dia de preparo" (não há cobertura aqui, cada dia já é independente). 11/11/2026
+// (pedido do Marcelo): cada prato ganhou detalhePorDia (cardápio+clientes QUE DIA, não a semana toda —
+// o mesmo prato pode atender clientes diferentes em dias diferentes, então misturar tudo numa lista só
+// enganaria sobre quem recebe o quê).
 function pcpSalSobMapaSemana(semana, unidadeFiltro, servicosFiltro){
   const porDia = DIAS_ORDEM.map(dia => {
     const res = pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro);
-    return { dia, linhas: pcpSalSobLinhasDia(res, PCP_SALSOB_GRUPOS_CENTRAL) };
+    return { dia, linhas: pcpSalSobLinhasDia(res, PCP_SALSOB_GRUPOS_CENTRAL), detalhe: pcpSalSobCardapioClientesPorFicha(pcpSalSobCardapiosUsados(semana, dia, unidadeFiltro), semana, dia) };
   });
-  const porPrato = new Map(); // fichaId -> {nome, grupo, porDia:[7], total}
+  const porPrato = new Map(); // fichaId -> {nome, grupo, porDia:[7], detalhePorDia:[7], total}
   porDia.forEach((pd, idx) => {
     pd.linhas.forEach(r => {
-      const c = porPrato.get(r.fichaId) || { nome: r.nome, grupo: r.grupo, porDia: DIAS_ORDEM.map(()=>0), total: 0 };
+      const c = porPrato.get(r.fichaId) || { nome: r.nome, grupo: r.grupo, porDia: DIAS_ORDEM.map(()=>0), detalhePorDia: DIAS_ORDEM.map(()=>null), total: 0 };
       c.porDia[idx] += r.total; c.total += r.total;
+      const det = pd.detalhe.get(r.fichaId);
+      if(det) c.detalhePorDia[idx] = det;
       porPrato.set(r.fichaId, c);
     });
   });
   const pratos = [...porPrato.values()].sort((a,b) => a.grupo.localeCompare(b.grupo,'pt-BR') || b.total - a.total);
   return { porDia, pratos };
 }
+// 11/11/2026, pedido do Marcelo: virou 2 tabelas (Salada / Sobremesa) em vez de 1 só mista, cada prato com
+// uma linha de detalhe embaixo mostrando, por dia da semana em que ele aparece, qual cardápio e quais
+// clientes o recebem. "Preparar etiquetas" mudou de painel próprio pra aqui, junto dos botões de impressão
+// (pcpAbrirEtiquetasSalSob continua a mesma função, só o botão que mudou de lugar).
+function pcpSalSobTabelaGrupoHtml(pratos, porDia, grupoLabel){
+  if(!pratos.length) return `<div class="footnote" style="margin:0 0 14px;">Sem ${escapeHtml(grupoLabel.toLowerCase())} na semana.</div>`;
+  const cab = porDia.map(pd => `<th style="text-align:right;">${DIA_LABEL[pd.dia].slice(0,3)}</th>`).join("");
+  const linhas = pratos.map(p => {
+    const detalheDias = p.detalhePorDia
+      .map((det, idx) => det ? `<strong>${DIA_LABEL[porDia[idx].dia].slice(0,3)}:</strong> ${pcpSalSobDetalheHtml(det)}` : null)
+      .filter(Boolean);
+    return `<tr><td class="name-cell">${escapeHtml(p.nome)}</td>${p.porDia.map(q => `<td class="num-cell">${q ? fmtNum(q,2) : "—"}</td>`).join("")}<td class="num-cell"><strong>${fmtNum(p.total,2)}</strong></td></tr>` +
+      (detalheDias.length ? `<tr><td colspan="${porDia.length+2}" class="footnote" style="margin:0; padding:2px 0 10px 8px; line-height:1.5;">${detalheDias.join(" · ")}</td></tr>` : "");
+  }).join("");
+  return `<div class="footnote" style="margin:0 0 4px; font-weight:600;">${escapeHtml(grupoLabel)}</div>
+    <div class="table-wrap" style="margin-bottom:14px;"><table><thead><tr><th>Prato</th>${cab}<th style="text-align:right;">Total</th></tr></thead><tbody>${linhas}</tbody></table></div>`;
+}
 function pcpSalSobMapaSemanaHtml(mapaSemana, unidadeLabel){
-  if(!mapaSemana.pratos.length) return `<div class="panel" style="margin-bottom:14px;"><div class="panel-head"><h3>Mapa da semana</h3></div><div class="panel-body"><div class="empty-state">Sem salada/sobremesa na semana.</div></div></div>`;
-  const cab = mapaSemana.porDia.map(pd => `<th style="text-align:right;">${DIA_LABEL[pd.dia].slice(0,3)}</th>`).join("");
+  const botoes = `<div style="margin-left:auto; display:flex; gap:8px; flex-wrap:wrap;">
+    <button class="btn small" id="pcp-salsob-mapa-sem-imprimir-salada">Imprimir só salada</button>
+    <button class="btn small" id="pcp-salsob-mapa-sem-imprimir-sobremesa">Imprimir só sobremesa</button>
+    <button class="btn small primary" id="pcp-salsob-mapa-sem-imprimir">Imprimir semana</button>
+    <button class="btn small primary" id="pcp-salsob-etiquetas-abrir">Preparar etiquetas</button>
+  </div>`;
+  if(!mapaSemana.pratos.length) return `<div class="panel" style="margin-bottom:14px;"><div class="panel-head"><h3>Mapa da semana</h3>${botoes}</div><div class="panel-body"><div class="empty-state">Sem salada/sobremesa na semana.</div></div></div>`;
+  const saladas = mapaSemana.pratos.filter(p => p.grupo === "SALADA");
+  const sobremesas = mapaSemana.pratos.filter(p => p.grupo === "SOBREMESA");
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3>Mapa da semana</h3><div style="margin-left:auto; display:flex; gap:8px;"><button class="btn small" id="pcp-salsob-mapa-sem-imprimir-salada">Imprimir só salada</button><button class="btn small" id="pcp-salsob-mapa-sem-imprimir-sobremesa">Imprimir só sobremesa</button><button class="btn small primary" id="pcp-salsob-mapa-sem-imprimir">Imprimir semana</button></div></div>
-    <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Prato</th>${cab}<th style="text-align:right;">Total</th></tr></thead><tbody>
-      ${mapaSemana.pratos.map(p => `<tr><td class="name-cell">${escapeHtml(p.nome)}</td>${p.porDia.map(q => `<td class="num-cell">${q ? fmtNum(q,2) : "—"}</td>`).join("")}<td class="num-cell"><strong>${fmtNum(p.total,2)}</strong></td></tr>`).join("")}
-    </tbody></table></div>
+    <div class="panel-head"><h3>Mapa da semana</h3>${botoes}</div>
+    <div class="panel-body">
+      ${pcpSalSobTabelaGrupoHtml(saladas, mapaSemana.porDia, "Salada")}
+      ${pcpSalSobTabelaGrupoHtml(sobremesas, mapaSemana.porDia, "Sobremesa")}
     </div>
   </div>`;
 }
@@ -15124,12 +15236,8 @@ function pcpSalSobEtiquetaPreview(l, unidadeLabel){
     <div style="display:flex; justify-content:space-between; border-top:1px solid #ccc; margin-top:3px; padding-top:3px;"><span>Data: ____/____</span><span>Resp.: ______</span></div>
   </div>`;
 }
-function pcpSalSobEtiquetasHtml(linhas){
-  if(!linhas.length) return `<div class="panel" style="margin-bottom:14px;"><div class="panel-head"><h3>Etiquetas</h3></div><div class="panel-body"><div class="empty-state">Nada a etiquetar neste dia.</div></div></div>`;
-  return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3>Etiquetas</h3><span class="hint">${linhas.length} linha${linhas.length===1?"":"s"} (prato × cliente) do dia selecionado</span><button class="btn small primary" id="pcp-salsob-etiquetas-abrir" style="margin-left:auto;">Preparar etiquetas</button></div>
-  </div>`;
-}
+// 11/11/2026: painel próprio removido — o botão "Preparar etiquetas" mudou pro Mapa da semana (pedido do
+// Marcelo, "ao lado dos de impressão"); pcpAbrirEtiquetasSalSob continua a mesma função de sempre.
 // PDF em tamanho físico exato (mm) pra impressora de etiqueta térmica de rolo — 1 página por etiqueta, sem
 // margem de folha (19/10/2026, pedido do Marcelo: são etiquetas térmicas em rolo, não folha A4). Mesmo
 // padrão de pcpBaixarPdfEtiquetasAcougue, mesmas 4 opções de tamanho (PCP_ETIQUETAS) e mesma pcpEtiquetaTam
@@ -15313,32 +15421,6 @@ function pcpSalSobTrocasAposImpressao(dia, unidadeSel, numsDoDia){
   const achadas = [];
   numsDoDia.forEach(num => pcpSalSobTrocasDoNum(dia, num).forEach(tr => { if(new Date(tr.criado_em).getTime() > t) achadas.push(tr); }));
   return achadas;
-}
-// painel "Cardápio do dia — Salada/Sobremesa": 1 bloco por cardápio em uso, com cada prato e o botão de
-// troca — é a "visão só salada/sobremesa do cardápio geral" que o Marcelo pediu, já com a troca embutida.
-function pcpSalSobCardapioDiaHtml(cardapiosUsados, semana, dia, diaLabelSufixo){
-  const titulo = `Ajuste do dia${diaLabelSufixo ? " — " + escapeHtml(diaLabelSufixo) : ""} — troca de opção (fornecedor não entregou etc.)`;
-  if(!cardapiosUsados.length){
-    return `<div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="refresh-cw"></i>${titulo}</h3></div>
-    <div class="panel"><div class="panel-body"><div class="empty-state">Nenhum cliente com cardápio de refeição/marmita configurado para este dia.</div></div></div>`;
-  }
-  const blocos = cardapiosUsados.map(c => {
-    const label = labelNumeroCardapio(c.grupoCardapio, c.num);
-    const itens = pcpSalSobCardapioDiaItens(c.num, semana, dia);
-    const trocas = pcpSalSobTrocasDoNum(dia, c.num);
-    const linhas = itens.length ? itens.map(it =>
-      `<tr><td class="footnote" style="margin:0; white-space:nowrap;">${escapeHtml(it.categoria)}</td><td class="name-cell">${escapeHtml(it.nome || "—")}</td><td style="text-align:right;"><button class="btn small ghost" data-salsob-trocar-dia="${dia}" data-salsob-trocar-num="${c.num}" data-salsob-trocar-grupo="${escapeHtml(c.grupoCardapio)}" data-salsob-trocar-cat="${escapeHtml(it.categoria)}">Trocar</button></td></tr>`
-    ).join("") : `<tr><td colspan="3" class="footnote" style="margin:0;">Sem salada/sobremesa cadastrada neste cardápio.</td></tr>`;
-    const trocasHtml = trocas.length ? `<p class="footnote" style="margin:8px 0 0;">${trocas.map(t =>
-      `Trocado: ${escapeHtml(t.ficha_original_nome || "—")} → <strong>${escapeHtml(t.ficha_nova_nome)}</strong> — ${escapeHtml(t.motivo)}${t.observacao ? " ("+escapeHtml(t.observacao)+")" : ""} · ${escapeHtml(t.criado_por || "—")}, ${new Date(t.criado_em).toLocaleString('pt-BR')}`
-    ).join("<br>")}</p>` : "";
-    return `<div class="panel" style="margin-bottom:10px;">
-      <div class="panel-head"><h3 style="font-size:14px;">${escapeHtml(label)}</h3><span class="hint">${c.contratos.length} cliente${c.contratos.length===1?"":"s"}: ${c.contratos.map(x=>escapeHtml(x.nome)).join(", ")}</span></div>
-      <div class="panel-body"><div class="table-wrap"><table><tbody>${linhas}</tbody></table></div>${trocasHtml}</div>
-    </div>`;
-  }).join("");
-  return `<div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="refresh-cw"></i>${titulo}</h3></div>
-  ${blocos}`;
 }
 // modal de troca — escolhe a ficha substituta (só do mesmo grupo, Salada ou Sobremesa) e o motivo; mostra
 // antes quem vai ser afetado, porque o cardápio é compartilhado entre clientes.
@@ -17226,16 +17308,16 @@ async function renderPCP(){
       ]);
       // 20/10/2026, pedido do Marcelo ("área confusa"): ordem reorganizada pra bater com o jeito que ele
       // descreveu a área — visão da semana primeiro (mesmo estilo do Mapa da semana do Açougue), depois a
-      // produção do dia (cliente/opção/quantidade), depois o ajuste/troca esporádica (já existia, só estava
-      // escondido no fim da tela como "Cardápio do dia" — ver nota grande acima de pcpSalSobCardapioDiaHtml),
-      // etiqueta por último (é ação de impressão, não parte do fluxo de planejamento do dia).
+      // produção do dia (cliente/opção/quantidade). 11/11/2026: o painel "Ajuste do dia — troca de opção"
+      // deixou de existir como peça separada — a troca pontual agora vive dentro do card de cada cliente,
+      // em pcpSalSobProducaoHtml (ver nota lá); e "Preparar etiquetas" mudou pro painel Mapa da semana,
+      // junto dos botões de impressão (pedido do Marcelo).
       const mapaSemanaSalSob = pcpSalSobMapaSemanaHtml(salSobMapaSemana, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial");
       const blocosDiaHtml = !salSobBlocosDia.length ? `<div class="empty-state">Marque pelo menos 1 dia da semana acima.</div>` : salSobBlocosDia.map(b => `
         <div data-pcp-salsob-dia-bloco="${b.dia}">
-          ${pcpSalSobProducaoHtml(b.res, b.trocasAposImpressao, b.dia, multiDiaSalSob ? `<h3 style="font-size:15px; margin-right:10px;">${escapeHtml(DIA_LABEL[b.dia])} · </h3>` : "")}
-          ${pcpSalSobCardapioDiaHtml(b.cardapiosUsados, pcpSemanaSel, b.dia, multiDiaSalSob ? DIA_LABEL[b.dia] : "")}
+          ${pcpSalSobProducaoHtml(b.res, b.trocasAposImpressao, b.dia, multiDiaSalSob ? `<h3 style="font-size:15px; margin-right:10px;">${escapeHtml(DIA_LABEL[b.dia])} · </h3>` : "", pcpSemanaSel, b.cardapiosUsados)}
         </div>`).join(`<div style="height:18px;"></div>`);
-      return diasPanelSalSob + clientesPanelSalSob + kpiPainelSalSob + mapaSemanaSalSob + blocosDiaHtml + pcpSalSobEtiquetasHtml(salSobEtqLinhas);
+      return diasPanelSalSob + clientesPanelSalSob + kpiPainelSalSob + mapaSemanaSalSob + blocosDiaHtml;
     })()) : ehProducaoAmbas ? `
       <div class="es-kpis" style="margin-bottom:16px;">
         <div class="vn-card"><div class="vn-label">Pessoas previstas</div><div class="vn-value">${fmtNum(res.pessoasTot,0)}</div><div class="vn-sub">Matriz ${fmtNum(listaRes[0].pessoasTot,0)} · Filial ${fmtNum(listaRes[1].pessoasTot,0)}</div></div>
@@ -17495,6 +17577,17 @@ async function renderPCP(){
       const set = pcpSalSobExcluidos.get(dia) || new Set();
       if(chk.checked) set.delete(chk.dataset.salsobCli); else set.add(chk.dataset.salsobCli);
       pcpSalSobExcluidos.set(dia, set);
+      renderPCP();
+    }));
+    // "Pessoas atendidas" editável (11/11/2026, pedido do Marcelo) — só sessão, não grava no banco; muda
+    // no "change" (perde o foco ou aperta Enter), não a cada tecla, pra não re-renderizar a tela toda hora.
+    content.querySelectorAll(".salsob-cli-pessoas").forEach(inp => inp.addEventListener("change", () => {
+      const dia = inp.dataset.salsobDia;
+      const cli = inp.dataset.salsobCli;
+      const v = inp.value === "" ? null : Number(inp.value);
+      const mapa = pcpSalSobPessoasAjuste.get(dia) || new Map();
+      if(v === null || !isFinite(v)) mapa.delete(cli); else mapa.set(cli, v);
+      pcpSalSobPessoasAjuste.set(dia, mapa);
       renderPCP();
     }));
     const btnMapaSem = document.getElementById("pcp-salsob-mapa-sem-imprimir");
