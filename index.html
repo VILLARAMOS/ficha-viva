@@ -13262,7 +13262,11 @@ function pcpAcumularInsumosDia(dayDoc, numPessoas, acougueSet, buckets, pessoasS
 // passado hoje pelo Açougue (ver pcpAcgPreparoSemana/pcpMapaCarnesSemana);
 // Requisição do estoque continua chamando sem esse argumento (undefined = sem filtro, comportamento igual
 // a antes), de propósito, pra não mudar a tela de Requisição que o Marcelo não pediu pra mexer agora.
-function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosFiltro){
+// clienteFiltro (11/11/2026, opcional, Set de contratoId — filtro de clientes do Açougue, mesmo padrão de
+// pcpCalcularDia): corta a produção de verdade, não só a exibição. undefined/null = sem filtro extra
+// (comportamento de sempre — Requisição do estoque e o Mapa da semana do açougue continuam chamando sem
+// isso, de propósito, pra nunca filtrar por cliente).
+function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosFiltro, clienteFiltro){
   const almocoIdx = new Map();
   cardapiosAlmoco.forEach(row => almocoIdx.set(`${row.cardapio_num}|${row.semana}|${row.dia}`, row));
   const acougueSet = pcpAcougueSet();
@@ -13273,6 +13277,7 @@ function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosF
   [...contratos.entries()]
     .filter(([, ct]) => ct.ativo !== false)
     .filter(([, ct]) => !unidadeFiltro || unidadeFiltro === "todos" || ct.unidade === unidadeFiltro)
+    .filter(([contratoId]) => !clienteFiltro || clienteFiltro.has(contratoId))
     .filter(([, ct]) => contratoVigenteNoDia(ct, semana, dia))
     .forEach(([contratoId, ct]) => {
       const pessoasSubst = pcpPessoasSubstituidas(dia, contratoId);
@@ -13404,10 +13409,16 @@ function pcpFmtEmb(it){
 // de estoque/kardex, que continua só na seção "Semana inteira — por dia de uso" (por insumo) mais abaixo.
 // O planejamento de "quando cortar com antecedência" (peça congelada) continua coberto pelo Mapa da semana
 // (pcpMapaCarnesSemana, abaixo) — que já mostra o dia de PREPARO por corte, sem precisar da cobertura aqui.
-function pcpAcgPreparoSemana(semana, unidadeFiltro, servicosFiltro){
-  return DIAS_ORDEM.map(dia => {
+// diasAtivos/clienteFiltro (11/11/2026, pedido do Marcelo, "layout igual Produção da cozinha"): antes
+// sempre calculava os 7 dias pra todo o grupo; agora respeita os dias marcados (painel "Dias da semana",
+// mesmo padrão de pcpProdDiasSel) e o filtro de clientes (painel "Clientes", mesmo padrão de
+// pcpProdClientesSel — null = grupo inteiro da unidade). undefined em ambos preserva o comportamento
+// antigo (7 dias, sem filtro) — usado só internamente se algum chamador antigo ainda existir.
+function pcpAcgPreparoSemana(semana, unidadeFiltro, servicosFiltro, diasAtivos, clienteFiltro){
+  const dias = (diasAtivos && diasAtivos.length) ? diasAtivos : DIAS_ORDEM;
+  return dias.map(dia => {
     const coletor = criarColetorReceitas();
-    const res = pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosFiltro);
+    const res = pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosFiltro, clienteFiltro);
     const bucket = res.porSetor.find(s => s.setor === "acougue");
     const linhas = [];
     (bucket ? bucket.itens : []).forEach(it => {
@@ -13423,7 +13434,7 @@ function pcpAcgPreparoSemana(semana, unidadeFiltro, servicosFiltro){
     // "pessoas atendidas" reaproveita o MESMO número que a Produção da cozinha já usa (pcpCalcularDia —
     // `clientes[].pessoas`/`pessoasTot`), em vez de recalcular — garante que o número mostrado no Açougue
     // nunca diverge do que aparece em Produção pro mesmo cliente/dia.
-    const diaCalc = pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro);
+    const diaCalc = pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro, clienteFiltro);
     const pessoasPorCliente = new Map(diaCalc.clientes.map(c => [c.id, c.pessoas]));
     const porClienteMap = new Map(); // contratoId -> {id, nome, pessoas, linhas:[{insumoId,corte,unidade,produtoId,nomeProduto,qtdCalculada,ajuste}]}
     (bucket ? bucket.itens : []).forEach(it => {
@@ -13482,12 +13493,15 @@ function pcpMapaCarnesSemana(semana, unidadeFiltro, servicosFiltro){
     const pessoasTot = pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro).pessoasTot;
     return { dia, prep: prepPorDia[dia], itens: bucket ? bucket.itens : [], pessoasTot };
   });
-  const porCorte = new Map(); // insumoId -> {nome, unidade, porDia:[kg×7], total, receitas:Set}
+  const porCorte = new Map(); // insumoId -> {nome, unidade, porDia:[kg×7], total, custoTotal, receitas:Set}
   porDia.forEach((pd, idx) => {
     pd.itens.forEach(it => {
-      const c = porCorte.get(it.insumoId) || { nome: it.nome, unidade: it.unidade, porDia: DIAS_ORDEM.map(() => 0), total: 0, receitas: new Set() };
+      const ins = insumos.get(it.insumoId);
+      const custoKg = (ins && ins.custo_kg_l_und) || 0;
+      const c = porCorte.get(it.insumoId) || { nome: it.nome, unidade: it.unidade, porDia: DIAS_ORDEM.map(() => 0), total: 0, custoTotal: 0, receitas: new Set() };
       c.porDia[idx] += it.kg;
       c.total += it.kg;
+      c.custoTotal += it.kg * custoKg;
       porCorte.set(it.insumoId, c);
     });
   });
@@ -13496,7 +13510,12 @@ function pcpMapaCarnesSemana(semana, unidadeFiltro, servicosFiltro){
   });
   const cortes = [...porCorte.values()].sort((a,b) => b.total - a.total || a.nome.localeCompare(b.nome,'pt-BR'));
   const pessoasPorDia = porDia.map(pd => pd.pessoasTot);
-  return { porDia, cortes, pessoasPorDia };
+  // 11/11/2026, pedido do Marcelo: os cards "Kg de carne/Cortes/Custo total (semana)" passam a ler daqui
+  // (sempre o grupo inteiro, semana inteira) em vez do Preparo da semana, que agora pode estar filtrado por
+  // dia/cliente — os cards no topo continuam representando o panorama completo, igual o Mapa da semana.
+  const kgTotalSemana = cortes.reduce((s,c) => s + c.total, 0);
+  const custoTotalSemana = cortes.reduce((s,c) => s + c.custoTotal, 0);
+  return { porDia, cortes, pessoasPorDia, kgTotalSemana, custoTotalSemana };
 }
 
 // ---------- Retirada avulsa de estoque + baixa real no kardex (18/10/2026, pedido do Marcelo) ----------
@@ -13764,7 +13783,18 @@ let pcpConferirRevisados = new Set(); // chaves marcadas como "já vi/corrigido"
 // dias marcados pra impressão na seção "Semana inteira — por dia de uso" (18/10/2026) — só da sessão, não
 // grava no banco; um Set por área (Estoque/Açougue) porque são telas independentes.
 let pcpReqDiasSel = new Set();
+// 11/11/2026 (pedido do Marcelo, "layout igual Produção da cozinha"): pcpAcgDiasSel passou a ter DUPLO
+// papel — além de decidir em quais dias as ações (baixa/imprimir/etiquetas) atuam (como já era), agora
+// também decide QUAIS dias ganham painel no Preparo da semana (antes sempre mostrava os 7 dias, inclusive
+// sáb/dom sem produção do açougue — daí a confusão). Mapa da semana continua sempre os 7 dias (decisão
+// explícita do Marcelo: ele quer manter a visão panorâmica), só o Preparo da semana passa a respeitar isso.
 let pcpAcgDiasSel = new Set();
+// clientes selecionados no Açougue (11/11/2026) — mesmo padrão de pcpProdClientesSel (Set de contratoId, ou
+// null = "Grupo inteiro"/unidade inteira). Só filtra o Preparo da semana (cards por cliente/ajuste) — o
+// Mapa da semana nunca filtra por cliente, é sempre o grupo inteiro.
+let pcpAcgClientesSel = null;
+// true depois do 1º clique em "Gerar tabela" no Açougue — mesmo padrão de pcpProdGerado.
+let pcpAcgGerado = false;
 // dias selecionados na "Produção da cozinha" (10/11/2026, pedido do Marcelo) — multi-seleção PLENA desde
 // 10/11/2026 (substitui o antigo toggle de 1 dia + checkbox de impressão em lote): cada dia marcado aqui
 // entra na tabela gerada em tela E na impressão. Só da sessão, não grava no banco. Começa vazio; ao
@@ -14980,21 +15010,14 @@ function pcpImprimirAcgPreparoDiasEscolhidos(dias, preparoSemana, semana, unidad
     </body></html>`);
   w.document.close(); w.focus(); w.print();
 }
-// 11/11/2026, pedido do Marcelo: barra única de ações do Açougue, logo abaixo do painel — antes
-// "Preparar etiquetas" tinha painel próprio, "Imprimir dias marcados" ficava junto do Preparo da semana, e
-// "Imprimir fichas técnicas"/"Dar baixa"/"Desfazer baixa" ficavam lá embaixo, na extinta "Semana inteira —
-// por dia de uso". Os dias marcados passam a ser 1 seletor só (pcpAcgDiasSel) pras 4 ações que dependem de
-// dia — etiquetas não depende de dia marcado (cobre a semana toda, como já era).
-function pcpAcgAcoesHtml(preparoSemana, diasSelState, mapaCarnesSemana){
-  const disponiveis = preparoSemana.map(d => d.dia);
-  if(![...diasSelState].some(d => disponiveis.includes(d))) disponiveis.forEach(d => diasSelState.add(d));
-  [...diasSelState].forEach(d => { if(!disponiveis.includes(d)) diasSelState.delete(d); });
+// 11/11/2026, pedido do Marcelo ("layout igual Produção da cozinha ... botões ... alinhados e organizados"):
+// os dias marcados saíram desta barra e foram pro painel próprio "Dias da semana" (pcpAcgFiltrosHtml, mesmo
+// padrão de Ajustes do dia/Produção) — aqui ficam SÓ os 5 botões de ação, numa barra única e organizada.
+// Etiquetas não depende de dia marcado (cobre a semana toda, como já era).
+function pcpAcgAcoesHtml(mapaCarnesSemana){
   return `
     <div class="panel" style="margin-bottom:14px;">
-      <div class="panel-body" style="display:flex; flex-wrap:wrap; gap:10px; align-items:center;">
-        <div class="kk-dias-chips">${preparoSemana.map(d => `<button type="button" class="chip-dia pcp-acgacao-chip ${diasSelState.has(d.dia)?"on":""}" data-dia="${d.dia}">${escapeHtml((DIA_LABEL[d.dia]||d.dia).slice(0,3))}</button>`).join("")}</div>
-        <span class="footnote" style="margin:0 2px;">dias marcados ↑</span>
-        <span style="flex:1 1 auto;"></span>
+      <div class="panel-body" style="display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:flex-end;">
         <button class="btn small ghost" id="pcp-etiquetas-abrir" title="${mapaCarnesSemana.length} linha${mapaCarnesSemana.length===1?"":"s"} da semana">Preparar etiquetas</button>
         <button class="btn small primary" id="pcp-acgacao-fichas">Imprimir fichas técnicas (dias marcados)</button>
         <button class="btn small primary" id="pcp-acgacao-imprimir">Imprimir dias marcados</button>
@@ -15004,13 +15027,6 @@ function pcpAcgAcoesHtml(preparoSemana, diasSelState, mapaCarnesSemana){
     </div>`;
 }
 function pcpAcgAcoesBind(content, preparoSemana, diasSelState, semana, unidadeFiltro, unidadeLabel, servicosFiltro, margemPct){
-  content.querySelectorAll(".pcp-acgacao-chip").forEach(b => {
-    b.addEventListener("click", () => {
-      const dia = b.dataset.dia;
-      if(diasSelState.has(dia)) diasSelState.delete(dia); else diasSelState.add(dia);
-      renderPCP();
-    });
-  });
   const diasMarcados = () => DIAS_ORDEM.filter(d => diasSelState.has(d));
   const btnImprimir = content.querySelector("#pcp-acgacao-imprimir");
   if(btnImprimir) btnImprimir.addEventListener("click", () => {
@@ -15060,6 +15076,64 @@ function pcpAcgAcoesBind(content, preparoSemana, diasSelState, semana, unidadeFi
       if(ok) renderPCP();
     });
   });
+}
+
+// 11/11/2026, pedido do Marcelo ("layout dos dias e matriz/filial/grupo inteiro igual Produção da cozinha ...
+// essa opção de escolher os clientes é necessário ter"): painéis "Dias da semana" + "Clientes" do Açougue —
+// mesmo padrão visual/funcional de Ajustes do dia (grid2-box Matriz/Filial com atalho "Grupo inteiro", que
+// aqui troca a unidade do topo de verdade, igual lá), só que aplicado só ao Preparo da semana (o Mapa da
+// semana, acima, continua SEMPRE semana inteira/grupo inteiro — decisão explícita do Marcelo). O botão
+// "Gerar tabela" no final é o pedaço específico do padrão de Produção (em vez do padrão reativo de Ajustes):
+// Marcelo escolheu esse entre os dois quando perguntado.
+function pcpAcgFiltrosHtml(diasSelState, contratosMatriz, contratosFilial, idsMatriz, idsFilial, clienteFiltro, idsUnidade, clientesSelRaw, unidadeFiltro, gerado){
+  const diasPanel = `
+  <div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head">
+      <h3>Dias da semana</h3>
+      <span class="hint">${diasSelState.size} de ${DIAS_ORDEM.length}</span>
+    </div>
+    <div class="panel-body">
+      <div class="footnote" style="margin:0 0 10px;">Marque os dias que entram no Preparo da semana e na impressão — pode marcar mais de um, cada dia marcado vira um bloco separado.</div>
+      <div class="kk-dias-chips" id="pcp-acg-dia-tabs" style="flex-wrap:wrap;">
+        ${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia pcp-acg-dia-chip ${diasSelState.has(d)?"on":""}" data-dia="${d}">${DIA_LABEL[d]}</button>`).join("")}
+      </div>
+    </div>
+  </div>`;
+  const grupoClientesHtml = (titulo, lista, unidadeKey) => {
+    const ativa = !unidadeFiltro || unidadeFiltro === unidadeKey;
+    return `<div class="grid2-box ${ativa?"":"grid2-box-dim"}">
+      <div class="footnote" style="margin:0 0 8px; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
+        <span>${escapeHtml(titulo)} (${lista.length})</span>
+        ${ativa ? `<span class="hint" style="margin:0;">${lista.filter(([id]) => clienteFiltro.has(id)).length} de ${lista.length} selecionados</span>` : `<span class="hint" style="margin:0;">não selecionada</span>`}
+      </div>
+      ${lista.length ? `<div class="kk-dias-chips" style="flex-wrap:wrap;">
+        ${lista.map(([id,c]) => `<button type="button" class="chip-dia ${ativa?"pcp-acg-cli-chip":""} ${ativa && clienteFiltro.has(id)?"on":""}" data-id="${id}" ${ativa?"":"disabled"}>${escapeHtml(c.nome_cliente)}</button>`).join("")}
+      </div>` : `<div class="footnote">Nenhum contrato ativo.</div>`}
+    </div>`;
+  };
+  const clientesPanel = `
+  <div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head">
+      <h3>Clientes</h3>
+      <span class="hint">${clienteFiltro.size} de ${idsUnidade.length}</span>
+    </div>
+    <div class="panel-body">
+      <div class="kk-dias-chips" style="margin-bottom:10px; flex-wrap:wrap; align-items:center;">
+        <button type="button" class="chip-dia ${!unidadeFiltro||unidadeFiltro==="todos"?"on":""}" data-acg-atalho="todos">Grupo inteiro (${idsMatriz.length + idsFilial.length})</button>
+        <button type="button" class="chip-dia ${unidadeFiltro==="matriz"?"on":""}" data-acg-atalho="matriz">Matriz (${idsMatriz.length})</button>
+        <button type="button" class="chip-dia ${unidadeFiltro==="filial"?"on":""}" data-acg-atalho="filial">Filial (${idsFilial.length})</button>
+        <button type="button" class="btn small ghost" id="pcp-acg-cli-limpar" ${clientesSelRaw===null?"disabled":""} style="margin-left:6px;">Limpar seleção</button>
+      </div>
+      <div class="grid2">
+        ${grupoClientesHtml("Matriz", contratosMatriz, "matriz")}
+        ${grupoClientesHtml("Filial", contratosFilial, "filial")}
+      </div>
+    </div>
+  </div>`;
+  const gerarBtn = `<div style="display:flex; justify-content:flex-end; margin-bottom:14px;">
+    <button class="btn primary" id="pcp-acg-gerar" ${diasSelState.size ? "" : "disabled"}>${gerado ? "Atualizar tabela" : "Gerar tabela"}</button>
+  </div>`;
+  return diasPanel + clientesPanel + gerarBtn;
 }
 
 // Mapa da semana: visão panorâmica dos 7 dias (kg por corte por dia de produção + o dia em que o açougue
@@ -17422,12 +17496,26 @@ async function renderPCP(){
   const ajustesSelIds = pcpAjustesClientesSel === null ? ajustesIdsUnidade : ajustesIdsUnidade.filter(id => pcpAjustesClientesSel.has(id));
   const ajustesClienteFiltro = new Set(ajustesSelIds);
   const reqCobertura = ehEstoque ? pcpCalcularReqComCobertura(pcpSemanaSel, pcpDiaSel, unidadeFiltro, servicosFiltro) : null;
+  // 11/11/2026, pedido do Marcelo ("layout igual Produção da cozinha ... dias ... clientes"): painéis "Dias
+  // da semana"/"Clientes" do Açougue — mesma semeadura/mesmo cálculo de Ajustes do dia (ver ajustesIdsUnidade/
+  // ajustesClienteFiltro acima). O Mapa da semana (mapaSemana, logo abaixo) NUNCA usa esses filtros — continua
+  // sempre semana inteira/grupo inteiro, só o Preparo da semana (acgPreparoSemana) respeita.
+  if(ehAcougue && !pcpAcgDiasSel.size) pcpAcgDiasSel.add(pcpDiaSel);
+  const acgContratosMatriz = ehAcougue ? [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === "matriz").sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente))) : [];
+  const acgContratosFilial = ehAcougue ? [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === "filial").sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente))) : [];
+  const acgIdsMatriz = acgContratosMatriz.map(([id]) => id);
+  const acgIdsFilial = acgContratosFilial.map(([id]) => id);
+  const acgIdsUnidade = !unidadeFiltro || unidadeFiltro === "todos" ? [...acgIdsMatriz, ...acgIdsFilial] : (unidadeFiltro === "matriz" ? acgIdsMatriz : acgIdsFilial);
+  const acgSelIds = pcpAcgClientesSel === null ? acgIdsUnidade : acgIdsUnidade.filter(id => pcpAcgClientesSel.has(id));
+  const acgClienteFiltro = new Set(acgSelIds);
+  const acgDiasAtivos = DIAS_ORDEM.filter(d => pcpAcgDiasSel.has(d));
   const mapaSemana = ehAcougue ? pcpMapaCarnesSemana(pcpSemanaSel, unidadeFiltro, servicosFiltro) : null;
   // Preparo da semana (20/10/2026, pedido do Marcelo) — substitui o antigo "Mapa de carnes" do dia
   // selecionado: corte×receita por dia SERVIDO, Segunda→Domingo, com custo. Alimenta também o Etiquetas
-  // (agora semana toda em vez de só o dia). Ver pcpAcgPreparoSemana.
-  const acgPreparoSemana = ehAcougue ? pcpAcgPreparoSemana(pcpSemanaSel, unidadeFiltro, servicosFiltro) : null;
-  const acgMapaCarnesSemana = ehAcougue ? pcpAcgPreparoSemanaFlat(acgPreparoSemana) : null;
+  // (agora semana toda em vez de só o dia). Desde 11/11/2026 respeita acgDiasAtivos/acgClienteFiltro (painel
+  // "Dias da semana"/"Clientes" acima) — só gera pra quem foi marcado. Ver pcpAcgPreparoSemana.
+  const acgPreparoSemana = (ehAcougue && pcpAcgGerado && acgDiasAtivos.length) ? pcpAcgPreparoSemana(pcpSemanaSel, unidadeFiltro, servicosFiltro, acgDiasAtivos, acgClienteFiltro) : null;
+  const acgMapaCarnesSemana = acgPreparoSemana ? pcpAcgPreparoSemanaFlat(acgPreparoSemana) : null;
   // seção nova "Semana inteira — por dia de uso" (18/10/2026): blocos por grupo + custo + retirada avulsa +
   // escolha de dias pra imprimir, em cima de pcpReqSemanaPorDiaServido (Monday-first, não usa diaProd/cobertura
   // — ver comentário da função). Precisa das retiradas avulsas carregadas ANTES de montar os blocos.
@@ -17490,20 +17578,23 @@ async function renderPCP(){
       <button type="button" data-pcpsub="romaneio" class="${pcpSubView==="romaneio"?"active":""}">Romaneio por rota</button>
     </div>
     <div class="menu-controls" style="margin-bottom:16px;">
-      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes || ehCafe || ehSalSob ? "" : `<div class="kk-dias-chips" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" class="chip-dia ${pcpUnidadeSel===u.id?"on":""}" data-pcpuni="${u.id}">${u.nome}${u.id !== "todos" ? ` · ${pcpContagemUnidade(u.id)}` : ""}</button>`).join("")}</div>`}
+      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes || ehCafe || ehSalSob || ehAcougue ? "" : `<div class="kk-dias-chips" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" class="chip-dia ${pcpUnidadeSel===u.id?"on":""}" data-pcpuni="${u.id}">${u.nome}${u.id !== "todos" ? ` · ${pcpContagemUnidade(u.id)}` : ""}</button>`).join("")}</div>`}
       <select id="pcp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===pcpSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
-      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes || ehCafe || ehSalSob ? "" : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
+      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes || ehCafe || ehSalSob || ehAcougue ? "" : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
       ${servicosAplicavel ? `<div class="kk-dias-chips" id="pcp-serv-tabs">${PCP_TURNOS.filter(t=>t.id!=="todos").map(t => `<button type="button" class="chip-dia ${pcpServicosSel.has(t.id)?"on":""}" data-pcp-serv="${t.id}">${t.nome}</button>`).join("")}</div>` : ""}
     </div>
     ${ehAcougue ? `
       ${pcpPainelAreaHtml([
-        {label:"Kg de carne (semana)", valor: fmtNum(acgPreparoSemana.reduce((s,d)=>s+d.linhas.reduce((s2,l)=>s2+l.kg,0),0),1)},
-        {label:"Cortes/itens (semana)", valor: new Set(acgMapaCarnesSemana.map(l=>l.corte)).size},
-        {label:"Custo total da semana", valor: fmtMoney(acgPreparoSemana.reduce((s,d)=>s+d.custoDia,0))}
+        {label:"Kg de carne (semana)", valor: fmtNum(mapaSemana.kgTotalSemana,1)},
+        {label:"Cortes/itens (semana)", valor: mapaSemana.cortes.length},
+        {label:"Custo total da semana", valor: fmtMoney(mapaSemana.custoTotalSemana)}
       ])}
-      ${pcpAcgAcoesHtml(acgPreparoSemana, pcpAcgDiasSel, acgMapaCarnesSemana)}
       ${pcpMapaSemanaHtml(mapaSemana, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial")}
-      ${pcpAcgPreparoSemanaHtml(acgPreparoSemana, pcpSemanaSel, unidadeFiltro)}
+      ${pcpAcgFiltrosHtml(pcpAcgDiasSel, acgContratosMatriz, acgContratosFilial, acgIdsMatriz, acgIdsFilial, acgClienteFiltro, acgIdsUnidade, pcpAcgClientesSel, unidadeFiltro, pcpAcgGerado)}
+      ${!acgDiasAtivos.length ? `<div class="empty-state">Marque pelo menos 1 dia da semana acima pra gerar o Preparo da semana.</div>`
+        : !pcpAcgGerado ? `<div class="empty-state">Marque os dias e clientes desejados e clique em "Gerar tabela".</div>`
+        : `${pcpAcgAcoesHtml(acgMapaCarnesSemana)}
+           ${pcpAcgPreparoSemanaHtml(acgPreparoSemana, pcpSemanaSel, unidadeFiltro)}`}
     ` : ehEstoque ? (
       pcpPainelAreaHtml([
         {label:"Itens a requisitar", valor: reqCobertura.porDia.reduce((s,d)=>s+d.linhas.length,0)},
@@ -18069,10 +18160,38 @@ async function renderPCP(){
     document.getElementById("pcp-acg-config").addEventListener("click", pcpAbrirConfigAcougue);
     const btnMapaSem = document.getElementById("pcp-mapa-sem-imprimir");
     if(btnMapaSem) btnMapaSem.addEventListener("click", () => pcpImprimirMapaSemana(mapaSemana, pcpSemanaSel, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial"));
-    pcpAcgAcoesBind(content, acgPreparoSemana, pcpAcgDiasSel, pcpSemanaSel, unidadeFiltro, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial", servicosFiltro, margemPct);
-    pcpAcgAjustesClienteBind(content, pcpSemanaSel);
-    const btnEtiquetas = document.getElementById("pcp-etiquetas-abrir");
-    if(btnEtiquetas) btnEtiquetas.addEventListener("click", () => pcpAbrirEtiquetasAcougue(acgMapaCarnesSemana, pcpSemanaSel, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial"));
+    // 11/11/2026: painel "Dias da semana"/"Clientes" — mesmo padrão de Ajustes do dia (atalho troca a
+    // unidade do topo de verdade e some com a seleção individual de cliente da unidade nova).
+    content.querySelectorAll(".pcp-acg-dia-chip").forEach(b => b.addEventListener("click", () => {
+      const dia = b.dataset.dia;
+      if(pcpAcgDiasSel.has(dia)) pcpAcgDiasSel.delete(dia); else pcpAcgDiasSel.add(dia);
+      renderPCP();
+    }));
+    content.querySelectorAll("[data-acg-atalho]").forEach(b => b.addEventListener("click", () => {
+      const k = b.dataset.acgAtalho;
+      pcpUnidadeSel = k === "todos" ? "todos" : k;
+      pcpAcgClientesSel = null;
+      renderPCP();
+    }));
+    content.querySelectorAll(".pcp-acg-cli-chip").forEach(b => b.addEventListener("click", () => {
+      const id = b.dataset.id;
+      const base = pcpAcgClientesSel === null ? new Set(acgIdsUnidade) : new Set(pcpAcgClientesSel);
+      if(base.has(id)) base.delete(id); else base.add(id);
+      pcpAcgClientesSel = base;
+      renderPCP();
+    }));
+    const btnAcgCliLimpar = document.getElementById("pcp-acg-cli-limpar");
+    if(btnAcgCliLimpar) btnAcgCliLimpar.addEventListener("click", () => { pcpAcgClientesSel = null; renderPCP(); });
+    const btnAcgGerar = document.getElementById("pcp-acg-gerar");
+    if(btnAcgGerar) btnAcgGerar.addEventListener("click", () => { pcpAcgGerado = true; renderPCP(); });
+    // o resto (ações/etiquetas/ajustes por cliente) só existe depois de "Gerar tabela" com ao menos 1 dia
+    // marcado — ver gate no HTML acima (acgPreparoSemana só é calculado nessas condições).
+    if(acgPreparoSemana){
+      pcpAcgAcoesBind(content, acgPreparoSemana, pcpAcgDiasSel, pcpSemanaSel, unidadeFiltro, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial", servicosFiltro, margemPct);
+      pcpAcgAjustesClienteBind(content, pcpSemanaSel);
+      const btnEtiquetas = document.getElementById("pcp-etiquetas-abrir");
+      if(btnEtiquetas) btnEtiquetas.addEventListener("click", () => pcpAbrirEtiquetasAcougue(acgMapaCarnesSemana, pcpSemanaSel, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial"));
+    }
   } else if(ehEstoque){
     document.getElementById("pcp-acg-config").addEventListener("click", pcpAbrirConfigAcougue);
     const unidadeLabel = unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial";
