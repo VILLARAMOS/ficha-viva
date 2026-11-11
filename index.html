@@ -10451,6 +10451,9 @@ function textoPedidoFornecedor(p){
   const linhas = [
     `Pedido de compra — Grupo Villa Ramos`,
     p.fornecedor ? `Fornecedor: ${p.fornecedor}` : null,
+    // 11/11/2026, pedido do Marcelo: o sistema compra pra vários CNPJs do grupo — a NF do fornecedor tem
+    // que sair faturada no CNPJ certo, por isso esse campo entra logo no topo do texto, junto do fornecedor.
+    p.cnpj_faturamento ? `Faturar para CNPJ: ${p.cnpj_faturamento}` : null,
     p.data_pedido ? `Data: ${fmtDataYMD(p.data_pedido)}` : null,
     p.data_entrega_prevista ? `Entrega prevista: ${fmtDataYMD(p.data_entrega_prevista)}` : null,
     "",
@@ -10539,13 +10542,14 @@ function imprimirPedidoObjeto(p){
     <div class="sub">Documento de conferência — comparar com a entrega ao receber</div>
     <div class="info-grid">
       <div><strong>Fornecedor:</strong> ${escapeHtml(p.fornecedor||"—")}</div>
-      <div><strong>CNPJ:</strong> ${f && f.cnpj ? escapeHtml(f.cnpj) : "—"}</div>
+      <div><strong>CNPJ do fornecedor:</strong> ${f && f.cnpj ? escapeHtml(f.cnpj) : "—"}</div>
       <div><strong>Data do pedido:</strong> ${fmtDataYMD(p.data_pedido)||"—"}</div>
       <div><strong>Entrega prevista:</strong> ${fmtDataYMD(p.data_entrega_prevista)||"—"}</div>
       <div><strong>Unidade:</strong> ${escapeHtml(nomeUnidadeCompra(pedidoUnidade(p)))}</div>
       <div><strong>Prazo de pagamento:</strong> ${f && f.prazo_pagamento ? escapeHtml(f.prazo_pagamento) : "—"}</div>
       <div><strong>Destino:</strong> ${escapeHtml(p.destino_rotulo||"Grupo inteiro")}</div>
       <div><strong>Valor total do pedido:</strong> ${fmtMoney(p.valor_total)}</div>
+      ${p.cnpj_faturamento ? `<div style="grid-column:1/-1;"><strong>Faturar para CNPJ (Villa Ramos):</strong> ${escapeHtml(p.cnpj_faturamento)}</div>` : ""}
     </div>
     ${p.observacoes ? `<div class="sub">Observações: ${escapeHtml(p.observacoes)}</div>` : ""}
     <table>
@@ -10567,8 +10571,15 @@ function imprimirPedidoObjeto(p){
     </body></html>`);
   w.document.close();
 }
-function openPedidoModal(id, opts){
+async function openPedidoModal(id, opts){
   opts = opts || {};
+  // 11/11/2026, pedido do Marcelo: a compradora relatou a tela de pedido fechando sozinha no meio do
+  // preenchimento, perdendo o lançamento todo. Daqui pra frente o formulário salva um rascunho no
+  // localStorage a cada alteração (autosaveKey abaixo); se a aba fechar/recarregar sem ter clicado em
+  // "Salvar pedido", o próximo acesso a este mesmo pedido (ou a "Registrar pedido" de novo, pra um
+  // pedido novo) oferece recuperar o que estava digitado. Só é limpo quando o pedido é efetivamente
+  // salvo no banco — fechar pela "Cancelar"/"Fechar"/X nunca descarta o rascunho por conta própria.
+  const autosaveKey = id ? `pdDraftAutosave:${id}` : "pdDraftAutosave:novo";
   const existing = id ? pedidos.get(id) : null;
   const origem = (!existing && opts.duplicarDe) ? pedidos.get(opts.duplicarDe) : null;
   let draft;
@@ -10578,24 +10589,43 @@ function openPedidoModal(id, opts){
   } else if(existing){
     draft = { fornecedor: existing.fornecedor||"", data_pedido: existing.data_pedido||hojeYMD(), data_entrega_prevista: existing.data_entrega_prevista||"",
       unidade: pedidoUnidade(existing), destino_rotulo: existing.destino_rotulo||"Grupo inteiro", destino_ids: existing.destino_ids||null,
-      semana_referencia: existing.semana_referencia!=null?existing.semana_referencia:null,
+      semana_referencia: existing.semana_referencia!=null?existing.semana_referencia:null, cnpj_faturamento: existing.cnpj_faturamento||"",
       observacoes: existing.observacoes||"", itens: (existing.itens||[]).map(it => ({...it})) };
   } else if(origem){
     draft = { fornecedor: origem.fornecedor||"", data_pedido: hojeYMD(), data_entrega_prevista: "",
       unidade: pedidoUnidade(origem), destino_rotulo: origem.destino_rotulo||"Grupo inteiro", destino_ids: origem.destino_ids||null,
-      semana_referencia: null, observacoes: origem.observacoes||"", itens: (origem.itens||[]).map(linhaDePedidoAnterior) };
+      semana_referencia: null, cnpj_faturamento: origem.cnpj_faturamento||"", observacoes: origem.observacoes||"", itens: (origem.itens||[]).map(linhaDePedidoAnterior) };
   } else if(opts.draftPrefill){
     // vem da "Lista de compra" (sugestão de pedido por fornecedor) — rascunho em memória, nada gravado até salvar
     const p = opts.draftPrefill;
     draft = { fornecedor: p.fornecedor||"", data_pedido: p.data_pedido||hojeYMD(), data_entrega_prevista:"",
       unidade: p.unidade||"matriz", destino_rotulo: p.destino_rotulo||"Grupo inteiro", destino_ids: p.destino_ids||null,
-      semana_referencia: p.semana_referencia!=null?p.semana_referencia:null, observacoes: p.observacoes||"",
+      semana_referencia: p.semana_referencia!=null?p.semana_referencia:null, cnpj_faturamento: p.cnpj_faturamento||"", observacoes: p.observacoes||"",
       itens: (p.itens||[]).map(l => ({...l})) };
   } else {
     draft = { fornecedor:"", data_pedido: hojeYMD(), data_entrega_prevista:"", unidade:"matriz", destino_rotulo:"Grupo inteiro", destino_ids:null,
-      semana_referencia:null, observacoes:"", itens:[novaLinhaPedido()] };
+      semana_referencia:null, cnpj_faturamento:"", observacoes:"", itens:[novaLinhaPedido()] };
   }
   if(!draft.itens.length) draft.itens.push(novaLinhaPedido());
+
+  let bannerMsg = null, bannerOk = false;
+  if(opts.savedAt){
+    bannerMsg = `Pedido salvo ✓ às ${new Date(opts.savedAt).toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'})}`;
+    bannerOk = true;
+  } else if(!opts.draftOverride){
+    let salvo = null;
+    try{ const raw = localStorage.getItem(autosaveKey); if(raw) salvo = JSON.parse(raw); }catch(e){}
+    if(salvo && salvo.draft){
+      const quando = salvo.ts ? new Date(salvo.ts).toLocaleString('pt-BR') : "antes";
+      const recuperar = await confirmDialog(`Encontramos um lançamento não salvo deste pedido (${quando}). Deseja recuperar o que estava digitado?`);
+      if(recuperar){
+        draft = { ...draft, ...salvo.draft, itens: (salvo.draft.itens && salvo.draft.itens.length) ? salvo.draft.itens : draft.itens };
+        bannerMsg = "Lançamento recuperado — confira os itens antes de salvar.";
+      } else {
+        try{ localStorage.removeItem(autosaveKey); }catch(e){}
+      }
+    }
+  }
 
   const root = document.getElementById("modal-root");
   const destinos = destinoOpcoes();
@@ -10606,6 +10636,7 @@ function openPedidoModal(id, opts){
       <div class="modal" style="max-width:920px;">
         <div class="modal-head"><h2>${existing ? "Editar pedido" : (origem ? "Novo pedido (repetido)" : (opts.draftPrefill ? "Novo pedido (sugerido)" : "Registrar pedido"))}</h2><button class="close-x" id="close-m">&times;</button></div>
         <div class="modal-body">
+          ${bannerMsg ? `<div class="footnote" id="pd-autosave-msg" style="margin:-4px 0 12px; padding:6px 10px; border-radius:6px; background:${bannerOk?"rgba(40,160,80,.12)":"rgba(200,150,0,.12)"}; color:${bannerOk?"var(--ok,#2a7)":"var(--warn,#b8860b)"};">${escapeHtml(bannerMsg)}</div>` : ""}
           <div class="field-row">
             <div class="field" style="flex:2;"><label for="pd-fornecedor">Fornecedor</label><input type="text" id="pd-fornecedor" list="pd-forn-list" autocomplete="off" value="${escapeHtml(draft.fornecedor)}" placeholder="Nome do fornecedor"><datalist id="pd-forn-list">${fornecedoresConhecidos().map(f => `<option value="${escapeHtml(f)}"></option>`).join("")}</datalist><div class="footnote" id="pd-forn-info" style="margin-top:3px;"></div></div>
             <div class="field"><label for="pd-data">Data do pedido</label><input type="date" id="pd-data" value="${draft.data_pedido}"></div>
@@ -10614,6 +10645,9 @@ function openPedidoModal(id, opts){
           <div class="field-row">
             <div class="field"><label for="pd-unidade" style="display:block; min-height:32px;">Unidade da compra (quem recebe e debita o orçamento)</label>
               <select id="pd-unidade">${UNIDADES_COMPRA.map(u => `<option value="${u.id}" ${u.id===draft.unidade?"selected":""}>${u.nome}</option>`).join("")}</select>
+            </div>
+            <div class="field"><label for="pd-cnpj-fat" style="display:block; min-height:32px;" title="CNPJ do grupo Villa Ramos pelo qual a NF do fornecedor deve ser faturada">CNPJ para faturamento (Villa Ramos)</label>
+              <input type="text" id="pd-cnpj-fat" value="${escapeHtml(draft.cnpj_faturamento||"")}" placeholder="Ex.: 00.000.000/0001-00">
             </div>
             <div class="field"><label for="pd-destino" style="display:block; min-height:32px;">Destino (clientes que motivaram a compra)</label>
               <select id="pd-destino">${destinos.map((d,i) => `<option value="${i}" ${d.rotulo===draft.destino_rotulo?"selected":""}>${escapeHtml(d.rotulo)}</option>`).join("")}</select>
@@ -10644,7 +10678,8 @@ function openPedidoModal(id, opts){
             <button class="btn ghost" id="pd-texto-forn" type="button">Gerar texto para fornecedor</button>
           </div>
           <div style="display:flex; gap:8px;">
-            <button class="btn" id="cancel-m">Cancelar</button>
+            <button class="btn" id="cancel-m" title="Fecha a tela sem salvar agora (o que foi digitado continua guardado e pode ser recuperado na próxima vez que abrir este pedido)">Cancelar</button>
+            <button class="btn ghost" id="fechar-m" type="button" title="Fecha a tela — use depois de clicar em Salvar pedido">Fechar</button>
             <button class="btn primary" id="save-m">Salvar pedido</button>
           </div>
         </div>
@@ -10653,7 +10688,40 @@ function openPedidoModal(id, opts){
 
   document.getElementById("close-m").onclick = () => root.innerHTML = "";
   document.getElementById("cancel-m").onclick = () => root.innerHTML = "";
+  document.getElementById("fechar-m").onclick = () => root.innerHTML = "";
   document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
+
+  // autosave contínuo (ver comentário no topo da função): qualquer input/change dentro do modal — nos
+  // campos do cabeçalho e nas linhas de item — dispara um salvamento debounced no localStorage. Cliques
+  // que mudam o rascunho sem disparar input/change (+ adicionar item, remover) chamam scheduleAutosave()
+  // explicitamente nos próprios handlers, mais abaixo.
+  let autosaveTimer = null;
+  function scheduleAutosave(){
+    clearTimeout(autosaveTimer);
+    autosaveTimer = setTimeout(() => {
+      try{
+        const destIdx = +document.getElementById("pd-destino").value;
+        const dest = destinos[destIdx] || destinos[0];
+        const semrefVal = document.getElementById("pd-semref").value;
+        const snapshot = {
+          fornecedor: document.getElementById("pd-fornecedor").value,
+          data_pedido: document.getElementById("pd-data").value,
+          data_entrega_prevista: document.getElementById("pd-entrega").value,
+          unidade: document.getElementById("pd-unidade").value,
+          destino_rotulo: dest.rotulo,
+          destino_ids: dest.ids,
+          semana_referencia: semrefVal === "" ? null : parseInt(semrefVal, 10),
+          cnpj_faturamento: document.getElementById("pd-cnpj-fat").value,
+          observacoes: document.getElementById("pd-obs").value,
+          itens: draft.itens,
+        };
+        localStorage.setItem(autosaveKey, JSON.stringify({ ts: Date.now(), draft: snapshot }));
+      }catch(e){ /* localStorage pode falhar (modo privado, cota) — autosave é best-effort */ }
+    }, 400);
+  }
+  root.addEventListener("input", scheduleAutosave);
+  root.addEventListener("change", scheduleAutosave);
+  scheduleAutosave(); // guarda já de cara (ex.: rascunho recuperado, ou item padrão da linha nova)
 
   const fornEl = document.getElementById("pd-fornecedor");
   function refreshFornInfo(){
@@ -10827,11 +10895,11 @@ function openPedidoModal(id, opts){
       });
       const obsItemEl = row.querySelector(".pd-obs-item");
       if(obsItemEl) obsItemEl.addEventListener("input", e => { l.observacao = e.target.value; });
-      row.querySelector(".pd-rm").addEventListener("click", () => { draft.itens.splice(i,1); if(!draft.itens.length) draft.itens.push(novaLinhaPedido()); renderLines(); refreshTotal(); });
+      row.querySelector(".pd-rm").addEventListener("click", () => { draft.itens.splice(i,1); if(!draft.itens.length) draft.itens.push(novaLinhaPedido()); renderLines(); refreshTotal(); scheduleAutosave(); });
     });
   }
   renderLines();
-  document.getElementById("pd-add-line").addEventListener("click", () => { draft.itens.push(novaLinhaPedido()); renderLines(); refreshTotal(); });
+  document.getElementById("pd-add-line").addEventListener("click", () => { draft.itens.push(novaLinhaPedido()); renderLines(); refreshTotal(); scheduleAutosave(); });
   // 09/11/2026: cadastra o insumo sem sair da tela de pedido — guarda o que já foi preenchido no
   // resto do formulário (não vive em "draft" até agora, só os itens vivem) e reabre o mesmo modal
   // com o rascunho intacto + o insumo novo já encaixado numa linha.
@@ -10846,6 +10914,7 @@ function openPedidoModal(id, opts){
     draft.destino_rotulo = dest.rotulo;
     draft.destino_ids = dest.ids;
     draft.semana_referencia = semrefVal === "" ? null : parseInt(semrefVal, 10);
+    draft.cnpj_faturamento = document.getElementById("pd-cnpj-fat").value;
     draft.observacoes = document.getElementById("pd-obs").value;
     openInsumoModal(null, { onSaved: (novoId) => {
       const novo = insumos.get(novoId);
@@ -10874,6 +10943,7 @@ function openPedidoModal(id, opts){
       fornecedor: document.getElementById("pd-fornecedor").value.trim(),
       data_pedido: document.getElementById("pd-data").value,
       data_entrega_prevista: document.getElementById("pd-entrega").value,
+      cnpj_faturamento: document.getElementById("pd-cnpj-fat").value.trim(),
       observacoes: document.getElementById("pd-obs").value.trim(),
       itens: itensValidos,
     });
@@ -10892,6 +10962,7 @@ function openPedidoModal(id, opts){
       data_entrega_prevista: document.getElementById("pd-entrega").value || null,
       unidade: document.getElementById("pd-unidade").value,
       destino_rotulo: dest.rotulo,
+      cnpj_faturamento: document.getElementById("pd-cnpj-fat").value.trim() || null,
       observacoes: document.getElementById("pd-obs").value.trim() || null,
       valor_total: valorTotalItensPedido(itensValidos),
       itens: itensValidos.map(l => ({ nome:l.nome, quantidade:l.quantidade, unidade: rotuloEmbalagemItem(l, insumos.get(l.insumo_id)) || l.unidade })),
@@ -10950,6 +11021,7 @@ function openPedidoModal(id, opts){
       destino_ids: dest.ids,
       semana: semanaDaData(data_pedido),
       semana_referencia: semrefVal === "" ? null : parseInt(semrefVal,10),
+      cnpj_faturamento: document.getElementById("pd-cnpj-fat").value.trim() || null,
       itens: itensValidos.map(l => ({ insumo_id:l.insumo_id, nome:l.nome, unidade: rotuloEmbalagemItem(l, insumos.get(l.insumo_id)) || l.unidade, fator_embalagem:fatorEmbalagemItem(l), quantidade:l.quantidade, preco_unitario:l.preco_unitario||0,
         embalagem_tipo:l.embalagem_tipo||null, embalagem_outra: l.embalagem_tipo==="Outra" ? (l.embalagem_outra||null) : null, observacao: (l.observacao||"").trim() || null,
         ...(existing ? (() => { const orig=(existing.itens||[]).find(o=>o.insumo_id===l.insumo_id); return orig && orig.quantidade_recebida!=null ? {quantidade_recebida:orig.quantidade_recebida} : {}; })() : {}) })),
@@ -10957,18 +11029,26 @@ function openPedidoModal(id, opts){
       observacoes: document.getElementById("pd-obs").value.trim() || null,
       ...carimbo(),
     };
+    // 11/11/2026, pedido do Marcelo: "Salvar pedido" agora só salva — não fecha a tela. Pra um pedido novo,
+    // o insert já volta com o id gravado (select().single()) e a modal é reaberta já em modo "Editar pedido"
+    // (com o id real), pra que um clique seguinte em "Salvar" atualize em vez de duplicar o pedido. O
+    // rascunho autosalvo é limpo só agora, porque é o único momento em que os dados já estão garantidos no
+    // banco — fechar sem salvar (Cancelar/Fechar/X) nunca limpa o rascunho por conta própria.
     try{
+      let savedId = id;
       if(existing){
         const { error } = await sb.from('pedidos').update(payload).eq('id', id);
         if(error) throw error;
       } else {
-        const { error } = await sb.from('pedidos').insert(payload);
+        const { data: inserted, error } = await sb.from('pedidos').insert(payload).select('id').single();
         if(error) throw error;
+        savedId = inserted.id;
       }
+      try{ localStorage.removeItem(autosaveKey); }catch(e){}
       await loadPedidos();
       if(atualizarCustos && itensCusto.length) await atualizarCustosInsumosDoPedido(itensCusto, data_pedido);
-      root.innerHTML = "";
       renderCompras();
+      openPedidoModal(savedId, { savedAt: Date.now() });
     }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao salvar: "); }
   };
 }
