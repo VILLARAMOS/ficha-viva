@@ -12973,6 +12973,55 @@ async function pcpRemoverAjusteAcg(id, dia, contratoId, produtoId, insumoId){
   return true;
 }
 
+// Ajuste GERAL por corte×receita (11/11/2026, pedido do Marcelo, "ajustes de produção pontuais"): diferente
+// do ajuste acima (sempre por cliente — contrato×produto×insumo), este não é de nenhum cliente específico —
+// é um +/- direto na linha "Corte (Receita)" da tabela de resumo do dia (Preparo da semana), pra cobrir
+// diferença que não é de um cliente (perda no corte, sobra de produção, etc). Chave: dia×insumo×receita
+// (a MESMA chave interna do coletor — "dia|receita" por insumoId, ver criarColetorReceitas) + unidade, igual
+// ao padrão de pcpAjustesAcgCache. `delta_kg` soma (pode ser negativo) ao kg calculado daquela linha — e,
+// pra valer de verdade na Requisição do estoque/baixa/Mapa da semana (não só visual, mesmo princípio já
+// confirmado com o Marcelo pro ajuste por cliente), é aplicado 1x ao final de pcpCalcularRequisicaoDia,
+// direto no bucket "acougue" e no coletor (reaproveitando coletor.add), depois que todos os clientes já
+// foram somados — por isso não entra dentro de pcpAcumularInsumosDia (lá o mesmo insumo+receita+dia pode
+// ser tocado várias vezes, 1x por cliente, e o delta tem que ser aplicado só 1x no total).
+let pcpAjustesAcgGeralCache = new Map(); // dia -> Map("insumoId|receita" -> row do banco
+async function pcpCarregarAjustesAcgGeral(semana, unidade){
+  pcpAjustesAcgGeralCache = new Map();
+  let q = sb.from('pcp_ajustes_acougue_geral').select('*').eq('semana', semana);
+  if(unidade && unidade !== "todos") q = q.eq('unidade', unidade);
+  const { data, error } = await q;
+  if(error){ showAlert("Erro ao carregar ajustes gerais do açougue: " + error.message); return; }
+  (data || []).forEach(row => {
+    const porDia = pcpAjustesAcgGeralCache.get(row.dia) || new Map();
+    porDia.set(row.insumo_id + "|" + row.receita, row);
+    pcpAjustesAcgGeralCache.set(row.dia, porDia);
+  });
+}
+function pcpBuscarAjusteAcgGeral(dia, insumoId, receita){
+  const porDia = pcpAjustesAcgGeralCache.get(dia);
+  return porDia ? (porDia.get(insumoId + "|" + receita) || null) : null;
+}
+async function pcpSalvarAjusteAcgGeral(semana, dia, unidade, insumoId, receita, deltaKg, motivo, observacao){
+  const porDia = pcpAjustesAcgGeralCache.get(dia) || new Map();
+  const chave = insumoId + "|" + receita;
+  const existente = porDia.get(chave);
+  const campos = { semana, dia, unidade: unidade || "todos", insumo_id: insumoId, receita, delta_kg: deltaKg, motivo: motivo || "", observacao: observacao || "", alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
+  const { data, error } = existente
+    ? await sb.from('pcp_ajustes_acougue_geral').update(campos).eq('id', existente.id).select().single()
+    : await sb.from('pcp_ajustes_acougue_geral').insert(campos).select().single();
+  if(error){ showAlert("Erro ao salvar ajuste geral do açougue: " + error.message); return false; }
+  porDia.set(chave, data);
+  pcpAjustesAcgGeralCache.set(dia, porDia);
+  return true;
+}
+async function pcpRemoverAjusteAcgGeral(id, dia, insumoId, receita){
+  const { error } = await sb.from('pcp_ajustes_acougue_geral').delete().eq('id', id);
+  if(error){ showAlert("Erro ao remover ajuste geral do açougue: " + error.message); return false; }
+  const porDia = pcpAjustesAcgGeralCache.get(dia);
+  if(porDia) porDia.delete(insumoId + "|" + receita);
+  return true;
+}
+
 // explode um dia de cardápio (dayDoc.itens) pra um cliente/produto, acumulando em `receitas` (por ficha) e
 // `diretos` (insumo lançado direto no cardápio, sem ficha — ex. descartável) — com detalhe por cliente
 // (pra "Volume por cliente"/etiqueta de cuba). `pessoasSubstituidas` reduz o efetivo só do grupo PROTEÍNA
@@ -13311,6 +13360,32 @@ function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosF
       if(teveItem) pcpAplicarSubstituicoesInsumos(dia, contratoId, buckets);
     });
 
+  // Ajuste GERAL por corte×receita (ver pcpSalvarAjusteAcgGeral): aplicado 1x aqui, depois que TODOS os
+  // clientes já foram somados no bucket/coletor — não entra em pcpAcumularInsumosDia porque lá o mesmo
+  // insumo+receita+dia pode ser tocado várias vezes (1x por cliente) e o delta só pode valer 1x no total.
+  // Clampa pela própria linha do coletor (não pelo total do insumo) pra nunca deixar UMA linha negativa,
+  // mesmo que o insumo tenha outras receitas/clientes somando no mesmo dia.
+  const porDiaGeral = pcpAjustesAcgGeralCache.get(dia);
+  if(porDiaGeral && porDiaGeral.size){
+    if(!buckets.has("acougue")) buckets.set("acougue", new Map());
+    const mapaAcg = buckets.get("acougue");
+    porDiaGeral.forEach(row => {
+      let delta = Number(row.delta_kg) || 0;
+      if(!delta) return;
+      if(coletor){
+        const porReceita = coletor.get(row.insumo_id);
+        const baseLinha = porReceita.get(`${dia}|${row.receita}`) || 0;
+        if(baseLinha + delta < 0) delta = -baseLinha;
+      } else {
+        const atual = mapaAcg.get(row.insumo_id) || 0;
+        if(atual + delta < 0) delta = -atual;
+      }
+      if(!delta) return;
+      mapaAcg.set(row.insumo_id, (mapaAcg.get(row.insumo_id) || 0) + delta);
+      if(coletor) coletor.add(row.insumo_id, delta, row.receita, dia);
+    });
+  }
+
   const SETOR_LABEL = { cozinha: "Cozinha", saladas: "Saladas", sobremesas: "Sobremesas", acougue: "Açougue" };
   const SETOR_ORDEM = ["acougue", "cozinha", "saladas", "sobremesas"];
   const porSetor = SETOR_ORDEM.filter(s => buckets.has(s)).map(setor => {
@@ -13438,7 +13513,8 @@ function pcpAcgPreparoSemana(semana, unidadeFiltro, servicosFiltro, diasAtivos, 
       const custoKg = (ins && ins.custo_kg_l_und) || 0;
       coletor.get(it.insumoId).forEach((kg, chave) => {
         const i = chave.indexOf("|");
-        linhas.push({ corte: it.nome, unidade: it.unidade, kg, receita: chave.slice(i+1), custo: kg * custoKg });
+        const receita = chave.slice(i+1);
+        linhas.push({ insumoId: it.insumoId, corte: it.nome, unidade: it.unidade, kg, receita, custo: kg * custoKg, ajusteGeral: pcpBuscarAjusteAcgGeral(dia, it.insumoId, receita) });
       });
     });
     linhas.sort((a,b) => a.corte.localeCompare(b.corte,'pt-BR') || a.receita.localeCompare(b.receita,'pt-BR'));
@@ -15004,15 +15080,58 @@ function pcpAcgAjustesClienteBind(content, semana){
     renderPCP();
   });
 }
+// ajuste GERAL por corte×receita (inline na tabela de resumo do dia — ver pcpAjusteGeralCelHtml). Cada linha
+// salva/remove sozinha (sem botão "Salvar" em lote, diferente dos ajustes por cliente) — é pontual, pedido
+// pra ser rápido. `unidadeFiltro` vem do topo da tela (pode ser "todos"/null = grupo inteiro); é o mesmo
+// valor gravado em pcp_ajustes_acougue_geral.unidade e usado pra filtrar o cache no carregamento.
+function pcpAjusteGeralBind(content, semana, unidadeFiltro){
+  content.querySelectorAll("[data-ajgeral-row]").forEach(row => {
+    const inpDelta = row.querySelector(".ajgeral-delta"), inpObs = row.querySelector(".ajgeral-obs");
+    row.querySelector(".ajgeral-salvar").addEventListener("click", async () => {
+      const btn = row.querySelector(".ajgeral-salvar"), msg = row.querySelector(".ajgeral-msg");
+      const dia = row.dataset.ajgeralDia, insumoId = row.dataset.ajgeralInsumo, receita = row.dataset.ajgeralReceita;
+      const existenteId = row.dataset.ajgeralId;
+      const raw = inpDelta.value.trim();
+      if(raw === "" || Number(raw) === 0){
+        if(existenteId){
+          btn.disabled = true;
+          const ok = await pcpRemoverAjusteAcgGeral(existenteId, dia, insumoId, receita);
+          btn.disabled = false;
+          if(ok){ renderPCP(); } else if(msg) msg.textContent = "Erro ao remover.";
+        } else if(msg) msg.textContent = "Nada a salvar.";
+        return;
+      }
+      const delta = parseFloat(raw.replace(",", "."));
+      if(!isFinite(delta)){ showAlert("Informe um número válido para o ajuste (kg)."); return; }
+      btn.disabled = true; btn.textContent = "Salvando...";
+      const ok = await pcpSalvarAjusteAcgGeral(semana, dia, unidadeFiltro || "todos", insumoId, receita, delta, "", inpObs.value.trim());
+      btn.disabled = false; btn.textContent = "Salvar";
+      if(ok) renderPCP(); else if(msg) msg.textContent = "Erro ao salvar.";
+    });
+  });
+}
 function pcpAcgPreparoDiaHtml(diaInfo, semana, unidadeFiltro){
   const { dia, data, linhas, custoDia, porCliente, pessoasTot } = diaInfo;
   return `<div class="panel" style="margin-bottom:14px;">
     <div class="panel-head"><h3 style="font-size:13.5px;">${escapeHtml(DIA_LABEL[dia]||dia)} · ${escapeHtml(fmtDataCompleta(data))}</h3><span class="hint">${linhas.length} item${linhas.length===1?"":"s"} · Pessoas atendidas: <strong>${fmtNum(pessoasTot||0,0)}</strong> · Custo do dia: <strong>${fmtMoney(custoDia)}</strong></span></div>
-    <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Corte (Receita)</th><th style="text-align:right;">Quantidade</th><th>Data de utilização</th><th style="text-align:right;">Custo total</th></tr></thead><tbody>
-      ${linhas.length ? linhas.map(l => `<tr><td class="name-cell">${escapeHtml(l.corte)} <span class="footnote" style="margin:0;">(${escapeHtml(l.receita)})</span></td><td class="num-cell">${fmtNum(l.kg,3)} ${escapeHtml(l.unidade)}</td><td>${escapeHtml(fmtData(data))}</td><td class="num-cell">${fmtMoney(l.custo)}</td></tr>`).join("") : `<tr><td colspan="4" class="footnote">Nada a cortar neste dia.</td></tr>`}
+    <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Corte (Receita)</th><th style="text-align:right;">Quantidade</th><th>Data de utilização</th><th style="text-align:right;">Custo total</th><th>Ajuste de produção (+/- kg)</th></tr></thead><tbody>
+      ${linhas.length ? linhas.map(l => `<tr><td class="name-cell">${escapeHtml(l.corte)} <span class="footnote" style="margin:0;">(${escapeHtml(l.receita)})</span></td><td class="num-cell">${fmtNum(l.kg,3)} ${escapeHtml(l.unidade)}</td><td>${escapeHtml(fmtData(data))}</td><td class="num-cell">${fmtMoney(l.custo)}</td><td>${pcpAjusteGeralCelHtml(l, dia)}</td></tr>`).join("") : `<tr><td colspan="5" class="footnote">Nada a cortar neste dia.</td></tr>`}
     </tbody></table></div>
+    <p class="footnote" style="margin:0 14px 10px;">O ajuste de produção soma ou subtrai kg direto nesse corte×receita do dia — use pra diferença que não é de um cliente específico (perda no corte, sobra, etc). A "Quantidade" já mostra o total com o ajuste aplicado.</p>
     <div class="panel-body" style="padding-top:0;">${pcpAcgAvulsosDiaHtml(dia, semana, unidadeFiltro)}${pcpAcgAjustesClienteHtml(porCliente, dia)}</div>
     </div>
+  </div>`;
+}
+// célula de "Ajuste de produção" (ajuste GERAL por corte×receita, ver pcpSalvarAjusteAcgGeral) — inline na
+// própria linha da tabela de resumo do dia, pedido do Marcelo ("ajustes de produção pontuais"). Delta pode
+// ser negativo (diminuir) ou positivo (aumentar); em branco/0 = sem ajuste (remove se já existia).
+function pcpAjusteGeralCelHtml(l, dia){
+  const ag = l.ajusteGeral;
+  return `<div style="display:flex; flex-wrap:wrap; gap:4px; align-items:center;" data-ajgeral-row data-ajgeral-dia="${escapeHtml(dia)}" data-ajgeral-insumo="${escapeHtml(l.insumoId)}" data-ajgeral-receita="${escapeHtml(l.receita)}" ${ag ? `data-ajgeral-id="${ag.id}"` : ""}>
+    <input type="number" step="0.001" class="ajgeral-delta" value="${ag ? Number(ag.delta_kg) : ""}" data-orig="${ag ? Number(ag.delta_kg) : ""}" placeholder="+/- kg" title="Ajuste de produção pontual — soma ou subtrai deste corte×receita, sem vincular a cliente" style="width:72px;">
+    <input type="text" class="ajgeral-obs" value="${ag ? escapeHtml(ag.observacao||"") : ""}" data-orig="${ag ? escapeHtml(ag.observacao||"") : ""}" maxlength="120" placeholder="observação" style="width:110px;">
+    <button type="button" class="btn small ghost ajgeral-salvar">Salvar</button>
+    <span class="footnote ajgeral-msg" style="margin:0;"></span>
   </div>`;
 }
 // 11/11/2026, pedido do Marcelo: "Preparo da semana" e "Semana inteira — por dia de uso" mostravam
@@ -17485,7 +17604,7 @@ async function renderPCP(){
   await pcpCarregarAjustes(pcpSemanaSel, unidadeFiltro);
   // Fase 9 (11/11/2026) — precisa estar carregado ANTES de pcpCalcularRequisicaoDia (pcpAcumularInsumosDia
   // lê pcpAjustesAcgCache de forma síncrona, só quando ehAcougue chama com porClienteCtx).
-  if(ehAcougue) await pcpCarregarAjustesAcg(pcpSemanaSel, unidadeFiltro);
+  if(ehAcougue){ await pcpCarregarAjustesAcg(pcpSemanaSel, unidadeFiltro); await pcpCarregarAjustesAcgGeral(pcpSemanaSel, unidadeFiltro); }
   const res = (ehAcougue || ehEstoque) ? null : pcpCalcularDia(pcpSemanaSel, pcpDiaSel, unidadeFiltro, servicosFiltro);
   // "Ambas" na tela de Produção mostra Matriz e Filial LADO A LADO (nunca somadas) — ver pcpProducaoAmbasHtml.
   // Diferente do "Ambas" das outras sub-abas (que continua somando as duas, unidadeFiltro=null em `res`).
@@ -18241,6 +18360,7 @@ async function renderPCP(){
     if(acgPreparoSemana){
       pcpAcgAcoesBind(content, acgPreparoSemana, pcpAcgDiasSel, pcpSemanaSel, unidadeFiltro, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial", servicosFiltro, margemPct);
       pcpAcgAjustesClienteBind(content, pcpSemanaSel);
+      pcpAjusteGeralBind(content, pcpSemanaSel, unidadeFiltro);
       const btnEtiquetas = document.getElementById("pcp-etiquetas-abrir");
       if(btnEtiquetas) btnEtiquetas.addEventListener("click", () => pcpAbrirEtiquetasAcougue(acgMapaCarnesSemana, pcpSemanaSel, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial"));
     }
