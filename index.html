@@ -1708,6 +1708,16 @@ const UNIDADES_COMPRA = [{id:"matriz", nome:"Matriz"}, {id:"filial", nome:"Filia
 // 10/11/2026, pedido do Marcelo: tipos fixos de embalagem pro item do pedido — lista fechada que ele deu;
 // "Outra" abre um campo de texto livre pra não forçar errado quando a embalagem real não é nenhuma dessas.
 const EMBALAGENS_PEDIDO = ["Pacote","Caixa","Fardo","Unidade","Galão","Balde","Saco","Outra"];
+// 11/11/2026, pedido do Marcelo: travar a "Unidade de compra" do Insumo em 3 opções fixas (Quilo/Litro/Unidade),
+// em vez do campo de texto livre — valor canônico gravado em unidade_medida, usado no sistema inteiro
+// (custo por kg/L/un, Estoque, Requisição, Pedidos). unidadeCustoInsumo() continua bucketizando por cima disso.
+const UNIDADES_MEDIDA_INSUMO = [{id:"KG", nome:"Quilo (kg)"}, {id:"LT", nome:"Litro (L)"}, {id:"UNI", nome:"Unidade (un)"}];
+function bucketUnidadeMedidaInsumo(raw){
+  const u = normalizeText(String(raw||"")).toUpperCase().trim();
+  if(u === "KG" || u === "G" || u === "GR") return "KG";
+  if(u === "LT" || u === "L" || u === "GL" || u === "ML") return "LT";
+  return "UNI";
+}
 // bloco de compra "de apoio" (limpeza, descartáveis, embalagens, material de escritório) — não entra na
 // Lista de compra (demanda por ficha técnica), pois não é insumo de receita: o orçado dele é um valor fixo
 // por refeição servida, hoje R$1,00 (referência do controle manual, ajustada em 12/10/2026 — era R$2,50).
@@ -2667,7 +2677,11 @@ function openInsumoModal(id, opts){
         <div class="modal-body">
           <div class="field"><label>Nome do ingrediente</label><input type="text" id="f-nome" value="${escapeHtml(existing?existing.nome:"")}" placeholder="Ex.: FILÉ DE FRANGO A MILANESA"></div>
           <div class="field-row">
-            <div class="field"><label>Unidade de compra</label><input type="text" id="f-unid" value="${escapeHtml(existing?existing.unidade_medida||"":"")}" placeholder="KG, UNI, LT…"></div>
+            <div class="field"><label>Unidade de compra</label>
+              <select id="f-unid">
+                ${UNIDADES_MEDIDA_INSUMO.map(u => `<option value="${u.id}" ${(existing ? bucketUnidadeMedidaInsumo(existing.unidade_medida)===u.id : u.id==="KG")?"selected":""}>${escapeHtml(u.nome)}</option>`).join("")}
+              </select>
+            </div>
             <div class="field"><label>Unid. convertida (fator p/ kg/L/un)</label><input type="number" step="0.0001" id="f-conv" value="${existing&&existing.unidade_convertida!==null&&existing.unidade_convertida!==undefined?existing.unidade_convertida:1}"></div>
           </div>
           <div class="field"><label>Custo de compra (R$ por unidade de compra)</label><input type="number" step="0.0001" id="f-custo" value="${existing&&existing.custo_unitario!==null&&existing.custo_unitario!==undefined?existing.custo_unitario:""}"></div>
@@ -2708,7 +2722,7 @@ function openInsumoModal(id, opts){
   document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
   document.getElementById("save-m").onclick = async () => {
     const nome = document.getElementById("f-nome").value.trim();
-    const unidade_medida = document.getElementById("f-unid").value.trim();
+    const unidade_medida = document.getElementById("f-unid").value;
     const unidade_convertida = parseFloat(document.getElementById("f-conv").value);
     const custo_unitario = parseFloat(document.getElementById("f-custo").value);
     let grupo_compra = document.getElementById("f-grupo").value.trim();
