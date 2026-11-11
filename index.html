@@ -10,7 +10,7 @@
 <link rel="apple-touch-icon" href="assets/favicon-180.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
@@ -102,7 +102,7 @@ button{font-family:inherit;}
 .brand:hover{background:var(--surface-alt);}
 .brand .brand-mark{width:32px;height:32px;flex:none;border-radius:50%;object-fit:cover;box-shadow:0 0 0 1px var(--border);}
 .brand .brand-text{display:flex;flex-direction:column;gap:2px;min-width:0;}
-.brand .mark{font-family:'Fraunces',serif;font-size:18px;font-weight:600;letter-spacing:.2px;white-space:nowrap;}
+.brand .mark{font-family:'Space Grotesk',system-ui,sans-serif;font-size:18px;font-weight:700;letter-spacing:-.01em;white-space:nowrap;}
 .brand .mark em{color:var(--accent);font-style:normal;}
 .brand .sub{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--text-faint);white-space:nowrap;}
 .sidebar.collapsed .brand{padding:2px 0 18px; justify-content:center;}
@@ -142,15 +142,10 @@ button{font-family:inherit;}
 /* ---------- tela de início (home) ---------- */
 .home-hero{display:flex;align-items:center;justify-content:flex-end;gap:36px;padding:44px clamp(16px,6vw,64px) 40px;flex-wrap:wrap;}
 .home-textblock{text-align:right;max-width:360px;}
-.home-title{font-size:34px;margin:0;}
+.home-title{font-family:'Space Grotesk',system-ui,sans-serif;font-size:38px;font-weight:700;letter-spacing:-.01em;margin:0;}
 .home-title em{color:var(--accent);font-style:normal;}
 .home-sub{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-faint);margin-top:6px;}
-.home-ring{position:relative;width:196px;height:196px;flex:none;perspective:700px;}
-.home-logo{position:absolute;top:50%;left:50%;width:88px;height:88px;transform:translate(-50%,-50%);border-radius:50%;object-fit:cover;box-shadow:0 0 0 1px var(--border),var(--shadow);z-index:2;background:var(--surface);}
-.home-ring-ico{position:absolute;top:50%;left:50%;width:0;height:0;transform:rotate(calc(var(--step) * var(--i) * 1deg)) translate(80px) rotate(calc(var(--step) * var(--i) * -1deg));}
-.home-ring-ico-inner{width:42px;height:42px;margin:-21px;padding:0;font:inherit;display:flex;align-items:center;justify-content:center;background:var(--surface);border:1px solid var(--border);border-radius:50%;box-shadow:var(--shadow);color:var(--accent);cursor:pointer;transition:transform .18s ease,box-shadow .18s ease;}
-.home-ring-ico-inner:hover{transform:scale(1.25) translateY(-3px) rotateX(12deg) rotateY(-12deg);box-shadow:0 14px 26px -10px rgba(0,0,0,.4);z-index:3;}
-.home-ring-ico-inner .ico{width:19px;height:19px;flex:none;}
+.home-logo{width:108px;height:108px;flex:none;border-radius:50%;object-fit:cover;box-shadow:0 0 0 1px var(--border),var(--shadow);background:var(--surface);}
 .home-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:12px;max-width:980px;margin:0 auto;padding:0 clamp(16px,6vw,64px) 36px;}
 .home-card{display:flex;flex-direction:column;align-items:center;gap:9px;padding:20px 12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);cursor:pointer;font:inherit;font-size:13px;font-weight:500;color:var(--text);text-align:center;transition:transform .1s ease,border-color .1s ease;}
 .home-card:hover{border-color:var(--accent);transform:translateY(-2px);}
@@ -5986,10 +5981,6 @@ const INICIO_ATALHOS = [
   { view:"orcamento", label:"Orçamento", icon:"wallet" },
   { view:"pcp", label:"PCP", icon:"chef-hat" },
 ];
-// Subconjunto curado pro anel decorativo em volta da logo (vitrine visual, não é a navegação
-// principal — a navegação "de verdade" continua sendo a grade com nome, abaixo). Poucos itens
-// pra caber com espaço e ficar legível; a ordem aqui é a ordem no anel (começando no topo, sentido horário).
-const INICIO_ANEL = ["painel","insumos","cardapio","contratos","compras","pcp"];
 function saudacaoPorHorario(){
   const h = new Date().getHours();
   if(h < 6) return "Boa madrugada";
@@ -6003,7 +5994,6 @@ function renderInicio(){
   document.getElementById("topbar-actions").innerHTML = "";
 
   const atalhos = INICIO_ATALHOS.filter(a => possoVerView(a.view));
-  const anel = INICIO_ATALHOS.filter(a => INICIO_ANEL.includes(a.view) && possoVerView(a.view));
   const content = document.getElementById("content");
   content.innerHTML = `
     <div class="home-hero">
@@ -6011,16 +6001,7 @@ function renderInicio(){
         <h1 class="home-title">Ficha <em>Viva</em></h1>
         <div class="home-sub">Grupo Villa Ramos</div>
       </div>
-      <div class="home-ring" style="--step:${anel.length ? 360 / anel.length : 0}">
-        <img class="home-logo" src="assets/logo-mark.png" alt="Villa Ramos">
-        ${anel.map((a,i) => `
-          <div class="home-ring-ico" style="--i:${i}">
-            <button type="button" class="home-ring-ico-inner" data-view="${a.view}" title="${escapeHtml(a.label)}">
-              <i class="ico" data-lucide="${a.icon}"></i>
-            </button>
-          </div>
-        `).join("")}
-      </div>
+      <img class="home-logo" src="assets/logo-mark.png" alt="Villa Ramos">
     </div>
     ${atalhos.length ? `
     <div class="home-grid">
@@ -6032,7 +6013,7 @@ function renderInicio(){
       `).join("")}
     </div>` : ""}
   `;
-  content.querySelectorAll(".home-card, .home-ring-ico-inner").forEach(b => b.addEventListener("click", () => goToView(b.dataset.view)));
+  content.querySelectorAll(".home-card").forEach(b => b.addEventListener("click", () => goToView(b.dataset.view)));
   if(window.lucide) lucide.createIcons();
 }
 
