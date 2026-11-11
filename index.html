@@ -12923,6 +12923,53 @@ async function pcpRemoverAjuste(id){
   return true;
 }
 
+// ---------- Fase 9: Ajuste manual de quantidade no Açougue (11/11/2026, pedido do Marcelo) ----------
+// Mesma ideia da Fase 5 acima, mas pro Açougue: lá o ajuste é por contrato×ficha×serviço (porção de uma
+// receita servida); aqui é por contrato×produto×insumo (kg de UM corte, usado por UM produto do contrato,
+// naquele dia) — o Açougue não tem conceito de "serviço" na tabela (Preparo da semana não separa
+// almoço/jantar/ceia), então a chave usa produto_id no lugar de servico. `unidade` entra pra poder filtrar
+// por unidade igual pcp_ajustes (Preparo da semana do açougue já é filtrável por unidade).
+// Cache por DIA, carregado inteiro (mesmo padrão de pcpSalSobAjustesCache) — update-se-existe/insert-senão
+// em vez de upsert/onConflict (mesma razão documentada em pcpSalvarAjusteSalSob: schema cache do PostgREST
+// deste projeto já ficou inconsistente com ON CONFLICT em constraint composta recém-criada).
+let pcpAjustesAcgCache = new Map(); // dia -> Map("contratoId|produtoId|insumoId" -> row do banco
+async function pcpCarregarAjustesAcg(semana, unidade){
+  pcpAjustesAcgCache = new Map();
+  let q = sb.from('pcp_ajustes_acougue').select('*').eq('semana', semana);
+  if(unidade && unidade !== "todos") q = q.eq('unidade', unidade);
+  const { data, error } = await q;
+  if(error){ showAlert("Erro ao carregar ajustes do açougue: " + error.message); return; }
+  (data || []).forEach(row => {
+    const porDia = pcpAjustesAcgCache.get(row.dia) || new Map();
+    porDia.set(row.contrato_id + "|" + row.produto_id + "|" + row.insumo_id, row);
+    pcpAjustesAcgCache.set(row.dia, porDia);
+  });
+}
+function pcpBuscarAjusteAcg(dia, contratoId, produtoId, insumoId){
+  const porDia = pcpAjustesAcgCache.get(dia);
+  return porDia ? (porDia.get(contratoId + "|" + produtoId + "|" + insumoId) || null) : null;
+}
+async function pcpSalvarAjusteAcg(semana, dia, unidade, contratoId, produtoId, insumoId, valorEfetivo, motivo, observacao){
+  const porDia = pcpAjustesAcgCache.get(dia) || new Map();
+  const chave = contratoId + "|" + produtoId + "|" + insumoId;
+  const existente = porDia.get(chave);
+  const campos = { semana, dia, unidade, contrato_id: contratoId, produto_id: produtoId, insumo_id: insumoId, valor_efetivo: valorEfetivo, motivo: motivo || "", observacao: observacao || "", alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
+  const { data, error } = existente
+    ? await sb.from('pcp_ajustes_acougue').update(campos).eq('id', existente.id).select().single()
+    : await sb.from('pcp_ajustes_acougue').insert(campos).select().single();
+  if(error){ showAlert("Erro ao salvar ajuste do açougue: " + error.message); return false; }
+  porDia.set(chave, data);
+  pcpAjustesAcgCache.set(dia, porDia);
+  return true;
+}
+async function pcpRemoverAjusteAcg(id, dia, contratoId, produtoId, insumoId){
+  const { error } = await sb.from('pcp_ajustes_acougue').delete().eq('id', id);
+  if(error){ showAlert("Erro ao remover ajuste do açougue: " + error.message); return false; }
+  const porDia = pcpAjustesAcgCache.get(dia);
+  if(porDia) porDia.delete(contratoId + "|" + produtoId + "|" + insumoId);
+  return true;
+}
+
 // explode um dia de cardápio (dayDoc.itens) pra um cliente/produto, acumulando em `receitas` (por ficha) e
 // `diretos` (insumo lançado direto no cardápio, sem ficha — ex. descartável) — com detalhe por cliente
 // (pra "Volume por cliente"/etiqueta de cuba). `pessoasSubstituidas` reduz o efetivo só do grupo PROTEÍNA
@@ -13151,7 +13198,18 @@ function pcpSubReceitasDoDia(receitasTopo){
 // `ct` (opcional — estendido de "só refeição transportada" pra marmita/marmita especial em 11/11/2026)
 // aplica o peso de expedição do cliente — é o que de fato sai da cozinha, então a requisição precisa ver
 // o mesmo peso ajustado que a Produção vê.
-function pcpAcumularInsumosDia(dayDoc, numPessoas, acougueSet, buckets, pessoasSubstituidas, coletor, dia, ct){
+// `porClienteCtx` (opcional, 11/11/2026 — Fase 9, Ajuste manual do açougue/pessoas atendidas): só é
+// passado pelo Açougue (ver pcpCalcularRequisicaoDia), nunca pela Requisição do estoque — por isso o
+// detalhe por cliente só aparece no bucket "acougue", Cozinha/Saladas/Sobremesas continuam como sempre.
+// Formato: { map: Map(insumoId -> Map("contratoId|produtoId" -> {contratoId,nome,produtoId,kg,kgOriginal,
+// ajuste})), contratoId, nomeCliente, produtoId }. Também é aqui que o ajuste pontual do açougue
+// (pcp_ajustes_acougue) substitui o kg calculado — mesmo princípio da Fase 5 (pcpBuscarAjuste dentro de
+// pcpAcumularDia): o valor efetivo digitado SUBSTITUI o calculado, tanto no detalhe por cliente quanto no
+// total do bucket/coletor (senão o Preparo da semana e o Mapa da semana ficariam divergentes do ajuste).
+// Ponto cego registrado: pcpAplicarSubstituicoesInsumos (troca de proteína) roda DEPOIS e só atualiza
+// `buckets`, não `porClienteCtx.map` — uma substituição de proteína não aparece hoje no detalhe por
+// cliente do açougue (não é o pedido do Marcelo agora; se precisar, revisitar junto).
+function pcpAcumularInsumosDia(dayDoc, numPessoas, acougueSet, buckets, pessoasSubstituidas, coletor, dia, ct, porClienteCtx){
   if(!dayDoc) return;
   (dayDoc.itens || []).forEach(it => {
     // 09/11/2026: mesma régua de pcpAcumularDia — `pessoasSubstituidas` é {proteina, completa} desde a
@@ -13176,10 +13234,24 @@ function pcpAcumularInsumosDia(dayDoc, numPessoas, acougueSet, buckets, pessoasS
     } else return;
     porInsumo.forEach((kg, insumoId) => {
       const destino = (setor === "cozinha" && acougueSet.has(insumoId)) ? "acougue" : setor;
+      let kgEf = kg, ajuste = null;
+      if(destino === "acougue" && porClienteCtx){
+        ajuste = pcpBuscarAjusteAcg(dia, porClienteCtx.contratoId, porClienteCtx.produtoId, insumoId);
+        if(ajuste) kgEf = Number(ajuste.valor_efetivo);
+      }
       const mapa = buckets.get(destino) || new Map();
-      mapa.set(insumoId, (mapa.get(insumoId) || 0) + kg);
+      mapa.set(insumoId, (mapa.get(insumoId) || 0) + kgEf);
       buckets.set(destino, mapa);
-      if(coletor) coletor.add(insumoId, kg, nomeReceita, dia);
+      if(coletor) coletor.add(insumoId, kgEf, nomeReceita, dia);
+      if(destino === "acougue" && porClienteCtx){
+        const porInsumoCli = porClienteCtx.map.get(insumoId) || new Map();
+        const chave = porClienteCtx.contratoId + "|" + porClienteCtx.produtoId;
+        const pc = porInsumoCli.get(chave) || { contratoId: porClienteCtx.contratoId, nome: porClienteCtx.nomeCliente, produtoId: porClienteCtx.produtoId, kg: 0, kgOriginal: 0, ajuste: null };
+        pc.kg += kgEf; pc.kgOriginal += kg;
+        if(ajuste) pc.ajuste = ajuste;
+        porInsumoCli.set(chave, pc);
+        porClienteCtx.map.set(insumoId, porInsumoCli);
+      }
     });
   });
 }
@@ -13195,6 +13267,8 @@ function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosF
   cardapiosAlmoco.forEach(row => almocoIdx.set(`${row.cardapio_num}|${row.semana}|${row.dia}`, row));
   const acougueSet = pcpAcougueSet();
   const buckets = new Map(); // "cozinha"|"saladas"|"sobremesas"|"acougue" -> Map(insumoId -> kg)
+  // Fase 9 (11/11/2026): detalhe por cliente, só do açougue — ver comentário de pcpAcumularInsumosDia.
+  const porClienteAcougue = new Map(); // insumoId -> Map("contratoId|produtoId" -> {...})
 
   [...contratos.entries()]
     .filter(([, ct]) => ct.ativo !== false)
@@ -13215,7 +13289,7 @@ function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosF
         // peso de expedição (11/11/2026): estendido da refeição transportada pra qualquer tipo de produção
         // (cat já é refeição/marmita/marmita especial, filtrado por PCP_TIPOS_PRODUCAO acima) — a baixa de
         // estoque da marmita passa a seguir o peso ajustado por cliente também, não só o cardápio padrão.
-        pcpAcumularInsumosDia(row, qtdEf, acougueSet, buckets, pessoasSubst, coletor, dia, ct);
+        pcpAcumularInsumosDia(row, qtdEf, acougueSet, buckets, pessoasSubst, coletor, dia, ct, { map: porClienteAcougue, contratoId, nomeCliente: ct.nome_cliente, produtoId: ci.produto_id });
       });
       if(teveItem) pcpAplicarSubstituicoesInsumos(dia, contratoId, buckets);
     });
@@ -13225,7 +13299,11 @@ function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosF
   const porSetor = SETOR_ORDEM.filter(s => buckets.has(s)).map(setor => {
     const itens = [...buckets.get(setor).entries()].map(([insumoId, kg]) => {
       const ins = insumos.get(insumoId);
-      return { insumoId, nome: ins ? ins.nome : insumoId, unidade: ins ? (ins.unidade_medida || "kg") : "kg", kg };
+      const item = { insumoId, nome: ins ? ins.nome : insumoId, unidade: ins ? (ins.unidade_medida || "kg") : "kg", kg };
+      if(setor === "acougue" && porClienteAcougue.has(insumoId)){
+        item.porCliente = [...porClienteAcougue.get(insumoId).values()];
+      }
+      return item;
     }).sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR'));
     return { setor, label: SETOR_LABEL[setor], itens };
   });
@@ -13341,7 +13419,23 @@ function pcpAcgPreparoSemana(semana, unidadeFiltro, servicosFiltro){
       });
     });
     linhas.sort((a,b) => a.corte.localeCompare(b.corte,'pt-BR') || a.receita.localeCompare(b.receita,'pt-BR'));
-    return { dia, data: dataDoDia(semana, dia), linhas, custoDia: linhas.reduce((s,l) => s + l.custo, 0) };
+    // Fase 9/10 (11/11/2026, pedido do Marcelo): ajuste manual por cliente e pessoas atendidas no dia.
+    // "pessoas atendidas" reaproveita o MESMO número que a Produção da cozinha já usa (pcpCalcularDia —
+    // `clientes[].pessoas`/`pessoasTot`), em vez de recalcular — garante que o número mostrado no Açougue
+    // nunca diverge do que aparece em Produção pro mesmo cliente/dia.
+    const diaCalc = pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro);
+    const pessoasPorCliente = new Map(diaCalc.clientes.map(c => [c.id, c.pessoas]));
+    const porClienteMap = new Map(); // contratoId -> {id, nome, pessoas, linhas:[{insumoId,corte,unidade,produtoId,nomeProduto,qtdCalculada,ajuste}]}
+    (bucket ? bucket.itens : []).forEach(it => {
+      (it.porCliente || []).forEach(pc => {
+        const grupo = porClienteMap.get(pc.contratoId) || { id: pc.contratoId, nome: pc.nome, pessoas: pessoasPorCliente.get(pc.contratoId) || 0, linhas: [] };
+        const cat = catalogoPorProduto(pc.produtoId);
+        grupo.linhas.push({ insumoId: it.insumoId, corte: it.nome, unidade: it.unidade, produtoId: pc.produtoId, nomeProduto: cat ? cat.nome : pc.produtoId, qtdCalculada: pc.kgOriginal, ajuste: pc.ajuste || null });
+        porClienteMap.set(pc.contratoId, grupo);
+      });
+    });
+    const porCliente = [...porClienteMap.values()].sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
+    return { dia, data: dataDoDia(semana, dia), linhas, custoDia: linhas.reduce((s,l) => s + l.custo, 0), porCliente, pessoasTot: diaCalc.pessoasTot };
   });
 }
 // achata pra lista plana {corte,unidade,kg,receita,dia} — mesmo formato que o antigo mapaCarnes usava,
@@ -13375,22 +13469,34 @@ function pcpPreparoPorDiaSemana(diasOp){
 function pcpMapaCarnesSemana(semana, unidadeFiltro, servicosFiltro){
   const diasOp = pcpAcgDias();
   const prepPorDia = pcpPreparoPorDiaSemana(diasOp);
+  // 11/11/2026, pedido do Marcelo: mostrar, abaixo do corte, em qual(is) receita(s) ele é usado na semana —
+  // pro açougueiro saber qual corte fazer sem precisar abrir o Preparo da semana. 1 coletor só, compartilhado
+  // entre os 7 dias (a chave interna já inclui o dia, então acumular não embaralha nada — mesmo padrão de
+  // pcpAcgPreparoSemana), lido no fim pra tirar os nomes de receita distintos por corte, não o kg por dia.
+  const coletor = criarColetorReceitas();
   const porDia = DIAS_ORDEM.map(dia => {
-    const res = pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, null, servicosFiltro);
+    const res = pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosFiltro);
     const bucket = res.porSetor.find(s => s.setor === "acougue");
-    return { dia, prep: prepPorDia[dia], itens: bucket ? bucket.itens : [] };
+    // Fase 10 (11/11/2026, pedido do Marcelo): pessoas atendidas por dia, no Mapa da semana — mesmo número
+    // de pcpCalcularDia (ver comentário em pcpAcgPreparoSemana).
+    const pessoasTot = pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro).pessoasTot;
+    return { dia, prep: prepPorDia[dia], itens: bucket ? bucket.itens : [], pessoasTot };
   });
-  const porCorte = new Map(); // insumoId -> {nome, unidade, porDia:[kg×7], total}
+  const porCorte = new Map(); // insumoId -> {nome, unidade, porDia:[kg×7], total, receitas:Set}
   porDia.forEach((pd, idx) => {
     pd.itens.forEach(it => {
-      const c = porCorte.get(it.insumoId) || { nome: it.nome, unidade: it.unidade, porDia: DIAS_ORDEM.map(() => 0), total: 0 };
+      const c = porCorte.get(it.insumoId) || { nome: it.nome, unidade: it.unidade, porDia: DIAS_ORDEM.map(() => 0), total: 0, receitas: new Set() };
       c.porDia[idx] += it.kg;
       c.total += it.kg;
       porCorte.set(it.insumoId, c);
     });
   });
+  porCorte.forEach((c, insumoId) => {
+    [...coletor.get(insumoId).keys()].forEach(chave => c.receitas.add(chave.slice(chave.indexOf("|")+1)));
+  });
   const cortes = [...porCorte.values()].sort((a,b) => b.total - a.total || a.nome.localeCompare(b.nome,'pt-BR'));
-  return { porDia, cortes };
+  const pessoasPorDia = porDia.map(pd => pd.pessoasTot);
+  return { porDia, cortes, pessoasPorDia };
 }
 
 // ---------- Retirada avulsa de estoque + baixa real no kardex (18/10/2026, pedido do Marcelo) ----------
@@ -13705,10 +13811,6 @@ let pcpCafeClientesSel = null;
 // existia por checkbox dentro da própria Produção do dia, por dia, e continua assim, sem duplicar em 2
 // controles diferentes pra mesma coisa). Só da sessão, semeada com pcpDiaSel na 1ª renderização.
 let pcpSalSobDiasSel = new Set();
-// dias marcados pra impressão na tabela nova "Preparo da semana" do Açougue (corte×receita, 20/10/2026) —
-// Set PRÓPRIO, separado de pcpAcgDiasSel (que já era usado pela baixa de estoque/kardex acima), pra marcar
-// um dia numa tela não desmarcar o outro por engano.
-let pcpAcgPreparoDiasSel = new Set();
 const PCP_UNIDADES = [{id:"matriz", nome:"Matriz"}, {id:"filial", nome:"Filial"}, {id:"todos", nome:"Ambas"}];
 // só pra mostrar "N clientes" embaixo da aba de unidade (igual ao protótipo de referência) — não muda o cálculo.
 function pcpContagemUnidade(unidade){
@@ -14758,35 +14860,109 @@ function pcpReqSemanaSecaoBind(content, semana, unidadeFiltro, unidadeLabel, are
 // (Segunda→Domingo), com Corte (Receita), Quantidade, Data de utilização e Custo total por linha (pedido
 // do Marcelo, 20/10/2026 — substitui o antigo "Mapa de carnes" do dia selecionado). Checkboxes de dia +
 // "Imprimir dias marcados" (cada dia marcado sai numa folha própria), mesma ideia da Saladas/Sobremesas.
-function pcpAcgPreparoDiaHtml(diaInfo){
-  const { dia, data, linhas, custoDia } = diaInfo;
+// lista simples (sem mesclar nas linhas corte×receita, pra não poluir a fonte das Etiquetas) das retiradas
+// avulsas já lançadas no dia + o formulário de lançar uma nova — 11/11/2026, reaproveitado da antiga seção
+// "Semana inteira — por dia de uso" (que saiu da tela) ao consolidar em só "Preparo da semana".
+function pcpAcgAvulsosDiaHtml(dia, semana, unidadeFiltro){
+  const rows = pcpAvulsasDoDia(semana, dia, unidadeFiltro, "acougue");
+  const listaHtml = rows.length ? `<div class="footnote" style="margin:10px 0 2px;">Retiradas avulsas do dia:</div><ul style="margin:0 0 4px; padding-left:18px; font-size:12.5px;">
+    ${rows.map(r => { const ins = insumos.get(r.insumo_id); return `<li>${escapeHtml(ins?ins.nome:r.insumo_id)} — ${fmtNum(r.quantidade,3)} ${escapeHtml(ins?unidadeCustoInsumo(ins):"")}${r.observacao?` (${escapeHtml(r.observacao)})`:""}${r.baixado_em?` <span class="chip" style="opacity:.7;">baixado</span>`:` <button class="btn small ghost" data-pcp-avulso-remover="${r.id}" style="padding:0 6px;" title="Remover"><i class="ico" data-lucide="trash-2" style="width:12px; height:12px;"></i></button>`}</li>`; }).join("")}
+  </ul>` : "";
+  return listaHtml + pcpAvulsoFormHtml(dia, unidadeFiltro, "acougue");
+}
+// ---------- Fase 9: Ajuste manual por cliente + pessoas atendidas (11/11/2026, pedido do Marcelo) ----------
+// Mesmo padrão visual/UX de pcpAjustesHtml (Fase 5, Ajustes do dia da Produção): 1 card por cliente, linhas
+// editáveis (Calculado × Efetivo), motivo/observação, "Salvar ajustes" em lote por card. A diferença é a
+// chave: lá é ficha×serviço, aqui é corte(insumo)×produto — o Açougue não separa por serviço na tabela.
+function pcpAcgAjustesClienteHtml(porCliente, dia){
+  if(!porCliente || !porCliente.length) return "";
+  const opcoesMotivo = atual => `<option value="">—</option>` + PCP_AJUSTE_MOTIVOS.map(m => `<option value="${escapeHtml(m)}" ${atual===m?"selected":""}>${escapeHtml(m)}</option>`).join("");
+  const cards = porCliente.map(g => `<div class="panel" style="margin-bottom:10px;" data-ajusteacg-card="${escapeHtml(g.id)}">
+      <div class="panel-head"><h3 style="font-size:13px;">${escapeHtml(g.nome)}</h3><span class="hint">Pessoas atendidas: <strong>${fmtNum(g.pessoas,0)}</strong></span></div>
+      <div class="panel-body"><div class="table-wrap"><table>
+        <thead><tr><th>Corte</th><th>Produto</th><th style="text-align:right;">Calculado</th><th style="text-align:right;">Efetivo (kg)</th><th>Motivo</th><th>Observação</th></tr></thead>
+        <tbody>${g.linhas.map(l => `<tr data-ajusteacg-contrato="${g.id}" data-ajusteacg-insumo="${l.insumoId}" data-ajusteacg-produto="${l.produtoId}" data-ajusteacg-dia="${dia}" ${l.ajuste ? `data-ajusteacg-id="${l.ajuste.id}"` : ""}>
+          <td class="name-cell">${escapeHtml(l.corte)}</td>
+          <td>${escapeHtml(l.nomeProduto)}</td>
+          <td class="num-cell">${fmtNum(l.qtdCalculada,3)}</td>
+          <td><input type="number" step="0.001" min="0" class="ajusteacg-valor" value="${l.ajuste ? Number(l.ajuste.valor_efetivo) : ""}" data-orig="${l.ajuste ? Number(l.ajuste.valor_efetivo) : ""}" placeholder="${fmtNum(l.qtdCalculada,3)}" style="width:90px;"></td>
+          <td><select class="ajusteacg-motivo" data-orig="${l.ajuste ? l.ajuste.motivo : ""}" style="width:150px;">${opcoesMotivo(l.ajuste ? l.ajuste.motivo : "")}</select></td>
+          <td><input type="text" class="ajusteacg-obs" value="${l.ajuste ? escapeHtml(l.ajuste.observacao||"") : ""}" data-orig="${l.ajuste ? escapeHtml(l.ajuste.observacao||"") : ""}" maxlength="200" style="width:160px;" placeholder="observação"></td>
+        </tr>`).join("")}</tbody>
+      </table></div>
+      <div style="display:flex; justify-content:flex-end; align-items:center; gap:10px; padding:10px 14px;"><span class="footnote" data-ajusteacg-msg="${escapeHtml(g.id)}" style="margin:0;"></span><button type="button" class="btn small primary" data-ajusteacg-salvar="${escapeHtml(g.id)}">Salvar ajustes</button></div>
+      </div>
+    </div>`).join("");
+  return `<div class="footnote" style="margin:14px 0 6px;">Ajustes por cliente:</div>${cards}`;
+}
+function pcpAcgAjustesClienteBind(content, semana){
+  content.querySelectorAll(".ajusteacg-valor, .ajusteacg-motivo, .ajusteacg-obs").forEach(el => {
+    el.addEventListener("input", () => pcpAjustesMarcarSuja(el));
+    el.addEventListener("change", () => pcpAjustesMarcarSuja(el));
+  });
+  content.addEventListener("click", async e => {
+    const btnSalvar = e.target.closest("button[data-ajusteacg-salvar]");
+    if(!btnSalvar) return;
+    const card = content.querySelector(`[data-ajusteacg-card="${peCss(btnSalvar.dataset.ajusteacgSalvar)}"]`);
+    const msg = content.querySelector(`[data-ajusteacg-msg="${peCss(btnSalvar.dataset.ajusteacgSalvar)}"]`);
+    if(!card) return;
+    const linhas = Array.from(card.querySelectorAll("tr[data-ajusteacg-contrato]"));
+    const sujas = linhas.filter(tr => {
+      const inpV = tr.querySelector(".ajusteacg-valor"), selM = tr.querySelector(".ajusteacg-motivo"), inpO = tr.querySelector(".ajusteacg-obs");
+      return inpV.value.trim() !== (inpV.dataset.orig||"") || selM.value !== (selM.dataset.orig||"") || inpO.value.trim() !== (inpO.dataset.orig||"");
+    });
+    if(!sujas.length){ if(msg) msg.textContent = "Nada mudou."; return; }
+    btnSalvar.disabled = true; btnSalvar.textContent = "Salvando...";
+    let algumErro = false;
+    for(const tr of sujas){
+      const contratoId = tr.dataset.ajusteacgContrato, insumoId = tr.dataset.ajusteacgInsumo, produtoId = tr.dataset.ajusteacgProduto, diaLinha = tr.dataset.ajusteacgDia;
+      const nomeCorte = tr.querySelector(".name-cell")?.textContent || insumoId;
+      const inpV = tr.querySelector(".ajusteacg-valor"), selM = tr.querySelector(".ajusteacg-motivo"), inpO = tr.querySelector(".ajusteacg-obs");
+      const raw = inpV.value.trim();
+      const existenteId = tr.dataset.ajusteacgId;
+      if(raw === ""){
+        if(existenteId) await pcpRemoverAjusteAcg(existenteId, diaLinha, contratoId, produtoId, insumoId);
+        continue;
+      }
+      const valor = parseFloat(raw.replace(",", "."));
+      if(!(valor >= 0)){ showAlert(`${nomeCorte}: informe o valor efetivo (maior ou igual a zero).`); algumErro = true; continue; }
+      if(!selM.value){ showAlert(`${nomeCorte}: escolha um motivo para o ajuste.`); algumErro = true; continue; }
+      const ct = contratos.get(contratoId);
+      if(!ct || !ct.unidade){ showAlert(`Não achei a unidade do contrato de ${nomeCorte} — esse ajuste não foi salvo.`); algumErro = true; continue; }
+      await pcpSalvarAjusteAcg(semana, diaLinha, ct.unidade, contratoId, produtoId, insumoId, valor, selM.value, inpO.value);
+    }
+    if(algumErro){ btnSalvar.disabled = false; btnSalvar.textContent = "Salvar ajustes"; }
+    // mesmo princípio de pcpAjustesBind: renderPCP recarrega pcpAjustesAcgCache antes de recalcular — o
+    // ajuste entra direto no Preparo da semana/Mapa da semana do açougue sem precisar de F5.
+    renderPCP();
+  });
+}
+function pcpAcgPreparoDiaHtml(diaInfo, semana, unidadeFiltro){
+  const { dia, data, linhas, custoDia, porCliente, pessoasTot } = diaInfo;
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3 style="font-size:13.5px;">${escapeHtml(DIA_LABEL[dia]||dia)} · ${escapeHtml(fmtDataCompleta(data))}</h3><span class="hint">${linhas.length} item${linhas.length===1?"":"s"} · Custo do dia: <strong>${fmtMoney(custoDia)}</strong></span></div>
+    <div class="panel-head"><h3 style="font-size:13.5px;">${escapeHtml(DIA_LABEL[dia]||dia)} · ${escapeHtml(fmtDataCompleta(data))}</h3><span class="hint">${linhas.length} item${linhas.length===1?"":"s"} · Pessoas atendidas: <strong>${fmtNum(pessoasTot||0,0)}</strong> · Custo do dia: <strong>${fmtMoney(custoDia)}</strong></span></div>
     <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Corte (Receita)</th><th style="text-align:right;">Quantidade</th><th>Data de utilização</th><th style="text-align:right;">Custo total</th></tr></thead><tbody>
       ${linhas.length ? linhas.map(l => `<tr><td class="name-cell">${escapeHtml(l.corte)} <span class="footnote" style="margin:0;">(${escapeHtml(l.receita)})</span></td><td class="num-cell">${fmtNum(l.kg,3)} ${escapeHtml(l.unidade)}</td><td>${escapeHtml(fmtData(data))}</td><td class="num-cell">${fmtMoney(l.custo)}</td></tr>`).join("") : `<tr><td colspan="4" class="footnote">Nada a cortar neste dia.</td></tr>`}
-    </tbody></table></div></div>
+    </tbody></table></div>
+    <div class="panel-body" style="padding-top:0;">${pcpAcgAvulsosDiaHtml(dia, semana, unidadeFiltro)}${pcpAcgAjustesClienteHtml(porCliente, dia)}</div>
+    </div>
   </div>`;
 }
-function pcpAcgPreparoSemanaHtml(preparoSemana, diasSelState){
-  const disponiveis = preparoSemana.map(d => d.dia);
-  if(![...diasSelState].some(d => disponiveis.includes(d))) disponiveis.forEach(d => diasSelState.add(d));
-  [...diasSelState].forEach(d => { if(!disponiveis.includes(d)) diasSelState.delete(d); });
+// 11/11/2026, pedido do Marcelo: "Preparo da semana" e "Semana inteira — por dia de uso" mostravam
+// basicamente a mesma informação (corte/insumo × receita × quantidade × custo, por dia) — só mudava o
+// agrupamento (corte×receita aqui, por insumo+grupo lá). Ficou só esta tabela; os botões de ação (que
+// pertencem a ela desde sempre, baixa/desfazer/impressão) subiram pra 1 barra só, logo abaixo do painel —
+// ver pcpAcgAcoesHtml/pcpAcgAcoesBind.
+function pcpAcgPreparoSemanaHtml(preparoSemana, semana, unidadeFiltro){
   return `
     <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="calendar-days"></i>Preparo da semana</h3></div>
-    <div class="panel" style="margin-bottom:14px;">
-      <div class="panel-body" style="display:flex; flex-wrap:wrap; gap:14px; align-items:center;">
-        <div class="kk-dias-chips">${preparoSemana.map(d => `<button type="button" class="chip-dia pcp-acgprep-chip ${diasSelState.has(d.dia)?"on":""}" data-dia="${d.dia}">${escapeHtml((DIA_LABEL[d.dia]||d.dia).slice(0,3))}</button>`).join("")}</div>
-        <span style="flex:1 1 auto;"></span>
-        <button class="btn small primary" id="pcp-acgprep-imprimir">Imprimir dias marcados</button>
-      </div>
-    </div>
-    ${preparoSemana.map(d => pcpAcgPreparoDiaHtml(d)).join("")}
+    ${preparoSemana.map(d => pcpAcgPreparoDiaHtml(d, semana, unidadeFiltro)).join("")}
   `;
 }
 function pcpAcgPreparoDiaPrintHtml(diaInfo, semana, unidadeLabel){
-  const { dia, data, linhas, custoDia } = diaInfo;
+  const { dia, data, linhas, custoDia, pessoasTot } = diaInfo;
   return `<h1>AÇOUGUE — PARA SERVIR EM ${escapeHtml(DIA_LABEL[dia]||dia)} ${escapeHtml(fmtData(data))}</h1>
-    <div style="font-size:12px; color:#666; margin-bottom:14px;">${escapeHtml(unidadeLabel)} · ${escapeHtml(rotuloSemana(semana))} · Custo do dia: <strong>${fmtMoney(custoDia)}</strong></div>
+    <div style="font-size:12px; color:#666; margin-bottom:14px;">${escapeHtml(unidadeLabel)} · ${escapeHtml(rotuloSemana(semana))} · Pessoas atendidas: <strong>${fmtNum(pessoasTot||0,0)}</strong> · Custo do dia: <strong>${fmtMoney(custoDia)}</strong></div>
     <table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr><th style="text-align:left; padding-bottom:4px;">Corte (Receita)</th><th style="text-align:right; padding-bottom:4px;">Quantidade</th><th style="text-align:left; padding-bottom:4px;">Data de utilização</th><th style="text-align:right; padding-bottom:4px;">Custo total</th></tr></thead><tbody>
     ${linhas.length ? linhas.map(l => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(l.corte)} (${escapeHtml(l.receita)})</td><td style="padding:4px 0; border-top:1px solid #ddd; text-align:right;">${fmtNum(l.kg,3)} ${escapeHtml(l.unidade)}</td><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(fmtData(data))}</td><td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtMoney(l.custo)}</td></tr>`).join("") : `<tr><td colspan="4">Nada a cortar neste dia.</td></tr>`}
     </tbody></table>
@@ -14804,18 +14980,85 @@ function pcpImprimirAcgPreparoDiasEscolhidos(dias, preparoSemana, semana, unidad
     </body></html>`);
   w.document.close(); w.focus(); w.print();
 }
-function pcpAcgPreparoSemanaBind(content, preparoSemana, diasSelState, semana, unidadeLabel){
-  content.querySelectorAll(".pcp-acgprep-chip").forEach(b => {
+// 11/11/2026, pedido do Marcelo: barra única de ações do Açougue, logo abaixo do painel — antes
+// "Preparar etiquetas" tinha painel próprio, "Imprimir dias marcados" ficava junto do Preparo da semana, e
+// "Imprimir fichas técnicas"/"Dar baixa"/"Desfazer baixa" ficavam lá embaixo, na extinta "Semana inteira —
+// por dia de uso". Os dias marcados passam a ser 1 seletor só (pcpAcgDiasSel) pras 4 ações que dependem de
+// dia — etiquetas não depende de dia marcado (cobre a semana toda, como já era).
+function pcpAcgAcoesHtml(preparoSemana, diasSelState, mapaCarnesSemana){
+  const disponiveis = preparoSemana.map(d => d.dia);
+  if(![...diasSelState].some(d => disponiveis.includes(d))) disponiveis.forEach(d => diasSelState.add(d));
+  [...diasSelState].forEach(d => { if(!disponiveis.includes(d)) diasSelState.delete(d); });
+  return `
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="panel-body" style="display:flex; flex-wrap:wrap; gap:10px; align-items:center;">
+        <div class="kk-dias-chips">${preparoSemana.map(d => `<button type="button" class="chip-dia pcp-acgacao-chip ${diasSelState.has(d.dia)?"on":""}" data-dia="${d.dia}">${escapeHtml((DIA_LABEL[d.dia]||d.dia).slice(0,3))}</button>`).join("")}</div>
+        <span class="footnote" style="margin:0 2px;">dias marcados ↑</span>
+        <span style="flex:1 1 auto;"></span>
+        <button class="btn small ghost" id="pcp-etiquetas-abrir" title="${mapaCarnesSemana.length} linha${mapaCarnesSemana.length===1?"":"s"} da semana">Preparar etiquetas</button>
+        <button class="btn small primary" id="pcp-acgacao-fichas">Imprimir fichas técnicas (dias marcados)</button>
+        <button class="btn small primary" id="pcp-acgacao-imprimir">Imprimir dias marcados</button>
+        <button class="btn small ghost" id="pcp-acgacao-desfazer" style="color:var(--danger,#c0392b); border-color:var(--danger,#c0392b);">Desfazer baixa (dias marcados)</button>
+        <button class="btn small primary" id="pcp-acgacao-baixar">Dar baixa no estoque (dias marcados)</button>
+      </div>
+    </div>`;
+}
+function pcpAcgAcoesBind(content, preparoSemana, diasSelState, semana, unidadeFiltro, unidadeLabel, servicosFiltro, margemPct){
+  content.querySelectorAll(".pcp-acgacao-chip").forEach(b => {
     b.addEventListener("click", () => {
       const dia = b.dataset.dia;
       if(diasSelState.has(dia)) diasSelState.delete(dia); else diasSelState.add(dia);
       renderPCP();
     });
   });
-  const btn = content.querySelector("#pcp-acgprep-imprimir");
-  if(btn) btn.addEventListener("click", () => {
-    const dias = DIAS_ORDEM.filter(d => diasSelState.has(d));
-    pcpImprimirAcgPreparoDiasEscolhidos(dias, preparoSemana, semana, unidadeLabel);
+  const diasMarcados = () => DIAS_ORDEM.filter(d => diasSelState.has(d));
+  const btnImprimir = content.querySelector("#pcp-acgacao-imprimir");
+  if(btnImprimir) btnImprimir.addEventListener("click", () => {
+    pcpImprimirAcgPreparoDiasEscolhidos(diasMarcados(), preparoSemana, semana, unidadeLabel);
+  });
+  const btnFichas = content.querySelector("#pcp-acgacao-fichas");
+  if(btnFichas) btnFichas.addEventListener("click", () => {
+    const dias = diasMarcados();
+    if(!dias.length){ showAlert("Marque ao menos um dia."); return; }
+    dias.forEach(dia => pcpImprimirReceitasProducao(pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro), margemPct));
+  });
+  const btnBaixar = content.querySelector("#pcp-acgacao-baixar");
+  if(btnBaixar) btnBaixar.addEventListener("click", async () => {
+    const dias = diasMarcados();
+    if(!dias.length){ showAlert("Marque ao menos um dia."); return; }
+    const rotulo = dias.map(d => PCP_DIA_LABEL_FEIRA[d]||d).join(", ");
+    if(!(await confirmDialog(`Dar baixa real no estoque dos dias marcados (${rotulo})? Isso lança o consumo no kardex — reimprimir/clicar de novo não duplica, mas se marcar por engano use "Desfazer baixa".`))) return;
+    const resumo = await pcpBaixarReqUnidades(semana, dias, unidadeFiltro, "acougue", servicosFiltro);
+    const msg = resumo.totalGerado ? `Baixa gerada no estoque: ${resumo.totalGerado} dia(s)/unidade(s), ${fmtMoney(resumo.custoTotal)}.${resumo.totalJaTinha ? ` (${resumo.totalJaTinha} já tinham baixa anterior — não duplicado.)` : ""}` : (resumo.totalJaTinha ? "Todos os dias marcados já tinham baixa anterior — nada a fazer." : "Nada a baixar (nenhum item nos dias marcados).");
+    showAlert(msg);
+    renderPCP();
+  });
+  const btnDesfazer = content.querySelector("#pcp-acgacao-desfazer");
+  if(btnDesfazer) btnDesfazer.addEventListener("click", async () => {
+    const dias = diasMarcados();
+    if(!dias.length){ showAlert("Marque ao menos um dia."); return; }
+    const rotulo = dias.map(d => PCP_DIA_LABEL_FEIRA[d]||d).join(", ");
+    if(!(await confirmDialog(`Desfazer a baixa de estoque dos dias marcados (${rotulo})? Remove do kardex só os movimentos gerados por essa baixa (receita + avulsos daqueles dias) — não afeta entradas, ajustes de contagem ou movimentações internas.`))) return;
+    const resumo = await pcpDesfazerBaixaUnidades(semana, dias, unidadeFiltro, "acougue");
+    const msg = resumo.totalDesfeito ? `Baixa desfeita: ${resumo.totalDesfeito} dia(s)/unidade(s), ${fmtMoney(resumo.custoTotal)} revertidos.` : "Nenhum dos dias marcados tinha baixa pra desfazer.";
+    showAlert(msg);
+    renderPCP();
+  });
+  content.querySelectorAll("[data-pcp-avulso-form]").forEach(form => {
+    const dia = form.dataset.pcpAvulsoForm;
+    const btn = form.querySelector("button[data-pcp-avulso-add]");
+    if(btn) btn.addEventListener("click", async () => {
+      const sel = form.querySelector(".avl-insumo"), qtdI = form.querySelector(".avl-qtd"), obsI = form.querySelector(".avl-obs");
+      const ok = await pcpSalvarAvulsa(semana, dia, unidadeFiltro, "acougue", sel.value, parseFloat(qtdI.value), obsI.value);
+      if(ok) renderPCP();
+    });
+  });
+  content.querySelectorAll("button[data-pcp-avulso-remover]").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      if(!(await confirmDialog("Remover esta retirada avulsa?"))) return;
+      const ok = await pcpRemoverAvulsa(btn.dataset.pcpAvulsoRemover);
+      if(ok) renderPCP();
+    });
   });
 }
 
@@ -14828,21 +15071,23 @@ function pcpMapaSemanaHtml(mapaSemana, unidadeLabel){
   return `<div class="panel" style="margin-bottom:14px;">
     <div class="panel-head"><h3>Mapa da semana</h3><button class="btn small primary" id="pcp-mapa-sem-imprimir" style="margin-left:auto;">Imprimir semana</button></div>
     <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Corte</th>${cab}<th style="text-align:right;">Total</th></tr></thead><tbody>
-      ${mapaSemana.cortes.map(c => `<tr><td class="name-cell">${escapeHtml(c.nome)}</td>${c.porDia.map(q => `<td class="num-cell">${q ? fmtNum(q,2) : "—"}</td>`).join("")}<td class="num-cell"><strong>${fmtNum(c.total,2)} ${escapeHtml(c.unidade)}</strong></td></tr>`).join("")}
+      <tr style="background:var(--panel-soft,#f7f7f7);"><td class="name-cell"><em>Pessoas atendidas</em></td>${(mapaSemana.pessoasPorDia||[]).map(q => `<td class="num-cell">${q ? fmtNum(q,0) : "—"}</td>`).join("")}<td class="num-cell">—</td></tr>
+      ${mapaSemana.cortes.map(c => `<tr><td class="name-cell">${escapeHtml(c.nome)}${c.receitas.size ? `<div class="footnote" style="margin-top:2px;">${escapeHtml([...c.receitas].sort((a,b)=>a.localeCompare(b,'pt-BR')).join(", "))}</div>` : ""}</td>${c.porDia.map(q => `<td class="num-cell">${q ? fmtNum(q,2) : "—"}</td>`).join("")}<td class="num-cell"><strong>${fmtNum(c.total,2)} ${escapeHtml(c.unidade)}</strong></td></tr>`).join("")}
     </tbody></table></div>
     </div>
   </div>`;
 }
 function pcpImprimirMapaSemana(mapaSemana, semana, unidadeLabel){
   const cab = mapaSemana.porDia.map(pd => `<th style="text-align:right; padding-bottom:2px;">${DIA_LABEL[pd.dia].slice(0,3)}<br><span style="font-weight:400; font-size:10px; color:#666;">prep. ${DIA_LABEL[pd.prep].slice(0,3)}</span></th>`).join("");
-  const linhas = mapaSemana.cortes.map(c => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(c.nome)}</td>${c.porDia.map(q => `<td style="padding:4px 0; border-top:1px solid #ddd; text-align:right;">${q ? fmtNum(q,2) : "—"}</td>`).join("")}<td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(c.total,2)}</td></tr>`).join("");
+  const linhaPessoas = `<tr><td style="padding:4px 0; border-top:1px solid #ddd; font-style:italic;">Pessoas atendidas</td>${(mapaSemana.pessoasPorDia||[]).map(q => `<td style="padding:4px 0; border-top:1px solid #ddd; text-align:right;">${q ? fmtNum(q,0) : "—"}</td>`).join("")}<td style="padding:4px 0; border-top:1px solid #ddd;"></td></tr>`;
+  const linhas = linhaPessoas + mapaSemana.cortes.map(c => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(c.nome)}${c.receitas.size ? `<div style="font-size:10px; color:#666; margin-top:1px;">${escapeHtml([...c.receitas].sort((a,b)=>a.localeCompare(b,'pt-BR')).join(", "))}</div>` : ""}</td>${c.porDia.map(q => `<td style="padding:4px 0; border-top:1px solid #ddd; text-align:right;">${q ? fmtNum(q,2) : "—"}</td>`).join("")}<td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(c.total,2)}</td></tr>`).join("");
   const w = window.open("", "_blank");
   if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Mapa da semana — Açougue</title>
     <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()}</style></head><body>
     ${printHeadHtml()}<h1>Açougue — mapa da semana</h1>
     <div style="font-size:12px; color:#666; margin-bottom:14px;">${escapeHtml(unidadeLabel)} · ${escapeHtml(rotuloSemana(semana))}</div>
-    <table style="width:100%; border-collapse:collapse; font-size:12px;"><thead><tr><th style="text-align:left; padding-bottom:2px;">Corte</th>${cab}<th style="text-align:right; padding-bottom:2px;">Total</th></tr></thead><tbody>${linhas || `<tr><td colspan="9">Sem cortes na semana.</td></tr>`}</tbody></table>
+    <table style="width:100%; border-collapse:collapse; font-size:12px;"><thead><tr><th style="text-align:left; padding-bottom:2px;">Corte</th>${cab}<th style="text-align:right; padding-bottom:2px;">Total</th></tr></thead><tbody>${mapaSemana.cortes.length ? linhas : `<tr><td colspan="9">Sem cortes na semana.</td></tr>`}</tbody></table>
     <p class="print-meta" style="font-size:11px; color:#666; margin-top:12px;">Peça grande congelada: tirar do freezer 48–72h antes do dia de preparo.</p>
     </body></html>`);
   w.document.close(); w.focus(); w.print();
@@ -14851,15 +15096,9 @@ function pcpImprimirMapaSemana(mapaSemana, semana, unidadeLabel){
 // Etiquetas: agora com rastreabilidade de segurança alimentar completa (validade, temperatura,
 // orientações) e quantidade editável, adaptado de um protótipo mais avançado do Ficha Viva (13/10/2026).
 // 20/10/2026 (pedido do Marcelo): passou a cobrir a SEMANA TODA (antes só o dia selecionado) — a fonte é
-// a mesma lista achatada do Preparo da semana (pcpAcgPreparoSemanaFlat), com "Dia de uso" por linha. O
-// painel aqui só abre o modal (pcpAbrirEtiquetasAcougue) — toda a lógica de validade/qtd/impressão/PDF
-// fica lá, porque precisa de estado (quantidade por linha) que não cabe num botão único.
-function pcpEtiquetasCarnesHtml(mapaCarnesSemana){
-  if(!mapaCarnesSemana.length) return "";
-  return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3>Etiquetas</h3><span class="hint">${mapaCarnesSemana.length} linha${mapaCarnesSemana.length===1?"":"s"} da semana</span><button class="btn small primary" id="pcp-etiquetas-abrir" style="margin-left:auto;">Preparar etiquetas</button></div>
-  </div>`;
-}
+// a mesma lista achatada do Preparo da semana (pcpAcgPreparoSemanaFlat), com "Dia de uso" por linha.
+// 11/11/2026: o botão "Preparar etiquetas" saiu daqui (painel próprio) e entrou na barra única de ações do
+// Açougue (pcpAcgAcoesHtml) — só a lógica de abrir o modal (pcpAbrirEtiquetasAcougue) continua aqui embaixo.
 // linha pra tela/impressão/PDF: estampado (corte, receita, datas, validade, temperatura) + em branco
 // (peso real e responsável) + rodapé de orientações.
 function pcpEtqaHtmlPreview(l, orient, unidadeLabel){
@@ -17122,6 +17361,9 @@ async function renderPCP(){
   await pcpCarregarRevisaoSubstituicoes(pcpSemanaSel, unidadeFiltro);
   // precisa estar carregado ANTES de pcpCalcularDia (pcpAcumularDia lê pcpAjustesCache de forma síncrona).
   await pcpCarregarAjustes(pcpSemanaSel, unidadeFiltro);
+  // Fase 9 (11/11/2026) — precisa estar carregado ANTES de pcpCalcularRequisicaoDia (pcpAcumularInsumosDia
+  // lê pcpAjustesAcgCache de forma síncrona, só quando ehAcougue chama com porClienteCtx).
+  if(ehAcougue) await pcpCarregarAjustesAcg(pcpSemanaSel, unidadeFiltro);
   const res = (ehAcougue || ehEstoque) ? null : pcpCalcularDia(pcpSemanaSel, pcpDiaSel, unidadeFiltro, servicosFiltro);
   // "Ambas" na tela de Produção mostra Matriz e Filial LADO A LADO (nunca somadas) — ver pcpProducaoAmbasHtml.
   // Diferente do "Ambas" das outras sub-abas (que continua somando as duas, unidadeFiltro=null em `res`).
@@ -17192,7 +17434,6 @@ async function renderPCP(){
   if(ehEstoque) await pcpCarregarAvulsas(pcpSemanaSel, unidadeFiltro, "estoque");
   if(ehAcougue) await pcpCarregarAvulsas(pcpSemanaSel, unidadeFiltro, "acougue");
   const reqSemana = ehEstoque ? pcpReqSemanaPorDiaServido(pcpSemanaSel, unidadeFiltro, "estoque", servicosFiltro) : null;
-  const acgSemana = ehAcougue ? pcpReqSemanaPorDiaServido(pcpSemanaSel, unidadeFiltro, "acougue", servicosFiltro) : null;
   // aba "Saladas/Sobremesas" — mapa da semana (sempre semana inteira, não depende do dia marcado).
   const salSobMapaSemana = ehSalSob ? pcpSalSobMapaSemana(pcpSemanaSel, unidadeFiltro, servicosFiltro) : null;
   // 11/11/2026, pedido do Marcelo ("mesmo padrão de caixas de Substituições"): painel "Dias da semana"
@@ -17260,11 +17501,9 @@ async function renderPCP(){
         {label:"Cortes/itens (semana)", valor: new Set(acgMapaCarnesSemana.map(l=>l.corte)).size},
         {label:"Custo total da semana", valor: fmtMoney(acgPreparoSemana.reduce((s,d)=>s+d.custoDia,0))}
       ])}
+      ${pcpAcgAcoesHtml(acgPreparoSemana, pcpAcgDiasSel, acgMapaCarnesSemana)}
       ${pcpMapaSemanaHtml(mapaSemana, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial")}
-      ${pcpAcgPreparoSemanaHtml(acgPreparoSemana, pcpAcgPreparoDiasSel)}
-      ${pcpEtiquetasCarnesHtml(acgMapaCarnesSemana)}
-      <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="calendar-range"></i>Semana inteira — por dia de uso</h3></div>
-      ${pcpReqSemanaSecaoHtml(acgSemana, pcpAcgDiasSel, pcpSemanaSel, unidadeFiltro, "acougue")}
+      ${pcpAcgPreparoSemanaHtml(acgPreparoSemana, pcpSemanaSel, unidadeFiltro)}
     ` : ehEstoque ? (
       pcpPainelAreaHtml([
         {label:"Itens a requisitar", valor: reqCobertura.porDia.reduce((s,d)=>s+d.linhas.length,0)},
@@ -17830,10 +18069,10 @@ async function renderPCP(){
     document.getElementById("pcp-acg-config").addEventListener("click", pcpAbrirConfigAcougue);
     const btnMapaSem = document.getElementById("pcp-mapa-sem-imprimir");
     if(btnMapaSem) btnMapaSem.addEventListener("click", () => pcpImprimirMapaSemana(mapaSemana, pcpSemanaSel, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial"));
-    pcpAcgPreparoSemanaBind(content, acgPreparoSemana, pcpAcgPreparoDiasSel, pcpSemanaSel, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial");
+    pcpAcgAcoesBind(content, acgPreparoSemana, pcpAcgDiasSel, pcpSemanaSel, unidadeFiltro, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial", servicosFiltro, margemPct);
+    pcpAcgAjustesClienteBind(content, pcpSemanaSel);
     const btnEtiquetas = document.getElementById("pcp-etiquetas-abrir");
     if(btnEtiquetas) btnEtiquetas.addEventListener("click", () => pcpAbrirEtiquetasAcougue(acgMapaCarnesSemana, pcpSemanaSel, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial"));
-    pcpReqSemanaSecaoBind(content, pcpSemanaSel, unidadeFiltro, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial", "acougue", pcpAcgDiasSel, servicosFiltro, margemPct);
   } else if(ehEstoque){
     document.getElementById("pcp-acg-config").addEventListener("click", pcpAbrirConfigAcougue);
     const unidadeLabel = unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial";
