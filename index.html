@@ -15109,9 +15109,12 @@ function pcpImprimirSalSobProducaoDia(porClienteIncluidos, totalPreparar, semana
     <div style="font-size:20px; font-weight:700; margin-bottom:10px;">Total a preparar</div>
     <table style="width:100%; border-collapse:collapse; font-size:13px;">${totalPreparar.map(o => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(o.nome)} <span class="footnote" style="margin:0;">(${escapeHtml(o.grupo)})</span></td><td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(o.qtd,2)}</td></tr>`).join("") || `<tr><td>Nenhum cliente incluído.</td></tr>`}</table>
   </div>`;
+  // 11/11/2026, pedido do Marcelo: "pessoas atendidas" (com o ajuste de tela, se houver — pcpSalSobPessoasEfetivo)
+  // passou a sair na impressão por cliente, ao lado do nome.
   const paginasCliente = porClienteIncluidos.map(c => `<div style="page-break-after:always; break-inside:avoid; border:1px solid #333; border-radius:8px; padding:20px; max-width:480px;">
     <div style="font-size:11px; color:#666; margin-bottom:4px;">${escapeHtml(rotuloSemana(semana))} · ${escapeHtml(DIA_LABEL[dia]||dia)} · ${escapeHtml(fmtDataCompleta(dataDoDia(semana, dia)))} · ${escapeHtml(unidadeLabel)}</div>
-    <div style="font-size:20px; font-weight:700; margin-bottom:10px;">${escapeHtml(c.nome)}</div>
+    <div style="font-size:20px; font-weight:700; margin-bottom:2px;">${escapeHtml(c.nome)}</div>
+    <div style="font-size:12px; color:#666; margin-bottom:10px;">${fmtNum(pcpSalSobPessoasEfetivo(dia, c),0)} pessoas atendidas</div>
     <table style="width:100%; border-collapse:collapse; font-size:13px;">${c.linhas.map(l => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(l.prato)} <span class="footnote" style="margin:0;">(${escapeHtml(l.grupo)})</span></td><td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(l.qtd,2)}</td></tr>`).join("")}</table>
     <div style="margin-top:14px; font-size:13px; font-weight:700; display:flex; justify-content:space-between; border-top:1px solid #333; padding-top:6px;"><span>Total</span><span>${fmtNum(c.total,2)}</span></div>
     <div style="margin-top:30px; border-top:1px dashed #999; padding-top:8px; font-size:11px; color:#666;">Separado por: ______________________________</div>
