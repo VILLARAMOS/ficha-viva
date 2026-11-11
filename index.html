@@ -15094,7 +15094,7 @@ function pcpAcgFiltrosHtml(diasSelState, contratosMatriz, contratosFilial, idsMa
     </div>
     <div class="panel-body">
       <div class="footnote" style="margin:0 0 10px;">Marque os dias que entram no Preparo da semana e na impressão — pode marcar mais de um, cada dia marcado vira um bloco separado.</div>
-      <div class="kk-dias-chips" id="pcp-acg-dia-tabs" style="flex-wrap:wrap;">
+      <div class="kk-dias-chips" id="pcp-dia-tabs" style="flex-wrap:wrap;">
         ${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia pcp-acg-dia-chip ${diasSelState.has(d)?"on":""}" data-dia="${d}">${DIA_LABEL[d]}</button>`).join("")}
       </div>
     </div>
@@ -17964,6 +17964,10 @@ async function renderPCP(){
     // mesmo padrão dos chips acima, no Set próprio pcpSalSobDiasSel.
     const bSalSob = e.target.closest("button.pcp-salsob-dia-chip");
     if(bSalSob){ const d = bSalSob.dataset.dia; if(pcpSalSobDiasSel.has(d)) pcpSalSobDiasSel.delete(d); else pcpSalSobDiasSel.add(d); renderPCP(); return; }
+    // multi-seleção de dias no Açougue (11/11/2026, "layout igual Produção da cozinha") — mesmo padrão dos
+    // chips acima, no Set próprio pcpAcgDiasSel.
+    const bAcg = e.target.closest("button.pcp-acg-dia-chip");
+    if(bAcg){ const d = bAcg.dataset.dia; if(pcpAcgDiasSel.has(d)) pcpAcgDiasSel.delete(d); else pcpAcgDiasSel.add(d); renderPCP(); return; }
     const b = e.target.closest("button[data-pcpdia]"); if(!b) return; pcpDiaSel = b.dataset.pcpdia; renderPCP();
   });
   content.querySelector("#pcp-semana").addEventListener("change", e => { pcpSemanaSel = parseInt(e.target.value,10); renderPCP(); });
@@ -18161,12 +18165,9 @@ async function renderPCP(){
     const btnMapaSem = document.getElementById("pcp-mapa-sem-imprimir");
     if(btnMapaSem) btnMapaSem.addEventListener("click", () => pcpImprimirMapaSemana(mapaSemana, pcpSemanaSel, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial"));
     // 11/11/2026: painel "Dias da semana"/"Clientes" — mesmo padrão de Ajustes do dia (atalho troca a
-    // unidade do topo de verdade e some com a seleção individual de cliente da unidade nova).
-    content.querySelectorAll(".pcp-acg-dia-chip").forEach(b => b.addEventListener("click", () => {
-      const dia = b.dataset.dia;
-      if(pcpAcgDiasSel.has(dia)) pcpAcgDiasSel.delete(dia); else pcpAcgDiasSel.add(dia);
-      renderPCP();
-    }));
+    // unidade do topo de verdade e some com a seleção individual de cliente da unidade nova). O chip de dia
+    // em si (.pcp-acg-dia-chip) é tratado no wiring compartilhado de #pcp-dia-tabs, lá no topo da função
+    // (mesmo id/handler que Substituições/Ajustes/Saladas reaproveitam, cada um com sua própria classe).
     content.querySelectorAll("[data-acg-atalho]").forEach(b => b.addEventListener("click", () => {
       const k = b.dataset.acgAtalho;
       pcpUnidadeSel = k === "todos" ? "todos" : k;
