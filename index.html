@@ -14771,15 +14771,19 @@ function pcpAvulsoFormHtml(dia, unidadeFiltro, area){
     return `<p class="footnote" style="margin:4px 0 14px;">Selecione Matriz ou Filial acima pra lançar uma retirada avulsa (precisa saber de qual unidade real o item está saindo).</p>`;
   }
   const insumosOrdenados = [...insumos.entries()].filter(([id]) => area === "acougue" ? pcpAcougueSet().has(id) : !pcpAcougueSet().has(id)).sort((a,b)=>a[1].nome.localeCompare(b[1].nome,'pt-BR'));
+  // 11/11/2026, pedido do Marcelo: era um <details>/<summary> (link com triângulo de abrir/fechar) — agora
+  // é um botão de verdade, com o nome "Incluir item fora de cardápio" (igual pede, só adaptado pro singular/
+  // plural de cada área: estoque fala em "fora de cardápio" também, é o mesmo conceito — item que não vem de
+  // nenhuma receita planejada). Alterna o formulário via pcp-avulso-toggle (ver bind em pcpReqSemanaSecaoBind/
+  // pcpAcgAcoesBind).
   return `<div class="panel-body" style="padding-top:0;">
-    <details><summary style="cursor:pointer; font-size:12.5px; color:var(--text-muted);">+ Retirar item do estoque sem estar em receita</summary>
-      <div data-pcp-avulso-form="${dia}" style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:8px;">
-        <select class="avl-insumo" style="min-width:220px;">${insumosOrdenados.map(([id,ins]) => `<option value="${id}">${escapeHtml(ins.nome)}</option>`).join("")}</select>
-        <input class="avl-qtd" type="number" step="0.001" min="0" placeholder="Qtd" style="width:90px;">
-        <input class="avl-obs" type="text" placeholder="Motivo (opcional)" style="min-width:180px; flex:1 1 180px;">
-        <button class="btn small primary" data-pcp-avulso-add="${dia}">Lançar</button>
-      </div>
-    </details>
+    <button type="button" class="btn small ghost" data-pcp-avulso-toggle="${dia}">+ Incluir item fora de cardápio</button>
+    <div data-pcp-avulso-form="${dia}" style="display:none; flex-wrap:wrap; gap:8px; align-items:center; margin-top:8px;">
+      <select class="avl-insumo" style="min-width:220px;">${insumosOrdenados.map(([id,ins]) => `<option value="${id}">${escapeHtml(ins.nome)}</option>`).join("")}</select>
+      <input class="avl-qtd" type="number" step="0.001" min="0" placeholder="Qtd" style="width:90px;">
+      <input class="avl-obs" type="text" placeholder="Motivo (opcional)" style="min-width:180px; flex:1 1 180px;">
+      <button class="btn small primary" data-pcp-avulso-add="${dia}">Lançar</button>
+    </div>
   </div>`;
 }
 // bloco "PARA SERVIR EM <dia> <data>" por dia servido — usado pela visão "Todos os dias" na tela.
@@ -14843,6 +14847,12 @@ function pcpReqSemanaSecaoHtml(dias, diasSelState, semana, unidadeFiltro, area){
   `;
 }
 function pcpReqSemanaSecaoBind(content, semana, unidadeFiltro, unidadeLabel, area, diasSelState, servicosFiltro, margemPct){
+  content.querySelectorAll("[data-pcp-avulso-toggle]").forEach(b => {
+    b.addEventListener("click", () => {
+      const form = content.querySelector(`[data-pcp-avulso-form="${peCss(b.dataset.pcpAvulsoToggle)}"]`);
+      if(form) form.style.display = form.style.display === "none" ? "flex" : "none";
+    });
+  });
   content.querySelectorAll(".pcp-reqdia-chip").forEach(b => {
     b.addEventListener("click", () => {
       const dia = b.dataset.dia;
@@ -15057,6 +15067,12 @@ function pcpAcgAcoesHtml(mapaCarnesSemana){
     </div>`;
 }
 function pcpAcgAcoesBind(content, preparoSemana, diasSelState, semana, unidadeFiltro, unidadeLabel, servicosFiltro, margemPct){
+  content.querySelectorAll("[data-pcp-avulso-toggle]").forEach(b => {
+    b.addEventListener("click", () => {
+      const form = content.querySelector(`[data-pcp-avulso-form="${peCss(b.dataset.pcpAvulsoToggle)}"]`);
+      if(form) form.style.display = form.style.display === "none" ? "flex" : "none";
+    });
+  });
   const diasMarcados = () => DIAS_ORDEM.filter(d => diasSelState.has(d));
   const btnImprimir = content.querySelector("#pcp-acgacao-imprimir");
   if(btnImprimir) btnImprimir.addEventListener("click", () => {
