@@ -17532,7 +17532,10 @@ async function renderPCP(){
   // da semana"/"Clientes" do Açougue — mesma semeadura/mesmo cálculo de Ajustes do dia (ver ajustesIdsUnidade/
   // ajustesClienteFiltro acima). O Mapa da semana (mapaSemana, logo abaixo) NUNCA usa esses filtros — continua
   // sempre semana inteira/grupo inteiro, só o Preparo da semana (acgPreparoSemana) respeita.
-  if(ehAcougue && !pcpAcgDiasSel.size) pcpAcgDiasSel.add(pcpDiaSel);
+  // 11/11/2026, pedido do Marcelo: Açougue abre sempre com os 7 dias marcados (diferente de Produção/
+  // Substituições/Ajustes do dia, que semeiam só o dia atual) — ele ainda pode desmarcar manualmente se
+  // quiser ver só 1 dia, mas o padrão de entrada na aba é a semana inteira.
+  if(ehAcougue && !pcpAcgDiasSel.size) DIAS_ORDEM.forEach(d => pcpAcgDiasSel.add(d));
   const acgContratosMatriz = ehAcougue ? [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === "matriz").sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente))) : [];
   const acgContratosFilial = ehAcougue ? [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === "filial").sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente))) : [];
   const acgIdsMatriz = acgContratosMatriz.map(([id]) => id);
