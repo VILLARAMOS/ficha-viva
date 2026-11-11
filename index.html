@@ -14982,16 +14982,19 @@ function pcpSalSobPessoasEfetivo(dia, c){
 // 19/10/2026, pedido do Marcelo: 1 bloco por cliente com todos os pratos de salada/sobremesa que ele
 // recebe naquele dia, no mesmo estilo de "Fichas de corte" do Açougue. Suco fica de fora de propósito.
 // 11/11/2026: aplica o ajuste pontual (pcpSalSobAjusteDoItem) quando existir pra essa combinação
-// semana+dia+contrato+ficha — substitui a porção calculada do cardápio, gravado, não é só sessão.
+// semana+dia+contrato+ficha+produto — substitui a porção calculada do cardápio, gravado, não é só sessão.
+// A chave inclui produtoId (pc.produtoId, ex.: "marmita"/"marmita_especial") porque um cliente pode
+// receber a MESMA ficha por dois produtos/cardápios diferentes no mesmo dia (achado em teste ao vivo,
+// 11/11/2026) — sem essa 4ª parte da chave, ajustar uma linha sobrescrevia a outra.
 function pcpSalSobProducaoPorCliente(res){
-  const porCliente = new Map(); // contratoId -> {id, nome, pessoas, linhas:[{prato,grupo,qtd,qtdOriginal,ajustado,fichaId}], total}
+  const porCliente = new Map(); // contratoId -> {id, nome, pessoas, linhas:[{prato,grupo,qtd,qtdOriginal,ajustado,fichaId,produtoId}], total}
   pcpSalSobLinhasDia(res, PCP_SALSOB_GRUPOS_CENTRAL).forEach(r => {
     [...r.porCliente.values()].forEach(pc => {
       if(!(pc.qtd > 0)) return;
-      const ajuste = pcpSalSobAjusteDoItem(res.dia, pc.contratoId, r.fichaId);
+      const ajuste = pcpSalSobAjusteDoItem(res.dia, pc.contratoId, r.fichaId, pc.produtoId);
       const qtd = ajuste !== null ? ajuste : pc.qtd;
       const c = porCliente.get(pc.contratoId) || { id: pc.contratoId, nome: pc.nome, pessoas: pc.pessoas, linhas: [], total: 0 };
-      c.linhas.push({ prato: r.nome, grupo: r.grupo, qtd, qtdOriginal: pc.qtd, ajustado: ajuste !== null, fichaId: r.fichaId });
+      c.linhas.push({ prato: r.nome, grupo: r.grupo, qtd, qtdOriginal: pc.qtd, ajustado: ajuste !== null, fichaId: r.fichaId, produtoId: pc.produtoId });
       c.total += qtd;
       porCliente.set(pc.contratoId, c);
     });
@@ -15013,14 +15016,25 @@ function pcpSalSobTotalPreparar(porClienteIncluidos){
 }
 // 11/11/2026, pedido do Marcelo: pra cada item que um cliente recebe, saber TAMBÉM qual cardápio e a
 // categoria exata dentro dele (pra poder oferecer o botão "Trocar" certo, igual o antigo painel "Ajuste
-// do dia" oferecia) — casa cada linha do cliente (c.linhas, vem de pcpSalSobProducaoPorCliente) com o
-// item do cardápio que tem o MESMO fichaId, dentre os cardápios em que esse cliente aparece.
+// do dia" oferecia).
+// CORRIGIDO 11/11/2026 (achado em teste ao vivo como operador): a versão antiga casava cada linha pelo
+// fichaId sozinho (itensCardapio.find(x => x.ficha_id === l.fichaId)) — quando o cliente recebe a MESMA
+// ficha por dois cardápios diferentes no mesmo dia (ex.: marmita regular e marmita especial), as duas
+// linhas achavam sempre o PRIMEIRO cardápio da lista, então "Trocar" na 2ª linha abriria o cardápio
+// errado. Agora resolve direto: l.produtoId (gravado em pcpSalSobProducaoPorCliente) diz exatamente qual
+// produto gerou aquela linha, e pcpSalSobNumDoItem (mesma função que Produção usa) diz a qual cardápio
+// esse produto aponta PRA ESTE contrato — sem ambiguidade mesmo com fichaId repetido.
 function pcpSalSobItensClienteComCardapio(c, cardapiosUsados, semana, dia){
-  const cardapiosDoCliente = cardapiosUsados.filter(cc => cc.contratos.some(x => x.id === c.id));
-  const itensCardapio = cardapiosDoCliente.flatMap(cc => pcpSalSobCardapioDiaItens(cc.num, semana, dia).map(it => ({...it, _num: cc.num, _grupoCardapio: cc.grupoCardapio})));
+  const ct = contratos.get(c.id);
   return c.linhas.map(l => {
-    const it = itensCardapio.find(x => x.ficha_id === l.fichaId);
-    return { ...l, trocaInfo: it ? { num: it._num, grupoCardapio: it._grupoCardapio, categoria: it.categoria } : null };
+    let trocaInfo = null;
+    const cat = (l.produtoId && ct) ? catalogoPorProduto(l.produtoId) : null;
+    const info = cat ? pcpSalSobNumDoItem(cat, ct) : null;
+    if(info){
+      const it = pcpSalSobCardapioDiaItens(info.num, semana, dia).find(x => x.ficha_id === l.fichaId);
+      if(it) trocaInfo = { num: info.num, grupoCardapio: info.grupoCardapio, categoria: it.categoria };
+    }
+    return { ...l, trocaInfo, produtoNome: cat ? cat.nome : null };
   });
 }
 function pcpSalSobProducaoHtml(res, trocasAposImpressao, dia, diaLabelPrefixo, semana, cardapiosUsados){
@@ -15065,12 +15079,17 @@ function pcpSalSobProducaoHtml(res, trocasAposImpressao, dia, diaLabelPrefixo, s
     // 11/11/2026, pedido do Marcelo: a quantidade agora é editável por linha — "Salvar" grava o ajuste
     // pontual (pcp_ajustes_salsob, só essa combinação semana+dia+cliente+prato); "Redefinir" (só aparece
     // se já tem ajuste) apaga o registro e volta a seguir o cálculo normal do cardápio × pessoas.
+    // conta quantas linhas deste card compartilham a mesma ficha — só nesse caso mostra o nome do produto
+    // (ex. "Marmita especial") ao lado, pra não poluir a maioria dos cards (achado em teste ao vivo,
+    // 11/11/2026: cliente pode receber o mesmo prato por dois produtos/cardápios no mesmo dia).
+    const contagemFicha = new Map();
+    itensComTroca.forEach(l => contagemFicha.set(l.fichaId, (contagemFicha.get(l.fichaId)||0) + 1));
     const linhasC = itensComTroca.map(l => `<tr data-salsob-ajuste-ficha="${l.fichaId || ""}">
-        <td class="name-cell" style="font-size:12px;">${escapeHtml(l.prato)} <span class="footnote" style="margin:0;">(${escapeHtml(l.grupo)})</span>${l.ajustado ? ` <span class="chip warn" title="Porção ajustada pontualmente para este dia — padrão seria ${pcpFmtPorcao(l.qtdOriginal)}">ajustado</span>` : ""}</td>
-        <td><input type="number" min="0" step="0.01" class="salsob-cli-qtd" style="width:64px;" data-salsob-dia="${dia}" data-salsob-cli="${escapeHtml(c.id)}" data-salsob-ficha="${l.fichaId || ""}" value="${l.qtd}"></td>
+        <td class="name-cell" style="font-size:12px;">${escapeHtml(l.prato)} <span class="footnote" style="margin:0;">(${escapeHtml(l.grupo)}${(contagemFicha.get(l.fichaId)>1 && l.produtoNome) ? " · "+escapeHtml(l.produtoNome) : ""})</span>${l.ajustado ? ` <span class="chip warn" title="Porção ajustada pontualmente para este dia — padrão seria ${pcpFmtPorcao(l.qtdOriginal)}">ajustado</span>` : ""}</td>
+        <td><input type="number" min="0" step="0.01" class="salsob-cli-qtd" style="width:64px;" data-salsob-dia="${dia}" data-salsob-cli="${escapeHtml(c.id)}" data-salsob-ficha="${l.fichaId || ""}" data-salsob-produto="${escapeHtml(l.produtoId || "")}" value="${l.qtd}"></td>
         <td style="white-space:nowrap;">
-          ${l.fichaId ? `<button type="button" class="btn small ghost" data-salsob-qtd-salvar="${dia}" data-salsob-qtd-cli="${escapeHtml(c.id)}" data-salsob-qtd-ficha="${l.fichaId}">Salvar</button>` : ""}
-          ${l.ajustado ? `<button type="button" class="btn small ghost" data-salsob-qtd-redefinir="${dia}" data-salsob-qtd-cli="${escapeHtml(c.id)}" data-salsob-qtd-ficha="${l.fichaId}">Redefinir</button>` : ""}
+          ${l.fichaId ? `<button type="button" class="btn small ghost" data-salsob-qtd-salvar="${dia}" data-salsob-qtd-cli="${escapeHtml(c.id)}" data-salsob-qtd-ficha="${l.fichaId}" data-salsob-qtd-produto="${escapeHtml(l.produtoId || "")}">Salvar</button>` : ""}
+          ${l.ajustado ? `<button type="button" class="btn small ghost" data-salsob-qtd-redefinir="${dia}" data-salsob-qtd-cli="${escapeHtml(c.id)}" data-salsob-qtd-ficha="${l.fichaId}" data-salsob-qtd-produto="${escapeHtml(l.produtoId || "")}">Redefinir</button>` : ""}
           ${l.trocaInfo ? `<button type="button" class="btn small ghost" data-salsob-trocar-dia="${dia}" data-salsob-trocar-num="${l.trocaInfo.num}" data-salsob-trocar-grupo="${escapeHtml(l.trocaInfo.grupoCardapio)}" data-salsob-trocar-cat="${escapeHtml(l.trocaInfo.categoria)}">Trocar</button>` : ""}
         </td>
       </tr>`).join("");
@@ -15441,28 +15460,31 @@ async function pcpRegistrarImpressaoSalSob(semana, dia, unidade){
 // permanente do cliente pra qualquer dia. Grava em pcp_ajustes_salsob (confirmado com o Marcelo: precisa
 // persistir no banco, não só sessão). Carregado por SEMANA inteira, mesmo princípio dos outros caches
 // desta aba. Sem linha pra combinação = segue o cálculo normal (cardápio × pessoas).
-let pcpSalSobAjustesCache = new Map(); // `${dia}|${contratoId}|${fichaId}` -> row
+// chave com produtoId (11/11/2026, achado em teste ao vivo): sem ele, o mesmo prato recebido por dois
+// produtos/cardápios diferentes no mesmo dia colidia num só registro — ver nota acima de
+// pcpSalSobProducaoPorCliente.
+let pcpSalSobAjustesCache = new Map(); // `${dia}|${contratoId}|${fichaId}|${produtoId}` -> row
 async function pcpCarregarAjustesSalSob(semana){
   pcpSalSobAjustesCache = new Map();
   const { data, error } = await sb.from('pcp_ajustes_salsob').select('*').eq('semana', semana);
   if(error){ showAlert("Erro ao carregar ajustes pontuais de salada/sobremesa: " + error.message); return; }
-  (data || []).forEach(row => pcpSalSobAjustesCache.set(`${row.dia}|${row.contrato_id}|${row.ficha_id}`, row));
+  (data || []).forEach(row => pcpSalSobAjustesCache.set(`${row.dia}|${row.contrato_id}|${row.ficha_id}|${row.produto_id}`, row));
 }
-function pcpSalSobAjusteDoItem(dia, contratoId, fichaId){
-  const row = pcpSalSobAjustesCache.get(`${dia}|${contratoId}|${fichaId}`);
+function pcpSalSobAjusteDoItem(dia, contratoId, fichaId, produtoId){
+  const row = pcpSalSobAjustesCache.get(`${dia}|${contratoId}|${fichaId}|${produtoId}`);
   return row ? Number(row.porcao) : null;
 }
-async function pcpSalvarAjusteSalSob(semana, dia, contratoId, fichaId, porcao){
-  const row = { semana, dia, contrato_id: contratoId, ficha_id: fichaId, porcao, alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
-  const { error } = await sb.from('pcp_ajustes_salsob').upsert(row, { onConflict: "semana,dia,contrato_id,ficha_id" });
+async function pcpSalvarAjusteSalSob(semana, dia, contratoId, fichaId, produtoId, porcao){
+  const row = { semana, dia, contrato_id: contratoId, ficha_id: fichaId, produto_id: produtoId, porcao, alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
+  const { error } = await sb.from('pcp_ajustes_salsob').upsert(row, { onConflict: "semana,dia,contrato_id,ficha_id,produto_id" });
   if(error){ showAlert("Erro ao salvar o ajuste: " + error.message); return false; }
-  pcpSalSobAjustesCache.set(`${dia}|${contratoId}|${fichaId}`, row);
+  pcpSalSobAjustesCache.set(`${dia}|${contratoId}|${fichaId}|${produtoId}`, row);
   return true;
 }
-async function pcpRemoverAjusteSalSob(semana, dia, contratoId, fichaId){
-  const { error } = await sb.from('pcp_ajustes_salsob').delete().eq('semana', semana).eq('dia', dia).eq('contrato_id', contratoId).eq('ficha_id', fichaId);
+async function pcpRemoverAjusteSalSob(semana, dia, contratoId, fichaId, produtoId){
+  const { error } = await sb.from('pcp_ajustes_salsob').delete().eq('semana', semana).eq('dia', dia).eq('contrato_id', contratoId).eq('ficha_id', fichaId).eq('produto_id', produtoId);
   if(error){ showAlert("Erro ao remover o ajuste: " + error.message); return false; }
-  pcpSalSobAjustesCache.delete(`${dia}|${contratoId}|${fichaId}`);
+  pcpSalSobAjustesCache.delete(`${dia}|${contratoId}|${fichaId}|${produtoId}`);
   return true;
 }
 // trocas (de qualquer cardápio em uso neste dia) registradas DEPOIS da última impressão pra essa
@@ -17645,20 +17667,23 @@ async function renderPCP(){
     }));
     // ajuste pontual de quantidade por cliente (11/11/2026, pedido do Marcelo) — grava no banco
     // (pcp_ajustes_salsob), diferente do campo "pessoas atendidas" acima que é só sessão.
+    // CORRIGIDO 11/11/2026 (achado em teste ao vivo): o seletor do input e a gravação agora incluem
+    // produtoId — sem isso, quando o cliente recebe a mesma ficha por 2 produtos no mesmo dia, o
+    // querySelector achava sempre a PRIMEIRA linha e o ajuste de uma sobrescrevia a outra.
     content.querySelectorAll("[data-salsob-qtd-salvar]").forEach(btn => btn.addEventListener("click", async () => {
-      const dia = btn.dataset.salsobQtdSalvar, cli = btn.dataset.salsobQtdCli, fichaId = btn.dataset.salsobQtdFicha;
-      const inp = content.querySelector(`.salsob-cli-qtd[data-salsob-dia="${dia}"][data-salsob-cli="${cli}"][data-salsob-ficha="${fichaId}"]`);
+      const dia = btn.dataset.salsobQtdSalvar, cli = btn.dataset.salsobQtdCli, fichaId = btn.dataset.salsobQtdFicha, produtoId = btn.dataset.salsobQtdProduto || "";
+      const inp = content.querySelector(`.salsob-cli-qtd[data-salsob-dia="${dia}"][data-salsob-cli="${cli}"][data-salsob-ficha="${fichaId}"][data-salsob-produto="${produtoId}"]`);
       const v = inp ? Number(inp.value) : NaN;
       if(!isFinite(v) || v < 0){ showAlert("Informe uma quantidade válida (0 ou mais)."); return; }
       btn.disabled = true;
-      const ok = await pcpSalvarAjusteSalSob(pcpSemanaSel, dia, cli, fichaId, v);
+      const ok = await pcpSalvarAjusteSalSob(pcpSemanaSel, dia, cli, fichaId, produtoId, v);
       btn.disabled = false;
       if(ok) renderPCP();
     }));
     content.querySelectorAll("[data-salsob-qtd-redefinir]").forEach(btn => btn.addEventListener("click", async () => {
-      const dia = btn.dataset.salsobQtdRedefinir, cli = btn.dataset.salsobQtdCli, fichaId = btn.dataset.salsobQtdFicha;
+      const dia = btn.dataset.salsobQtdRedefinir, cli = btn.dataset.salsobQtdCli, fichaId = btn.dataset.salsobQtdFicha, produtoId = btn.dataset.salsobQtdProduto || "";
       btn.disabled = true;
-      const ok = await pcpRemoverAjusteSalSob(pcpSemanaSel, dia, cli, fichaId);
+      const ok = await pcpRemoverAjusteSalSob(pcpSemanaSel, dia, cli, fichaId, produtoId);
       btn.disabled = false;
       if(ok) renderPCP();
     }));
