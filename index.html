@@ -13573,6 +13573,16 @@ let pcpProdGerado = false;
 // do Marcelo ao responder "Visual + multi-dia" (não "Visual + filtro de cliente" nem "Visual + os dois").
 // Só da sessão, não grava no banco; semeada com pcpDiaSel na 1ª renderização, igual pcpProdDiasSel.
 let pcpSubstDiasSel = new Set();
+// dias selecionados em Ajustes do dia (11/11/2026, pedido do Marcelo: "mesmo padrão de caixas de
+// Substituições" pros dias da semana e clientes) — mesma multi-seleção de pcpSubstDiasSel/pcpProdDiasSel;
+// cada dia marcado vira um bloco próprio na tabela de quantidades (pcpAjustesHtml). A tabela de peso por
+// prato (pcpPesosHtml) é semanal por natureza e não usa esse filtro de dia. Só da sessão, semeada com
+// pcpDiaSel na 1ª renderização.
+let pcpAjustesDiasSel = new Set();
+// clientes selecionados em Ajustes do dia (11/11/2026) — mesmo padrão de pcpProdClientesSel (Set de
+// contratoId, ou null = grupo inteiro/unidade inteira); filtra tanto a tabela de peso por prato quanto a de
+// quantidades. Só da sessão, não grava no banco.
+let pcpAjustesClientesSel = null;
 // dias marcados pra impressão na tabela nova "Preparo da semana" do Açougue (corte×receita, 20/10/2026) —
 // Set PRÓPRIO, separado de pcpAcgDiasSel (que já era usado pela baixa de estoque/kardex acima), pra marcar
 // um dia numa tela não desmarcar o outro por engano.
@@ -16474,11 +16484,17 @@ function pcpSubstituicoesBind(content, semana, unidadeFiltro, resPorDia){
 // 20/10/2026, pedido do Marcelo: ajuste manual não se aplica a Suco nem Sobremesa (também tirado de Peso
 // por prato, mais abaixo) — só prato principal/guarnição/salada.
 function pcpAjustesGrupoEntra(grupo){ return !/^(SUCO|SOBREMESA)/.test((grupo || "").toUpperCase()); }
-function pcpAjustesLinhas(res){
+// 11/11/2026, pedido do Marcelo ("mesmo padrão de caixas de Substituições"): ganhou filtro de cliente
+// opcional (Set de contratoId, ou null/undefined = todos) — mesmo padrão de clienteFiltro já usado em
+// pcpCalcularDia/Produção, aplicado aqui por cima do `res` já calculado (res já veio filtrado por cliente
+// quando chamado com clienteFiltro — ver ajustesBlocos em renderPCP — então este filtro aqui é redundante
+// mas inofensivo, serve de garantia extra).
+function pcpAjustesLinhas(res, clienteFiltro){
   const porCliente = new Map();
   res.receitas.filter(r => pcpAjustesGrupoEntra(r.grupo)).forEach(r => {
     r.porCliente.forEach(pc => {
       if(!pc.produtoId) return;
+      if(clienteFiltro && !clienteFiltro.has(pc.contratoId)) return;
       const servico = pcpTurnoDoProduto(pc.produtoId);
       const grupo = porCliente.get(pc.contratoId) || { id: pc.contratoId, nome: pc.nome, linhas: [] };
       grupo.linhas.push({ fichaId: r.fichaId, nomeReceita: r.nome, servico, qtdCalculada: pc.qtdOriginal, ajuste: pc.ajuste || null });
@@ -16487,49 +16503,78 @@ function pcpAjustesLinhas(res){
   });
   return [...porCliente.values()].sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
 }
-function pcpAjustesHtml(res){
-  const grupos = pcpAjustesLinhas(res);
-  if(!grupos.length) return `<div class="empty-state">Nenhum cliente com produção prevista para este dia.</div>`;
+// 11/11/2026: linhas deixaram de ter Salvar/Remover individual — cada cliente (card) ganhou 1 botão
+// "Salvar ajustes" só, que grava em lote as linhas alteradas (mesmo padrão de "Salvar substituições" em
+// pcpSubstituicoesHtml) — limpar o campo "Valor efetivo" e salvar remove o ajuste (volta ao calculado).
+// `dia` vai em cada linha (data-ajuste-dia) porque agora a tela pode mostrar vários dias marcados ao
+// mesmo tempo (ver ajustesBlocos em renderPCP) — salvar lê o dia DA LINHA, não um closure único.
+function pcpAjustesHtml(res, dia, clienteFiltro){
+  const grupos = pcpAjustesLinhas(res, clienteFiltro);
+  if(!grupos.length) return `<div class="empty-state">Nenhum cliente com produção prevista para este dia${clienteFiltro ? " (confira o filtro de clientes acima)" : ""}.</div>`;
   const opcoesMotivo = atual => `<option value="">—</option>` + PCP_AJUSTE_MOTIVOS.map(m => `<option value="${escapeHtml(m)}" ${atual===m?"selected":""}>${escapeHtml(m)}</option>`).join("");
-  const cards = grupos.map(g => `<div class="panel" style="margin-bottom:14px;">
+  const cards = grupos.map(g => `<div class="panel" style="margin-bottom:14px;" data-ajuste-card="${escapeHtml(g.id)}">
       <div class="panel-head"><h3 style="font-size:14px;">${escapeHtml(g.nome)}</h3></div>
       <div class="panel-body"><div class="table-wrap"><table>
-        <thead><tr><th>Receita</th><th>Serviço</th><th style="text-align:right;">Calculado</th><th style="text-align:right;">Valor efetivo</th><th>Motivo</th><th>Observação</th><th></th></tr></thead>
-        <tbody>${g.linhas.map(l => `<tr data-ajuste-contrato="${g.id}" data-ajuste-ficha="${l.fichaId}" data-ajuste-servico="${l.servico}" ${l.ajuste ? `data-ajuste-id="${l.ajuste.id}"` : ""}>
+        <thead><tr><th>Receita</th><th>Serviço</th><th style="text-align:right;">Calculado</th><th style="text-align:right;">Valor efetivo</th><th>Motivo</th><th>Observação</th></tr></thead>
+        <tbody>${g.linhas.map(l => `<tr data-ajuste-contrato="${g.id}" data-ajuste-ficha="${l.fichaId}" data-ajuste-servico="${l.servico}" data-ajuste-dia="${dia}" ${l.ajuste ? `data-ajuste-id="${l.ajuste.id}"` : ""}>
           <td class="name-cell">${escapeHtml(l.nomeReceita)}</td>
           <td>${PCP_TURNOS.find(t=>t.id===l.servico).nome}</td>
           <td class="num-cell">${pcpFmtQtd(l.qtdCalculada)}</td>
-          <td><input type="number" step="0.01" min="0" class="ajuste-valor" value="${l.ajuste ? Number(l.ajuste.valor_efetivo) : ""}" placeholder="${pcpFmtQtd(l.qtdCalculada)}" style="width:90px;"></td>
-          <td><select class="ajuste-motivo" style="width:150px;">${opcoesMotivo(l.ajuste ? l.ajuste.motivo : "")}</select></td>
-          <td><input type="text" class="ajuste-obs" value="${l.ajuste ? escapeHtml(l.ajuste.observacao||"") : ""}" maxlength="200" style="width:160px;" placeholder="observação"></td>
-          <td style="white-space:nowrap;"><button type="button" class="btn small primary ajuste-salvar">Salvar</button>${l.ajuste ? `<button type="button" class="btn small ghost ajuste-remover">Remover</button>` : ""}</td>
+          <td><input type="number" step="0.01" min="0" class="ajuste-valor" value="${l.ajuste ? Number(l.ajuste.valor_efetivo) : ""}" data-orig="${l.ajuste ? Number(l.ajuste.valor_efetivo) : ""}" placeholder="${pcpFmtQtd(l.qtdCalculada)}" style="width:90px;"></td>
+          <td><select class="ajuste-motivo" data-orig="${l.ajuste ? l.ajuste.motivo : ""}" style="width:150px;">${opcoesMotivo(l.ajuste ? l.ajuste.motivo : "")}</select></td>
+          <td><input type="text" class="ajuste-obs" value="${l.ajuste ? escapeHtml(l.ajuste.observacao||"") : ""}" data-orig="${l.ajuste ? escapeHtml(l.ajuste.observacao||"") : ""}" maxlength="200" style="width:160px;" placeholder="observação"></td>
         </tr>`).join("")}</tbody>
-      </table></div></div>
+      </table></div>
+      <div style="display:flex; justify-content:flex-end; align-items:center; gap:10px; padding:10px 14px;"><span class="footnote" data-ajuste-msg="${escapeHtml(g.id)}" style="margin:0;"></span><button type="button" class="btn small primary" data-ajuste-salvar="${escapeHtml(g.id)}">Salvar ajustes</button></div>
+      </div>
     </div>`).join("");
   return cards;
 }
-function pcpAjustesBind(content, semana, dia){
+function pcpAjustesMarcarSuja(el){
+  const suja = String(el.value ?? "").trim() !== (el.dataset.orig || "");
+  el.style.background = suja ? "var(--warn-soft)" : "";
+  el.style.fontWeight = suja ? "600" : "";
+}
+function pcpAjustesBind(content, semana){
+  content.querySelectorAll(".ajuste-valor, .ajuste-motivo, .ajuste-obs").forEach(el => {
+    el.addEventListener("input", () => pcpAjustesMarcarSuja(el));
+    el.addEventListener("change", () => pcpAjustesMarcarSuja(el));
+  });
   content.addEventListener("click", async e => {
-    const btnSalvar = e.target.closest("button.ajuste-salvar");
-    if(btnSalvar){
-      const tr = btnSalvar.closest("tr[data-ajuste-contrato]");
-      const valor = parseFloat(tr.querySelector(".ajuste-valor").value);
-      const motivo = tr.querySelector(".ajuste-motivo").value;
-      const observacao = tr.querySelector(".ajuste-obs").value;
-      if(!(valor >= 0)){ showAlert("Informe o valor efetivo (maior ou igual a zero)."); return; }
-      if(!motivo){ showAlert("Escolha um motivo para o ajuste."); return; }
-      const contratoId = tr.dataset.ajusteContrato;
+    const btnSalvar = e.target.closest("button[data-ajuste-salvar]");
+    if(!btnSalvar) return;
+    const card = content.querySelector(`[data-ajuste-card="${peCss(btnSalvar.dataset.ajusteSalvar)}"]`);
+    const msg = content.querySelector(`[data-ajuste-msg="${peCss(btnSalvar.dataset.ajusteSalvar)}"]`);
+    if(!card) return;
+    const linhas = Array.from(card.querySelectorAll("tr[data-ajuste-contrato]"));
+    const sujas = linhas.filter(tr => {
+      const inpV = tr.querySelector(".ajuste-valor"), selM = tr.querySelector(".ajuste-motivo"), inpO = tr.querySelector(".ajuste-obs");
+      return inpV.value.trim() !== (inpV.dataset.orig||"") || selM.value !== (selM.dataset.orig||"") || inpO.value.trim() !== (inpO.dataset.orig||"");
+    });
+    if(!sujas.length){ if(msg) msg.textContent = "Nada mudou."; return; }
+    btnSalvar.disabled = true; btnSalvar.textContent = "Salvando...";
+    let algumErro = false;
+    for(const tr of sujas){
+      const contratoId = tr.dataset.ajusteContrato, fichaId = tr.dataset.ajusteFicha, servico = tr.dataset.ajusteServico, diaLinha = tr.dataset.ajusteDia;
+      const nomeReceita = tr.querySelector(".name-cell")?.textContent || fichaId;
+      const inpV = tr.querySelector(".ajuste-valor"), selM = tr.querySelector(".ajuste-motivo"), inpO = tr.querySelector(".ajuste-obs");
+      const raw = inpV.value.trim();
+      const existenteId = tr.dataset.ajusteId;
+      if(raw === ""){
+        if(existenteId) await pcpRemoverAjuste(existenteId);
+        continue;
+      }
+      const valor = parseFloat(raw.replace(",", "."));
+      if(!(valor >= 0)){ showAlert(`${nomeReceita}: informe o valor efetivo (maior ou igual a zero).`); algumErro = true; continue; }
+      if(!selM.value){ showAlert(`${nomeReceita}: escolha um motivo para o ajuste.`); algumErro = true; continue; }
       const ct = contratos.get(contratoId);
-      if(!ct || !ct.unidade){ showAlert("Não achei a unidade deste contrato — não salvei o ajuste."); return; }
-      const ok = await pcpSalvarAjuste(semana, dia, ct.unidade, contratoId, tr.dataset.ajusteFicha, tr.dataset.ajusteServico, valor, motivo, observacao);
-      if(ok) renderPCP();
-      return;
+      if(!ct || !ct.unidade){ showAlert(`Não achei a unidade do contrato de ${nomeReceita} — esse ajuste não foi salvo.`); algumErro = true; continue; }
+      await pcpSalvarAjuste(semana, diaLinha, ct.unidade, contratoId, fichaId, servico, valor, selM.value, inpO.value);
     }
-    const btnRemover = e.target.closest("button.ajuste-remover");
-    if(btnRemover){
-      const tr = btnRemover.closest("tr[data-ajuste-id]");
-      if(tr && tr.dataset.ajusteId && await pcpRemoverAjuste(tr.dataset.ajusteId)) renderPCP();
-    }
+    if(algumErro){ btnSalvar.disabled = false; btnSalvar.textContent = "Salvar ajustes"; }
+    // renderPCP já recarrega pcpAjustesCache do banco antes de recalcular (ver topo de renderPCP) — o que
+    // alimenta direto o kg da aba "Produção da cozinha" (pcpAcumularDia lê esse cache), sem precisar de F5.
+    renderPCP();
   });
 }
 
@@ -16599,15 +16644,15 @@ function pesoExpFica(bases, v){
   const s = new Set([...bases].map(b => Math.max(0, b + g)));
   return { txt: pesoExpFaixa(s), proprio: true, alerta: [...bases].some(b => (b + g) > b * 1.5 || (b + g) < b * 0.6) };
 }
-let pcpPesoCli = "";
-function pcpPesosHtml(unidadeFiltro, semana){
-  const cts = pesoExpClientes(unidadeFiltro);
-  if(!cts.length) return `<div class="panel"><div class="empty-state">Nenhum cliente com refeição transportada nesta unidade.</div></div>`;
+// 11/11/2026, pedido do Marcelo ("mesmo padrão de caixas de Substituições"): o dropdown "pe-cli" de 1
+// cliente por vez saiu — o filtro agora é o mesmo painel "Clientes" (chips Matriz/Filial) compartilhado
+// com o resto da aba Ajustes do dia (ver clientesPanelAjustes em renderPCP). `clienteFiltro` é um Set de
+// contratoId (nunca null aqui — vem sempre materializado de ajustesClienteFiltro).
+function pcpPesosHtml(unidadeFiltro, semana, clienteFiltro){
+  const cts = pesoExpClientes(unidadeFiltro).filter(([id]) => !clienteFiltro || clienteFiltro.has(id));
+  if(!cts.length) return `<div class="panel"><div class="empty-state">Nenhum cliente com refeição transportada ${clienteFiltro ? "no filtro de clientes acima" : "nesta unidade"}.</div></div>`;
   const dados = cts.map(([id, ct]) => { const itens = pesoExpSemanaCliente(id, ct, semana); return { id, ct, itens, res: pesoExpResumo(itens) }; });
-  if(pcpPesoCli && !dados.some(d => d.id === pcpPesoCli)) pcpPesoCli = "";
-  const sel = `<select id="pe-cli"><option value="">Todos os clientes (${dados.length})</option>${dados.map(d => `<option value="${escapeHtml(d.id)}" ${d.id === pcpPesoCli ? "selected" : ""}>${escapeHtml(d.ct.nome_cliente)}${temPesoExpedicao(d.ct) ? " ⚖" : ""}</option>`).join("")}</select>`;
-  const mostra = pcpPesoCli ? dados.filter(d => d.id === pcpPesoCli) : dados;
-  const cards = mostra.map(d => {
+  const cards = dados.map(d => {
     const naSemana = new Set(d.itens.map(x => x.fichaId));
     // itens com peso próprio gravado que não aparecem no cardápio desta semana continuam listados (pra ver e remover)
     const fora = Object.keys(d.ct.peso_expedicao || {}).filter(fid => pesoExpDoItem(d.ct, fid) && !naSemana.has(fid))
@@ -16637,8 +16682,7 @@ function pcpPesosHtml(unidadeFiltro, semana){
       </div>
     </div>`;
   }).join("");
-  return `<div style="display:flex; align-items:center; gap:10px; margin-bottom:14px;">${sel}</div>
-    ${cards}`;
+  return cards;
 }
 async function salvarPesosCliente(contratoId, content){
   const ct = contratos.get(contratoId);
@@ -16672,8 +16716,6 @@ async function salvarPesosCliente(contratoId, content){
   if(ok) renderPCP();
 }
 function pcpPesosBind(content){
-  const sel = content.querySelector("#pe-cli");
-  if(sel) sel.addEventListener("change", () => { pcpPesoCli = sel.value; renderPCP(); });
   content.querySelectorAll("[data-pe-salvar]").forEach(b => b.addEventListener("click", () => salvarPesosCliente(b.dataset.peSalvar, content)));
   // "fica" ao vivo conforme digita, antes de salvar
   content.querySelectorAll(".pe-g, .pe-modo").forEach(el => {
@@ -16786,6 +16828,21 @@ async function renderPCP(){
     dia: d,
     listaRes: unidadeFiltro ? [pcpCalcularDia(pcpSemanaSel, d, unidadeFiltro, null)] : ["matriz", "filial"].map(u => pcpCalcularDia(pcpSemanaSel, d, u, null))
   })) : null;
+  // Ajustes do dia (11/11/2026, pedido do Marcelo: "mesmo padrão de caixas de Substituições" pros dias da
+  // semana e clientes) — mesma semeadura multi-dia de pcpSubstDiasSel/pcpProdDiasSel acima. Diferente de
+  // Substituições, aqui existe filtro de cliente de fato (ver ajustesClienteFiltro), porque a tabela de
+  // quantidades já é organizada em 1 card por cliente (pcpAjustesHtml) e a de peso por prato também (mesmo
+  // padrão funcional de Produção/prodClienteFiltro).
+  if(ehAjustes && !pcpAjustesDiasSel.size) pcpAjustesDiasSel.add(pcpDiaSel);
+  const ajustesDiasAtivos = DIAS_ORDEM.filter(d => pcpAjustesDiasSel.has(d));
+  const multiDiaAjustes = ajustesDiasAtivos.length > 1;
+  const ajustesContratosMatriz = ehAjustes ? [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === "matriz").sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente))) : [];
+  const ajustesContratosFilial = ehAjustes ? [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === "filial").sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente))) : [];
+  const ajustesIdsMatriz = ajustesContratosMatriz.map(([id]) => id);
+  const ajustesIdsFilial = ajustesContratosFilial.map(([id]) => id);
+  const ajustesIdsUnidade = !unidadeFiltro || unidadeFiltro === "todos" ? [...ajustesIdsMatriz, ...ajustesIdsFilial] : (unidadeFiltro === "matriz" ? ajustesIdsMatriz : ajustesIdsFilial);
+  const ajustesSelIds = pcpAjustesClientesSel === null ? ajustesIdsUnidade : ajustesIdsUnidade.filter(id => pcpAjustesClientesSel.has(id));
+  const ajustesClienteFiltro = new Set(ajustesSelIds);
   const reqCobertura = ehEstoque ? pcpCalcularReqComCobertura(pcpSemanaSel, pcpDiaSel, unidadeFiltro, servicosFiltro) : null;
   const mapaSemana = ehAcougue ? pcpMapaCarnesSemana(pcpSemanaSel, unidadeFiltro, servicosFiltro) : null;
   // Preparo da semana (20/10/2026, pedido do Marcelo) — substitui o antigo "Mapa de carnes" do dia
@@ -16831,9 +16888,9 @@ async function renderPCP(){
       <button type="button" data-pcpsub="romaneio" class="${pcpSubView==="romaneio"?"active":""}">Romaneio por rota</button>
     </div>
     <div class="menu-controls" style="margin-bottom:16px;">
-      ${(ehProducao && !ehProducaoAmbas) || ehSubst ? "" : `<div class="kk-dias-chips" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" class="chip-dia ${pcpUnidadeSel===u.id?"on":""}" data-pcpuni="${u.id}">${u.nome}${u.id !== "todos" ? ` · ${pcpContagemUnidade(u.id)}` : ""}</button>`).join("")}</div>`}
+      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes ? "" : `<div class="kk-dias-chips" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" class="chip-dia ${pcpUnidadeSel===u.id?"on":""}" data-pcpuni="${u.id}">${u.nome}${u.id !== "todos" ? ` · ${pcpContagemUnidade(u.id)}` : ""}</button>`).join("")}</div>`}
       <select id="pcp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===pcpSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
-      ${(ehProducao && !ehProducaoAmbas) || ehSubst ? "" : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
+      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes ? "" : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
       ${servicosAplicavel ? `<div class="kk-dias-chips" id="pcp-serv-tabs">${PCP_TURNOS.filter(t=>t.id!=="todos").map(t => `<button type="button" class="chip-dia ${pcpServicosSel.has(t.id)?"on":""}" data-pcp-serv="${t.id}">${t.nome}</button>`).join("")}</div>` : ""}
     </div>
     ${ehAcougue ? `
@@ -16892,22 +16949,76 @@ async function renderPCP(){
         ];
       })()) +
       pcpSubstituicoesHtml(resPorDiaSubst, unidadeFiltro)
-    ) : ehAjustes ? (
-      pcpPainelAreaHtml([
-        {label:"Ajustes lançados hoje", valor: (pcpAjustesCache.get(pcpDiaSel) || new Map()).size}
-      ]) +
-      pcpAjustesHtml(res) +
-      `<div class="panel-head" style="margin:24px 0 10px; border:none;"><h3><i class="ico" data-lucide="scale"></i>Peso por prato (por cliente)</h3></div>` +
-      pcpPainelAreaHtml((() => {
-        const pesoCts = pesoExpClientes(unidadeFiltro);
-        const pesoComAjuste = pesoCts.filter(([,ct]) => temPesoExpedicao(ct)).length;
-        return [
-          {label:"Clientes com refeição transportada", valor: pesoCts.length},
-          {label:"Com peso próprio ajustado", valor: pesoComAjuste}
-        ];
-      })()) +
-      pcpPesosHtml(unidadeFiltro, pcpSemanaSel)
-    ) : ehSalSob ? (
+    ) : ehAjustes ? ((() => {
+      // 11/11/2026, pedido do Marcelo ("mesmo padrão de caixas de Substituições"): painel "Dias da semana"
+      // (multi-seleção, mesma classe kk-dias-chips/chip-dia, reaproveita o id pcp-dia-tabs igual Substituições/
+      // Produção já fazem) + painel "Clientes" (mesmo grid2-box de Matriz/Filial com atalhos, mas aqui o
+      // filtro É funcional — gramagem e quantidades só mostram os clientes marcados).
+      const diasPanelAjustes = `
+      <div class="panel" style="margin-bottom:14px;">
+        <div class="panel-head">
+          <h3>Dias da semana</h3>
+          <span class="hint">${pcpAjustesDiasSel.size} de ${DIAS_ORDEM.length}</span>
+        </div>
+        <div class="panel-body">
+          <div class="footnote" style="margin:0 0 10px;">Marque os dias que entram na tabela de quantidades abaixo — pode marcar mais de um, cada dia marcado vira um bloco separado. A gramagem por prato é semanal e não depende desse filtro.</div>
+          <div class="kk-dias-chips" id="pcp-dia-tabs" style="flex-wrap:wrap;">
+            ${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia pcp-ajustes-dia-chip ${pcpAjustesDiasSel.has(d)?"on":""}" data-dia="${d}">${DIA_LABEL[d]}</button>`).join("")}
+          </div>
+        </div>
+      </div>`;
+      const grupoClientesAjustesHtml = (titulo, lista, unidadeKey) => {
+        const ativa = !unidadeFiltro || unidadeFiltro === unidadeKey;
+        return `<div class="grid2-box ${ativa?"":"grid2-box-dim"}">
+          <div class="footnote" style="margin:0 0 8px; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
+            <span>${escapeHtml(titulo)} (${lista.length})</span>
+            ${ativa ? `<span class="hint" style="margin:0;">${lista.filter(([id]) => ajustesClienteFiltro.has(id)).length} de ${lista.length} selecionados</span>` : `<span class="hint" style="margin:0;">não selecionada</span>`}
+          </div>
+          ${lista.length ? `<div class="kk-dias-chips" style="flex-wrap:wrap;">
+            ${lista.map(([id,c]) => `<button type="button" class="chip-dia ${ativa?"pcp-ajustes-cli-chip":""} ${ativa && ajustesClienteFiltro.has(id)?"on":""}" data-id="${id}" ${ativa?"":"disabled"}>${escapeHtml(c.nome_cliente)}</button>`).join("")}
+          </div>` : `<div class="footnote">Nenhum contrato ativo.</div>`}
+        </div>`;
+      };
+      const clientesPanelAjustes = `
+      <div class="panel" style="margin-bottom:14px;">
+        <div class="panel-head">
+          <h3>Clientes</h3>
+          <span class="hint">${ajustesSelIds.length} de ${ajustesIdsUnidade.length}</span>
+        </div>
+        <div class="panel-body">
+          <div class="kk-dias-chips" style="margin-bottom:10px; flex-wrap:wrap; align-items:center;">
+            <button type="button" class="chip-dia ${!unidadeFiltro||unidadeFiltro==="todos"?"on":""}" data-ajustes-atalho="todos">Grupo inteiro (${ajustesIdsMatriz.length + ajustesIdsFilial.length})</button>
+            <button type="button" class="chip-dia ${unidadeFiltro==="matriz"?"on":""}" data-ajustes-atalho="matriz">Matriz (${ajustesIdsMatriz.length})</button>
+            <button type="button" class="chip-dia ${unidadeFiltro==="filial"?"on":""}" data-ajustes-atalho="filial">Filial (${ajustesIdsFilial.length})</button>
+            <button type="button" class="btn small ghost" id="pcp-ajustes-cli-limpar" ${pcpAjustesClientesSel===null?"disabled":""} style="margin-left:6px;">Limpar seleção</button>
+          </div>
+          <div class="grid2">
+            ${grupoClientesAjustesHtml("Matriz", ajustesContratosMatriz, "matriz")}
+            ${grupoClientesAjustesHtml("Filial", ajustesContratosFilial, "filial")}
+          </div>
+        </div>
+      </div>`;
+      const pesoComAjuste = pesoExpClientes(unidadeFiltro).filter(([id,ct]) => ajustesClienteFiltro.has(id) && temPesoExpedicao(ct)).length;
+      const kpiPainel = pcpPainelAreaHtml([
+        {label: multiDiaAjustes ? "Ajustes lançados (dias marcados)" : "Ajustes lançados hoje", valor: ajustesDiasAtivos.reduce((s,d) => s + (pcpAjustesCache.get(d) || new Map()).size, 0)},
+        {label:"Clientes atendidos", valor: ajustesSelIds.length},
+        {label:"Peso ajustado", valor: pesoComAjuste}
+      ]);
+      // ordem pedida pelo Marcelo: gramagem primeiro (prioridade de ajuste), quantidades depois.
+      const gramagemHtml = `<div class="panel-head" style="margin:4px 0 10px; border:none;"><h3><i class="ico" data-lucide="scale"></i>Gramagem por prato (por cliente)</h3></div>
+        <p class="footnote" style="margin:0 0 10px;">Prioridade de ajuste — mudar o peso aqui já entra direto no kg da Produção da cozinha ao salvar.</p>
+        ${pcpPesosHtml(unidadeFiltro, pcpSemanaSel, ajustesClienteFiltro)}`;
+      const ajustesBlocos = !ajustesDiasAtivos.length ? `<div class="empty-state">Marque pelo menos 1 dia da semana acima para ver a tabela de quantidades.</div>` :
+        ajustesDiasAtivos.map(d => {
+          const resDia = pcpCalcularDia(pcpSemanaSel, d, unidadeFiltro, servicosFiltro, ajustesClienteFiltro);
+          return `<div data-pcp-ajustes-dia-bloco="${d}">
+            ${multiDiaAjustes ? `<div class="panel-head" style="margin:0 0 10px; border:none;"><h3 style="font-size:15px;">${DIA_LABEL[d]}</h3></div>` : ""}
+            ${pcpAjustesHtml(resDia, d, ajustesClienteFiltro)}
+          </div>`;
+        }).join(`<div style="height:18px;"></div>`);
+      const quantidadesHtml = `<div class="panel-head" style="margin:24px 0 10px; border:none;"><h3><i class="ico" data-lucide="clipboard-list"></i>Quantidades a enviar (por cliente)</h3></div>${ajustesBlocos}`;
+      return diasPanelAjustes + clientesPanelAjustes + kpiPainel + gramagemHtml + quantidadesHtml;
+    })()) : ehSalSob ? (
       pcpPainelAreaHtml((() => {
         const salSobReceitas = res.receitas.filter(r => /^(SALADA|SOBREMESA)/.test((r.grupo||"").toUpperCase()));
         return [
@@ -17053,6 +17164,10 @@ async function renderPCP(){
     // Produção acima, só que no Set próprio pcpSubstDiasSel (sem filtro de cliente equivalente).
     const bSubst = e.target.closest("button.pcp-subst-dia-chip");
     if(bSubst){ const d = bSubst.dataset.dia; if(pcpSubstDiasSel.has(d)) pcpSubstDiasSel.delete(d); else pcpSubstDiasSel.add(d); renderPCP(); return; }
+    // multi-seleção de dias em Ajustes do dia (11/11/2026, "mesmo padrão de caixas de Substituições") —
+    // mesmo padrão dos dois chips acima, no Set próprio pcpAjustesDiasSel.
+    const bAjustes = e.target.closest("button.pcp-ajustes-dia-chip");
+    if(bAjustes){ const d = bAjustes.dataset.dia; if(pcpAjustesDiasSel.has(d)) pcpAjustesDiasSel.delete(d); else pcpAjustesDiasSel.add(d); renderPCP(); return; }
     const b = e.target.closest("button[data-pcpdia]"); if(!b) return; pcpDiaSel = b.dataset.pcpdia; renderPCP();
   });
   content.querySelector("#pcp-semana").addEventListener("change", e => { pcpSemanaSel = parseInt(e.target.value,10); renderPCP(); });
@@ -17249,7 +17364,25 @@ async function renderPCP(){
   } else if(ehSubst){
     pcpSubstituicoesBind(content, pcpSemanaSel, unidadeFiltro, resPorDiaSubst);
   } else if(ehAjustes){
-    pcpAjustesBind(content, pcpSemanaSel, pcpDiaSel);
+    // Clientes (11/11/2026, mesmo padrão de Produção): atalhos trocam a unidade do topo e sempre voltam
+    // pcpAjustesClientesSel pra null ("todos" da unidade nova); chip individual e "Limpar seleção" operam
+    // dentro da unidade (ou das duas, em "Ambas") já selecionada.
+    content.querySelectorAll("[data-ajustes-atalho]").forEach(b => b.addEventListener("click", () => {
+      const k = b.dataset.ajustesAtalho;
+      pcpUnidadeSel = k === "todos" ? "todos" : k;
+      pcpAjustesClientesSel = null;
+      renderPCP();
+    }));
+    content.querySelectorAll(".pcp-ajustes-cli-chip").forEach(b => b.addEventListener("click", () => {
+      const id = b.dataset.id;
+      const base = pcpAjustesClientesSel === null ? new Set(ajustesIdsUnidade) : new Set(pcpAjustesClientesSel);
+      if(base.has(id)) base.delete(id); else base.add(id);
+      pcpAjustesClientesSel = base;
+      renderPCP();
+    }));
+    const btnAjustesCliLimpar = document.getElementById("pcp-ajustes-cli-limpar");
+    if(btnAjustesCliLimpar) btnAjustesCliLimpar.addEventListener("click", () => { pcpAjustesClientesSel = null; renderPCP(); });
+    pcpAjustesBind(content, pcpSemanaSel);
     pcpPesosBind(content);
   }
   // ehProducao e ehSalSob já têm toda a wiring própria no bloco de cima (10/11/2026: "Imprimir etiquetas"
