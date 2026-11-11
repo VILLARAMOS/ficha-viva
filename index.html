@@ -134,14 +134,24 @@ button{font-family:inherit;}
 .topbar-account strong{color:var(--text);font-weight:600;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .content{padding:26px 32px 60px;flex:1;}
 
+/* ---------- título da topbar: padrão empilhado; "inline-desc" (só Início) põe lado a lado ---------- */
+.topbar-title{display:flex;flex-direction:column;}
+.topbar-title.inline-desc{flex-direction:row;align-items:baseline;gap:10px;flex-wrap:wrap;}
+.topbar-title.inline-desc .desc{margin-top:0;}
+
 /* ---------- tela de início (home) ---------- */
-.home-hero{display:flex;flex-direction:column;align-items:center;text-align:center;padding:48px 16px 36px;}
-.home-logo{width:84px;height:84px;border-radius:50%;object-fit:cover;box-shadow:0 0 0 1px var(--border),var(--shadow);margin-bottom:18px;}
+.home-hero{display:flex;align-items:center;justify-content:flex-end;gap:36px;padding:44px clamp(16px,6vw,64px) 40px;flex-wrap:wrap;}
+.home-textblock{text-align:right;max-width:360px;}
 .home-title{font-size:34px;margin:0;}
 .home-title em{color:var(--accent);font-style:normal;}
 .home-sub{font-size:12px;letter-spacing:.1em;text-transform:uppercase;color:var(--text-faint);margin-top:6px;}
-.home-greet{color:var(--text-muted);font-size:14px;margin:16px 0 0;}
-.home-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:12px;max-width:980px;margin:8px auto 0;}
+.home-ring{position:relative;width:196px;height:196px;flex:none;perspective:700px;}
+.home-logo{position:absolute;top:50%;left:50%;width:88px;height:88px;transform:translate(-50%,-50%);border-radius:50%;object-fit:cover;box-shadow:0 0 0 1px var(--border),var(--shadow);z-index:2;background:var(--surface);}
+.home-ring-ico{position:absolute;top:50%;left:50%;width:0;height:0;transform:rotate(calc(var(--step) * var(--i) * 1deg)) translate(80px) rotate(calc(var(--step) * var(--i) * -1deg));}
+.home-ring-ico-inner{width:42px;height:42px;margin:-21px;padding:0;font:inherit;display:flex;align-items:center;justify-content:center;background:var(--surface);border:1px solid var(--border);border-radius:50%;box-shadow:var(--shadow);color:var(--accent);cursor:pointer;transition:transform .18s ease,box-shadow .18s ease;}
+.home-ring-ico-inner:hover{transform:scale(1.25) translateY(-3px) rotateX(12deg) rotateY(-12deg);box-shadow:0 14px 26px -10px rgba(0,0,0,.4);z-index:3;}
+.home-ring-ico-inner .ico{width:19px;height:19px;flex:none;}
+.home-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(168px,1fr));gap:12px;max-width:980px;margin:0 auto;padding:0 clamp(16px,6vw,64px) 36px;}
 .home-card{display:flex;flex-direction:column;align-items:center;gap:9px;padding:20px 12px;background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow);cursor:pointer;font:inherit;font-size:13px;font-weight:500;color:var(--text);text-align:center;transition:transform .1s ease,border-color .1s ease;}
 .home-card:hover{border-color:var(--accent);transform:translateY(-2px);}
 .home-card .ico{width:22px;height:22px;color:var(--accent);}
@@ -565,7 +575,7 @@ table.cardapio-table .autocomplete{position:relative;}
   </nav>
   <div class="main">
     <div class="topbar">
-      <div>
+      <div class="topbar-title">
         <h1 id="page-title">Insumos</h1>
         <div class="desc" id="page-desc">Cadastro único de custo</div>
       </div>
@@ -787,6 +797,7 @@ function goToView(view){
   currentView = view;
   document.querySelectorAll(".nav-btn[data-view]").forEach(b => b.classList.toggle("active", b.dataset.view === view));
   document.getElementById("btn-orientacoes").hidden = !ORIENTACOES_POR_VIEW[view];
+  document.querySelector(".topbar-title")?.classList.toggle("inline-desc", view === "inicio");
   VIEWS[view]();
 }
 
@@ -5975,6 +5986,10 @@ const INICIO_ATALHOS = [
   { view:"orcamento", label:"Orçamento", icon:"wallet" },
   { view:"pcp", label:"PCP", icon:"chef-hat" },
 ];
+// Subconjunto curado pro anel decorativo em volta da logo (vitrine visual, não é a navegação
+// principal — a navegação "de verdade" continua sendo a grade com nome, abaixo). Poucos itens
+// pra caber com espaço e ficar legível; a ordem aqui é a ordem no anel (começando no topo, sentido horário).
+const INICIO_ANEL = ["painel","insumos","cardapio","contratos","compras","pcp"];
 function saudacaoPorHorario(){
   const h = new Date().getHours();
   if(h < 6) return "Boa madrugada";
@@ -5984,17 +5999,28 @@ function saudacaoPorHorario(){
 }
 function renderInicio(){
   document.getElementById("page-title").textContent = "Início";
-  document.getElementById("page-desc").textContent = "";
+  document.getElementById("page-desc").innerHTML = `${saudacaoPorHorario()}${currentUser?.email ? `, <strong>${escapeHtml(currentUser.email)}</strong>` : ""}.`;
   document.getElementById("topbar-actions").innerHTML = "";
 
   const atalhos = INICIO_ATALHOS.filter(a => possoVerView(a.view));
+  const anel = INICIO_ATALHOS.filter(a => INICIO_ANEL.includes(a.view) && possoVerView(a.view));
   const content = document.getElementById("content");
   content.innerHTML = `
     <div class="home-hero">
-      <img class="home-logo" src="assets/logo-mark.png" alt="Villa Ramos">
-      <h1 class="home-title">Ficha <em>Viva</em></h1>
-      <div class="home-sub">Grupo Villa Ramos</div>
-      <p class="home-greet">${saudacaoPorHorario()}${currentUser?.email ? `, <strong>${escapeHtml(currentUser.email)}</strong>` : ""}.</p>
+      <div class="home-textblock">
+        <h1 class="home-title">Ficha <em>Viva</em></h1>
+        <div class="home-sub">Grupo Villa Ramos</div>
+      </div>
+      <div class="home-ring" style="--step:${anel.length ? 360 / anel.length : 0}">
+        <img class="home-logo" src="assets/logo-mark.png" alt="Villa Ramos">
+        ${anel.map((a,i) => `
+          <div class="home-ring-ico" style="--i:${i}">
+            <button type="button" class="home-ring-ico-inner" data-view="${a.view}" title="${escapeHtml(a.label)}">
+              <i class="ico" data-lucide="${a.icon}"></i>
+            </button>
+          </div>
+        `).join("")}
+      </div>
     </div>
     ${atalhos.length ? `
     <div class="home-grid">
@@ -6006,7 +6032,7 @@ function renderInicio(){
       `).join("")}
     </div>` : ""}
   `;
-  content.querySelectorAll(".home-card").forEach(b => b.addEventListener("click", () => goToView(b.dataset.view)));
+  content.querySelectorAll(".home-card, .home-ring-ico-inner").forEach(b => b.addEventListener("click", () => goToView(b.dataset.view)));
   if(window.lucide) lucide.createIcons();
 }
 
