@@ -17594,8 +17594,8 @@ async function renderPCP(){
         {label:"Cortes/itens (semana)", valor: mapaSemana.cortes.length},
         {label:"Custo total da semana", valor: fmtMoney(mapaSemana.custoTotalSemana)}
       ])}
-      ${pcpMapaSemanaHtml(mapaSemana, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial")}
       ${pcpAcgFiltrosHtml(pcpAcgDiasSel, acgContratosMatriz, acgContratosFilial, acgIdsMatriz, acgIdsFilial, acgClienteFiltro, acgIdsUnidade, pcpAcgClientesSel, unidadeFiltro, pcpAcgGerado)}
+      ${pcpMapaSemanaHtml(mapaSemana, unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial")}
       ${!acgDiasAtivos.length ? `<div class="empty-state">Marque pelo menos 1 dia da semana acima pra gerar o Preparo da semana.</div>`
         : !pcpAcgGerado ? `<div class="empty-state">Marque os dias e clientes desejados e clique em "Gerar tabela".</div>`
         : `${pcpAcgAcoesHtml(acgMapaCarnesSemana)}
