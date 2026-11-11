@@ -15015,14 +15015,17 @@ function pcpImprimirAcgPreparoDiasEscolhidos(dias, preparoSemana, semana, unidad
 // padrão de Ajustes do dia/Produção) — aqui ficam SÓ os 5 botões de ação, numa barra única e organizada.
 // Etiquetas não depende de dia marcado (cobre a semana toda, como já era).
 function pcpAcgAcoesHtml(mapaCarnesSemana){
+  // 11/11/2026, pedido do Marcelo: todos os 5 botões no mesmo padrão de cor (btn small primary, igual o
+  // resto do app — Produção usa esse padrão pros botões de impressão) e nomes mais curtos, sem "(dias
+  // marcados)" repetido em cada um (o próprio painel "Dias da semana" acima já deixa isso claro).
   return `
     <div class="panel" style="margin-bottom:14px;">
       <div class="panel-body" style="display:flex; flex-wrap:wrap; gap:10px; align-items:center; justify-content:flex-end;">
-        <button class="btn small ghost" id="pcp-etiquetas-abrir" title="${mapaCarnesSemana.length} linha${mapaCarnesSemana.length===1?"":"s"} da semana">Preparar etiquetas</button>
-        <button class="btn small primary" id="pcp-acgacao-fichas">Imprimir fichas técnicas (dias marcados)</button>
-        <button class="btn small primary" id="pcp-acgacao-imprimir">Imprimir dias marcados</button>
-        <button class="btn small ghost" id="pcp-acgacao-desfazer" style="color:var(--danger,#c0392b); border-color:var(--danger,#c0392b);">Desfazer baixa (dias marcados)</button>
-        <button class="btn small primary" id="pcp-acgacao-baixar">Dar baixa no estoque (dias marcados)</button>
+        <button class="btn small primary" id="pcp-etiquetas-abrir" title="${mapaCarnesSemana.length} linha${mapaCarnesSemana.length===1?"":"s"} da semana">Preparar etiquetas</button>
+        <button class="btn small primary" id="pcp-acgacao-fichas">Imprimir ficha técnica</button>
+        <button class="btn small primary" id="pcp-acgacao-imprimir">Imprimir produções</button>
+        <button class="btn small primary" id="pcp-acgacao-desfazer">Desfazer baixa</button>
+        <button class="btn small primary" id="pcp-acgacao-baixar">Dar baixa no estoque</button>
       </div>
     </div>`;
 }
