@@ -435,6 +435,9 @@ textarea{font:inherit;color:var(--text);background:var(--bg);border:1px solid va
 /* ---------- cardápio: visualização semanal ---------- */
 .menu-controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px;}
 .menu-controls select{font:600 13px/1 'IBM Plex Sans',sans-serif;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:9px 14px;box-sizing:border-box;}
+/* 11/11/2026, pedido do Marcelo: selects de escolha de cliente/padaria fora do menu-controls (Café/Padaria)
+   no mesmo padrão visual do select de semana (#pcp-semana), que só fica bonito dentro de .menu-controls. */
+.select-like-semana{font:600 13px/1 'IBM Plex Sans',sans-serif;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:9px 14px;box-sizing:border-box;}
 .seg-toggle{display:flex;border:1px solid var(--border);border-radius:8px;overflow:hidden;}
 .seg-toggle button{border:none;background:var(--surface);padding:8px 14px;font-size:12.5px;cursor:pointer;color:var(--text-muted);}
 .seg-toggle button.active{background:var(--accent);color:#fff;}
@@ -13594,6 +13597,13 @@ let pcpAjustesDiasSel = new Set();
 // contratoId, ou null = grupo inteiro/unidade inteira); filtra tanto a tabela de peso por prato quanto a de
 // quantidades. Só da sessão, não grava no banco.
 let pcpAjustesClientesSel = null;
+// clientes selecionados no painel "Clientes" de Café/Padaria (11/11/2026, pedido do Marcelo: "mesmo padrão
+// de caixas de Substituições"). Mesmo padrão de pcpAjustesClientesSel (Set de contratoId, ou null = grupo
+// inteiro/unidade inteira) — filtra só quais cards de cliente aparecem na tela. NÃO existe Set de dias
+// equivalente pro café: a confirmação e os hóspedes previstos do pedido são por 1 data só (não acumulam
+// entre dias como em Ajustes/Substituições), então o seletor de dia do café continua sendo o toggle de dia
+// único de sempre (pcpDiaSel), só reescrito no visual novo de caixa/chip.
+let pcpCafeClientesSel = null;
 // dias marcados pra impressão na tabela nova "Preparo da semana" do Açougue (corte×receita, 20/10/2026) —
 // Set PRÓPRIO, separado de pcpAcgDiasSel (que já era usado pela baixa de estoque/kardex acima), pra marcar
 // um dia numa tela não desmarcar o outro por engano.
@@ -15806,21 +15816,24 @@ function pcpCafeFornecedorClienteInfo(contratoId){
   return { fornecedorId: itens[0] ? itens[0].fornecedor_id : null, misto: ids.size > 1 };
 }
 function pcpCafeGrupoLabel(g){ return {fixo:"Fixo", variavel:"Variável", per_capita:"Per cápita", servico:"Serviço"}[g] || g; }
-function pcpCafeHtml(unidadeFiltro, ymd, diaLabel){
+function pcpCafeHtml(unidadeFiltro, ymd, diaLabel, clienteFiltro){
   const fornecedoresPad = pcpCafeFornecedores();
   const insumosPadaria = [...insumos.entries()].filter(([,i]) => i.grupo_compra === "PADARIA").map(([,i]) => i.nome).sort((a,b) => a.localeCompare(b,'pt-BR'));
   const dlProdutos = `<datalist id="cafe-produtos-dl">${insumosPadaria.map(n => `<option value="${escapeHtml(n)}">`).join("")}</datalist>`;
-  const clientes = pcpCafeClientesUnidade(unidadeFiltro);
+  // 11/11/2026, pedido do Marcelo: painel "Clientes" (fora desta função, igual Ajustes do dia) virou filtro
+  // FUNCIONAL — só os clientes marcados ali aparecem nos cards abaixo. "Incluir cliente novo" e o botão
+  // global "Salvar pedido do dia" continuam olhando todo mundo (de propósito — ver pcpCafeSalvarPedidoDoDiaGlobal).
+  const clientes = pcpCafeClientesUnidade(unidadeFiltro).filter(c => !clienteFiltro || clienteFiltro.has(c.id));
   const candidatos = pcpCafeCandidatos(unidadeFiltro);
   const blocoNovo = `<div class="panel" style="margin-bottom:14px;"><div class="panel-body">
     <div class="footnote" style="margin-bottom:8px;">Incluir cliente novo no controle de café/padaria${unidadeFiltro ? " ("+nomeUnidadeCompra(unidadeFiltro)+")" : ""}:</div>
     ${candidatos.length ? `<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-      <select id="cafe-novo-cliente" style="min-width:220px;"><option value="">— escolha o cliente —</option>${candidatos.map(c => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join("")}</select>
-      <select id="cafe-novo-fornecedor">${fornecedoresPad.map(f => `<option value="${f.id}">${escapeHtml(f.nome)}</option>`).join("")}</select>
+      <select id="cafe-novo-cliente" class="select-like-semana" style="min-width:220px;"><option value="">— escolha o cliente —</option>${candidatos.map(c => `<option value="${c.id}">${escapeHtml(c.nome)}</option>`).join("")}</select>
+      <select id="cafe-novo-fornecedor" class="select-like-semana">${fornecedoresPad.map(f => `<option value="${f.id}">${escapeHtml(f.nome)}</option>`).join("")}</select>
       <button type="button" class="btn small primary" id="cafe-novo-add">+ Adicionar</button>
     </div>` : `<div class="footnote" style="margin:0;">${fornecedoresPad.length ? "Todos os clientes ativos"+(unidadeFiltro?" desta unidade":"")+" já estão cadastrados aqui." : "Nenhuma padaria cadastrada em Fornecedores com o departamento PADARIA ainda."}</div>`}
   </div></div>`;
-  if(!clientes.length) return dlProdutos + blocoNovo + `<div class="panel"><div class="empty-state">Nenhum cliente de café/padaria cadastrado ainda${unidadeFiltro ? " nesta unidade" : ""}.</div></div>`;
+  if(!clientes.length) return dlProdutos + blocoNovo + `<div class="panel"><div class="empty-state">Nenhum cliente de café/padaria cadastrado ainda${unidadeFiltro ? " nesta unidade" : ""}${clienteFiltro ? " (confira o filtro de clientes acima)" : ""}.</div></div>`;
 
   const cards = clientes.map(cli => {
     const itens = (cafePadariaItens.get(cli.id) || []).slice().sort((a,b) => a.ordem - b.ordem);
@@ -15850,7 +15863,7 @@ function pcpCafeHtml(unidadeFiltro, ymd, diaLabel){
       <div class="panel-body" style="padding:10px 14px;">
         <div style="display:flex; gap:14px; flex-wrap:wrap; margin-bottom:10px;">
           <div class="field" style="max-width:170px; margin:0;"><label style="font-size:11px;">Padaria que atende</label>
-            <select class="cafe-fornecedor-cliente" data-cafe-fornecedor-cliente="${cli.id}">${fornecedoresPad.map(f => `<option value="${f.id}" ${f.id === fiCliente.fornecedorId ? "selected" : ""}>${escapeHtml(f.nome)}</option>`).join("")}</select>
+            <select class="cafe-fornecedor-cliente select-like-semana" data-cafe-fornecedor-cliente="${cli.id}">${fornecedoresPad.map(f => `<option value="${f.id}" ${f.id === fiCliente.fornecedorId ? "selected" : ""}>${escapeHtml(f.nome)}</option>`).join("")}</select>
             ${fiCliente.misto ? `<div class="footnote" style="color:var(--critical); margin:2px 0 0;">produtos deste cliente estão com padarias diferentes entre si — escolher aqui unifica todos</div>` : ""}
           </div>
           ${temPerCapita ? `<div class="field" style="max-width:240px; margin:0;"><label style="font-size:11px;">Hóspedes previstos (${escapeHtml(diaLabel)})</label><input type="number" min="0" step="1" class="cafe-hospedes" data-cafe-hosp="${cli.id}" value="${pedidoRow && pedidoRow.hospedes_previstos != null ? pedidoRow.hospedes_previstos : ""}" placeholder="informar à tarde"></div>` : ""}
@@ -15875,8 +15888,7 @@ function pcpCafeHtml(unidadeFiltro, ymd, diaLabel){
 
   return `
     ${dlProdutos}
-    <div class="panel" style="margin-bottom:14px;"><div class="panel-body" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
-      <div class="footnote" style="margin:0;">Pedido de <b>${escapeHtml(diaLabel)}, ${escapeHtml(fmtDataYMD(ymd))}</b>. O valor cobrado do cliente não muda aqui — só o que é pedido à padaria. "Salvar pedido do dia" confirma quem falta confirmar (pula quem depende de hóspedes previstos ainda sem número) e já gera o pedido de compra de cada padaria — que já abate do orçamento, sem passo extra.</div>
+    <div class="panel" style="margin-bottom:14px;"><div class="panel-body" style="display:flex; justify-content:flex-end;">
       <button type="button" class="btn small primary" id="cafe-salvar-pedido-dia">Salvar pedido do dia</button>
     </div></div>
     ${blocoNovo}
@@ -15965,6 +15977,10 @@ async function pcpCafeGerarPedido(fornecedorId, ymd, semana){
       : await sb.from('pedidos').insert(row);
     if(error){ showAlert("Erro ao gravar pedido de " + nomeUnidadeCompra(g.unidade) + ": " + error.message); }
   }
+  // 11/11/2026: recarrega o cache global de `pedidos` (mesmo loadPedidos usado em Compras) — sem isso o
+  // painel novo "quantos pedidos de cada padaria hoje" (pcpPainelAreaHtml em ehCafe) ficava desatualizado
+  // até a próxima troca de aba/F5, mesmo o pedido já tendo sido gravado no banco com sucesso.
+  await loadPedidos();
   return grupos;
 }
 // 20/10/2026, pedido do Marcelo: "deve ter um botão salvar pedido do dia. acionando ele deve ser feito os
@@ -16890,6 +16906,22 @@ async function renderPCP(){
     confLinhas = pcpConferenciaLinhas(res, pcpDiaSel);
   }
   if(ehCafe) await pcpCarregarCafePadaria(pcpDataSel);
+  // Café/Padaria (11/11/2026, pedido do Marcelo "mesmo padrão de caixas de Substituições"): painel "Clientes"
+  // igual Ajustes do dia — grid2-box de Matriz/Filial com atalhos, filtro FUNCIONAL sobre os cards do dia
+  // (pcpCafeHtml). Base é só quem já tem café/padaria cadastrado (pcpCafeClientesUnidade), não todo contrato
+  // ativo — não faz sentido oferecer pra marcar/desmarcar um cliente que nem está nessa tela ainda. Não
+  // existe painel "Dias da semana" com multi-seleção equivalente ao de Ajustes/Substituições: a confirmação
+  // e os hóspedes previstos do pedido do café são por 1 data só (cafe_padaria_pedido_dia é 1 linha por
+  // contrato×dia), não acumulam — então o controle de dia do café continua sendo pcpDiaSel (dia único),
+  // só desenhado no visual novo de caixa/chip.
+  const cafeClientesTodos = ehCafe ? pcpCafeClientesUnidade(null) : [];
+  const cafeContratosMatriz = cafeClientesTodos.filter(c => c.unidade === "matriz");
+  const cafeContratosFilial = cafeClientesTodos.filter(c => c.unidade === "filial");
+  const cafeIdsMatriz = cafeContratosMatriz.map(c => c.id);
+  const cafeIdsFilial = cafeContratosFilial.map(c => c.id);
+  const cafeIdsUnidade = !unidadeFiltro || unidadeFiltro === "todos" ? [...cafeIdsMatriz, ...cafeIdsFilial] : (unidadeFiltro === "matriz" ? cafeIdsMatriz : cafeIdsFilial);
+  const cafeSelIds = pcpCafeClientesSel === null ? cafeIdsUnidade : cafeIdsUnidade.filter(id => pcpCafeClientesSel.has(id));
+  const cafeClienteFiltro = new Set(cafeSelIds);
   const romaneioGrupos = ehRomaneio ? pcpRomaneioPorRota(res) : null;
   const content = document.getElementById("content");
   content.innerHTML = `
@@ -16905,9 +16937,9 @@ async function renderPCP(){
       <button type="button" data-pcpsub="romaneio" class="${pcpSubView==="romaneio"?"active":""}">Romaneio por rota</button>
     </div>
     <div class="menu-controls" style="margin-bottom:16px;">
-      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes ? "" : `<div class="kk-dias-chips" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" class="chip-dia ${pcpUnidadeSel===u.id?"on":""}" data-pcpuni="${u.id}">${u.nome}${u.id !== "todos" ? ` · ${pcpContagemUnidade(u.id)}` : ""}</button>`).join("")}</div>`}
+      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes || ehCafe ? "" : `<div class="kk-dias-chips" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" class="chip-dia ${pcpUnidadeSel===u.id?"on":""}" data-pcpuni="${u.id}">${u.nome}${u.id !== "todos" ? ` · ${pcpContagemUnidade(u.id)}` : ""}</button>`).join("")}</div>`}
       <select id="pcp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===pcpSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
-      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes ? "" : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
+      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes || ehCafe ? "" : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
       ${servicosAplicavel ? `<div class="kk-dias-chips" id="pcp-serv-tabs">${PCP_TURNOS.filter(t=>t.id!=="todos").map(t => `<button type="button" class="chip-dia ${pcpServicosSel.has(t.id)?"on":""}" data-pcp-serv="${t.id}">${t.nome}</button>`).join("")}</div>` : ""}
     </div>
     ${ehAcougue ? `
@@ -16943,17 +16975,67 @@ async function renderPCP(){
         : `${pcpConferenciaPainelHtml(confLinhas, pcpDiaSel, unidadeFiltro)}<div id="pcp-conf-wrap">${pcpConferenciaHtml(confLinhas)}</div>`
     ) : ehRomaneio ? (
       `${pcpRomaneioPainelHtml(romaneioGrupos)}${pcpRomaneioHtml(romaneioGrupos)}`
-    ) : ehCafe ? (
-      pcpPainelAreaHtml((() => {
-        const cafeClientes = pcpCafeClientesUnidade(unidadeFiltro);
-        const cafeConfirmados = cafeClientes.filter(c => { const r = cafePadariaPedidoDiaCache.get(c.id); return !!(r && r.confirmado); }).length;
-        return [
-          {label:"Clientes com café cadastrado", valor: cafeClientes.length},
-          {label:"Pedido do dia confirmado", valor: `${cafeConfirmados}/${cafeClientes.length}`, ok: cafeClientes.length>0 && cafeConfirmados===cafeClientes.length}
-        ];
-      })()) +
-      pcpCafeHtml(unidadeFiltro, pcpDataSel, pcpDiaLabelSel)
-    ) : ehSubst ? (
+    ) : ehCafe ? ((() => {
+      // 11/11/2026, pedido do Marcelo ("mesmo padrão de caixas de Substituições"): painel "Dias da semana"
+      // (visual de caixa/chip igual Ajustes/Substituições, mas SEM multi-seleção — ver comentário grande
+      // acima de cafeClientesTodos sobre por que o pedido do café é sempre de 1 dia só) + painel "Clientes"
+      // (grid2-box igual Ajustes, filtro funcional).
+      const diasPanelCafe = `
+      <div class="panel" style="margin-bottom:14px;">
+        <div class="panel-head"><h3>Dias da semana</h3></div>
+        <div class="panel-body">
+          <div class="footnote" style="margin:0 0 10px;">O pedido de café/padaria é sempre de 1 dia por vez — hóspedes previstos e confirmação são por data, não acumulam entre dias. Escolha aqui o dia do pedido.</div>
+          <div class="kk-dias-chips" id="pcp-dia-tabs" style="flex-wrap:wrap;">
+            ${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}
+          </div>
+        </div>
+      </div>`;
+      const grupoClientesCafeHtml = (titulo, lista, unidadeKey) => {
+        const ativa = !unidadeFiltro || unidadeFiltro === unidadeKey;
+        return `<div class="grid2-box ${ativa?"":"grid2-box-dim"}">
+          <div class="footnote" style="margin:0 0 8px; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
+            <span>${escapeHtml(titulo)} (${lista.length})</span>
+            ${ativa ? `<span class="hint" style="margin:0;">${lista.filter(c => cafeClienteFiltro.has(c.id)).length} de ${lista.length} selecionados</span>` : `<span class="hint" style="margin:0;">não selecionada</span>`}
+          </div>
+          ${lista.length ? `<div class="kk-dias-chips" style="flex-wrap:wrap;">
+            ${lista.map(c => `<button type="button" class="chip-dia ${ativa?"pcp-cafe-cli-chip":""} ${ativa && cafeClienteFiltro.has(c.id)?"on":""}" data-id="${c.id}" ${ativa?"":"disabled"}>${escapeHtml(c.nome_cliente)}</button>`).join("")}
+          </div>` : `<div class="footnote">Nenhum cliente de café/padaria cadastrado.</div>`}
+        </div>`;
+      };
+      const clientesPanelCafe = `
+      <div class="panel" style="margin-bottom:14px;">
+        <div class="panel-head">
+          <h3>Clientes</h3>
+          <span class="hint">${cafeSelIds.length} de ${cafeIdsUnidade.length}</span>
+        </div>
+        <div class="panel-body">
+          <div class="kk-dias-chips" style="margin-bottom:10px; flex-wrap:wrap; align-items:center;">
+            <button type="button" class="chip-dia ${!unidadeFiltro||unidadeFiltro==="todos"?"on":""}" data-cafe-atalho="todos">Grupo inteiro (${cafeIdsMatriz.length + cafeIdsFilial.length})</button>
+            <button type="button" class="chip-dia ${unidadeFiltro==="matriz"?"on":""}" data-cafe-atalho="matriz">Matriz (${cafeIdsMatriz.length})</button>
+            <button type="button" class="chip-dia ${unidadeFiltro==="filial"?"on":""}" data-cafe-atalho="filial">Filial (${cafeIdsFilial.length})</button>
+            <button type="button" class="btn small ghost" id="pcp-cafe-cli-limpar" ${pcpCafeClientesSel===null?"disabled":""} style="margin-left:6px;">Limpar seleção</button>
+          </div>
+          <div class="grid2">
+            ${grupoClientesCafeHtml("Matriz", cafeContratosMatriz, "matriz")}
+            ${grupoClientesCafeHtml("Filial", cafeContratosFilial, "filial")}
+          </div>
+        </div>
+      </div>`;
+      const cafeClientesSelecionados = cafeClientesTodos.filter(c => cafeClienteFiltro.has(c.id));
+      const cafeConfirmados = cafeClientesSelecionados.filter(c => { const r = cafePadariaPedidoDiaCache.get(c.id); return !!(r && r.confirmado); }).length;
+      // nome de cada padaria + quantos pedidos de compra já foram gravados hoje pra ela (pedidos.origem_auto
+      // === "cafe_padaria", 1 pedido por unidade atendida — ver pcpCafeGerarPedido/pcpCafeMontarPedidosDia).
+      const fornecedoresKpi = pcpCafeFornecedores().map(f => ({
+        label: f.nome,
+        valor: [...pedidos.values()].filter(p => p.origem_auto === "cafe_padaria" && p.data_pedido === pcpDataSel && p.fornecedor_id === f.id).length
+      }));
+      const kpiPainelCafe = pcpPainelAreaHtml([
+        {label:"Clientes com café cadastrado", valor: cafeClientesSelecionados.length},
+        {label:"Pedido do dia confirmado", valor: `${cafeConfirmados}/${cafeClientesSelecionados.length}`, ok: cafeClientesSelecionados.length>0 && cafeConfirmados===cafeClientesSelecionados.length},
+        ...fornecedoresKpi
+      ]);
+      return diasPanelCafe + clientesPanelCafe + kpiPainelCafe + pcpCafeHtml(unidadeFiltro, pcpDataSel, pcpDiaLabelSel, cafeClienteFiltro);
+    })()) : ehSubst ? (
       // 10/11/2026: KPI e grade agregam todos os dias marcados em pcpSubstDiasSel (antes só pcpDiaSel) —
       // mesma lógica de "Revisão pendente" de cada dia, só que somada/listada pros dias selecionados.
       pcpPainelAreaHtml((() => {
@@ -17377,6 +17459,24 @@ async function renderPCP(){
       if(grupo) pcpImprimirRomaneio(grupo, pcpSemanaSel, pcpDiaSel);
     }));
   } else if(ehCafe){
+    // Clientes (11/11/2026, mesmo padrão de Ajustes/Produção): atalhos trocam a unidade do topo e sempre
+    // voltam pcpCafeClientesSel pra null ("todos" da unidade nova); chip individual e "Limpar seleção"
+    // operam dentro da unidade (ou das duas, em "Ambas") já selecionada.
+    content.querySelectorAll("[data-cafe-atalho]").forEach(b => b.addEventListener("click", () => {
+      const k = b.dataset.cafeAtalho;
+      pcpUnidadeSel = k === "todos" ? "todos" : k;
+      pcpCafeClientesSel = null;
+      renderPCP();
+    }));
+    content.querySelectorAll(".pcp-cafe-cli-chip").forEach(b => b.addEventListener("click", () => {
+      const id = b.dataset.id;
+      const base = pcpCafeClientesSel === null ? new Set(cafeIdsUnidade) : new Set(pcpCafeClientesSel);
+      if(base.has(id)) base.delete(id); else base.add(id);
+      pcpCafeClientesSel = base;
+      renderPCP();
+    }));
+    const btnCafeCliLimpar = document.getElementById("pcp-cafe-cli-limpar");
+    if(btnCafeCliLimpar) btnCafeCliLimpar.addEventListener("click", () => { pcpCafeClientesSel = null; renderPCP(); });
     pcpCafeBind(content, unidadeFiltro, pcpDataSel, pcpDiaLabelSel, pcpSemanaSel);
   } else if(ehSubst){
     pcpSubstituicoesBind(content, pcpSemanaSel, unidadeFiltro, resPorDiaSubst);
