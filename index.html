@@ -15731,6 +15731,11 @@ function pcpCafeCandidatos(unidadeFiltro){
 }
 const CAFE_DIAS_SEMANA_CURTO = ["dom","seg","ter","qua","qui","sex","sab"];
 const CAFE_DIAS_SEMANA_LABEL = {dom:"dom", seg:"seg", ter:"ter", qua:"qua", qui:"qui", sex:"sex", sab:"sáb"};
+// período do dia (11/11/2026, pedido do Marcelo: "classificar cada produto por período") — coluna nova
+// cafe_padaria_itens.periodo (manha/tarde/noite, default "manha" pros produtos já cadastrados antes disso).
+// Agrupa a tabela de cada cliente (pcpCafeHtml) e o texto pronto pro WhatsApp (pcpCafeTextoPedido).
+const CAFE_PERIODOS = ["manha","tarde","noite"];
+const CAFE_PERIODO_LABEL = {manha:"Café da manhã", tarde:"Tarde", noite:"Noite"};
 function cafeDiaSemanaCurto(ymd){ return CAFE_DIAS_SEMANA_CURTO[new Date(ymd+"T00:00:00Z").getUTCDay()]; }
 // valor efetivo do dia pra um item: exceção lançada hoje > per cápita calculado > padrão, exceto se o item
 // só roda em certos dias da semana (ex.: pão de leite seg/qui) — fora desses dias o padrão não se aplica,
@@ -15841,7 +15846,7 @@ function pcpCafeHtml(unidadeFiltro, ymd, diaLabel, clienteFiltro){
     const temPerCapita = itens.some(i => i.grupo === "per_capita");
     const fiCliente = pcpCafeFornecedorClienteInfo(cli.id);
     const fornecedorIdPadrao = fiCliente.fornecedorId || (fornecedoresPad[0] ? fornecedoresPad[0].id : "");
-    const linhas = itens.map(it => {
+    const linhaItem = it => {
       const ef = pcpCafeValorEfetivo(it, ymd, pedidoRow, pedidoRow ? pedidoRow.hospedes_previstos : null);
       const badge = it.grupo === "servico" ? `<span class="chip neutral">Serviço</span>`
         : it.grupo === "fixo" ? `<span class="chip neutral">Fixo</span>`
@@ -15856,7 +15861,16 @@ function pcpCafeHtml(unidadeFiltro, ymd, diaLabel, clienteFiltro){
         <td style="font-size:11px; white-space:nowrap;">${badge}${diasChip}${ef.origem === "excecao" ? ` <span class="chip warn">hoje</span>` : ""}</td>
         <td><button type="button" class="btn small ghost" data-cafe-editar-item="${it.id}" title="Editar produto">✎</button> <button type="button" class="btn small ghost" data-cafe-remover-item="${it.id}" title="Remover produto">×</button></td>
       </tr>`;
-    }).join("");
+    };
+    // 11/11/2026, pedido do Marcelo ("classificar cada produto por período"): a tabela única virou 1 mini-
+    // tabela por período (manhã/tarde/noite), só os períodos com produto aparecem; ordem dentro do período
+    // continua sendo a mesma `ordem` de sempre.
+    const tabelasPorPeriodo = CAFE_PERIODOS.map(p => ({ periodo: p, lista: itens.filter(it => (it.periodo || "manha") === p) }))
+      .filter(g => g.lista.length)
+      .map(g => `<div class="footnote" style="margin:10px 0 4px; font-weight:600;">${escapeHtml(CAFE_PERIODO_LABEL[g.periodo])}</div>
+        <div class="table-wrap"><table style="font-size:12px;"><thead><tr><th>Produto</th><th class="num-cell">Padrão</th><th>Pedido hoje</th><th>Grupo</th><th></th></tr></thead><tbody>${g.lista.map(linhaItem).join("")}</tbody></table></div>`)
+      .join("");
+    const tabelaProdutos = itens.length ? tabelasPorPeriodo : `<p class="footnote" style="margin:0;">Nenhum produto cadastrado ainda — use "+ Produto" abaixo.</p>`;
     return `<div class="panel cafe-card">
       <div class="panel-head"><h3 style="font-size:14px;">${escapeHtml(cli.nome_cliente)}</h3>
         <button type="button" class="btn small ghost" data-cafe-excluir-cliente="${cli.id}">Remover cliente</button></div>
@@ -15869,7 +15883,7 @@ function pcpCafeHtml(unidadeFiltro, ymd, diaLabel, clienteFiltro){
           ${temPerCapita ? `<div class="field" style="max-width:240px; margin:0;"><label style="font-size:11px;">Hóspedes previstos (${escapeHtml(diaLabel)})</label><input type="number" min="0" step="1" class="cafe-hospedes" data-cafe-hosp="${cli.id}" value="${pedidoRow && pedidoRow.hospedes_previstos != null ? pedidoRow.hospedes_previstos : ""}" placeholder="informar à tarde"></div>` : ""}
           <div class="field" style="max-width:160px; margin:0;"><label style="font-size:11px;">Horário de entrega</label><input type="text" class="cafe-horario" data-cafe-horario="${cli.id}" value="${escapeHtml(contratos.get(cli.id)?.cafe_horario_entrega || "")}" placeholder="ex.: 7h00"></div>
         </div>
-        <div class="table-wrap"><table style="font-size:12px;"><thead><tr><th>Produto</th><th class="num-cell">Padrão</th><th>Pedido hoje</th><th>Grupo</th><th></th></tr></thead><tbody>${linhas}</tbody></table></div>
+        ${tabelaProdutos}
         <div style="display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap;">
           <button type="button" class="btn small ghost" data-cafe-add-produto="${cli.id}" data-cafe-fornecedor-padrao="${fornecedorIdPadrao}">+ Produto</button>
           <button type="button" class="btn small ${pedidoRow && pedidoRow.confirmado ? "" : "primary"}" data-cafe-confirmar="${cli.id}">${pedidoRow && pedidoRow.confirmado ? "✓ Confirmado — reabrir" : "Confirmar pedido do dia"}</button>
@@ -15906,13 +15920,19 @@ function pcpCafeTextoPedido(fornecedorId, ymd, diaLabel){
     .map(([id, c]) => ({id, nome: c.nome_cliente}))
     .sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
   const blocos = clientes.map(cli => {
-    const itens = (cafePadariaItens.get(cli.id) || []).filter(i => i.fornecedor_id === fornecedorId);
+    const itens = (cafePadariaItens.get(cli.id) || []).slice().sort((a,b) => a.ordem - b.ordem).filter(i => i.fornecedor_id === fornecedorId);
     const pedidoRow = cafePadariaPedidoDiaCache.get(cli.id);
-    const linhas = itens.map(it => {
+    // 11/11/2026, pedido do Marcelo ("classificar cada produto por período"): texto pronto pro WhatsApp
+    // também sai separado por período (só os períodos com algo a pedir aparecem).
+    const linhaProduto = it => {
       const ef = pcpCafeValorEfetivo(it, ymd, pedidoRow, pedidoRow ? pedidoRow.hospedes_previstos : null);
       if(ef.valor === null || ef.valor <= 0) return null;
       return `${fmtNum(ef.valor,0)} ${it.produto}`;
-    }).filter(Boolean);
+    };
+    const linhas = CAFE_PERIODOS.flatMap(p => {
+      const ls = itens.filter(it => (it.periodo || "manha") === p).map(linhaProduto).filter(Boolean);
+      return ls.length ? [`*${CAFE_PERIODO_LABEL[p]}*`, ...ls] : [];
+    });
     if(!linhas.length) return null;
     const horario = contratos.get(cli.id)?.cafe_horario_entrega;
     return `📍 ${cli.nome}${horario ? ` — entregar ${horario}` : ""}\n\n${linhas.join("\n")}`;
@@ -16108,6 +16128,7 @@ function pcpCafeAbrirAddProduto(contratoId, fornecedorIdPadrao, itemExistente){
     <div class="modal-body">
       <div class="field"><label>Produto</label><input type="text" id="cafe-add-produto" list="cafe-produtos-dl" placeholder="ex.: Pão francês" value="${escapeHtml(it ? it.produto : "")}"></div>
       <div class="field"><label>Padaria</label><select id="cafe-add-fornecedor">${fornecedoresPad.map(f => `<option value="${f.id}" ${f.id === (it ? it.fornecedor_id : fornecedorIdPadrao) ? "selected" : ""}>${escapeHtml(f.nome)}</option>`).join("")}</select></div>
+      <div class="field"><label>Período do dia</label><select id="cafe-add-periodo">${CAFE_PERIODOS.map(p => `<option value="${p}" ${(it ? (it.periodo||"manha") : "manha")===p?"selected":""}>${escapeHtml(CAFE_PERIODO_LABEL[p])}</option>`).join("")}</select></div>
       <div class="field"><label>Como o valor do dia é definido</label><select id="cafe-add-grupo">
         <option value="variavel" ${it && it.grupo==="variavel"?"selected":""}>Variável (padrão + exceção do dia)</option>
         <option value="fixo" ${it && it.grupo==="fixo"?"selected":""}>Fixo (qualquer diferença pede confirmação)</option>
@@ -16150,6 +16171,7 @@ function pcpCafeAbrirAddProduto(contratoId, fornecedorIdPadrao, itemExistente){
       id: it ? it.id : undefined,
       contrato_id: contratoId,
       fornecedor_id: document.getElementById("cafe-add-fornecedor").value || null,
+      periodo: document.getElementById("cafe-add-periodo").value,
       produto, insumo_id: ins ? ins[0] : null, grupo,
       valor_padrao: grupo === "per_capita" ? null : (parseFloat(document.getElementById("cafe-add-padrao").value) || null),
       fator_per_capita: grupo === "per_capita" ? (parseFloat(document.getElementById("cafe-add-fator").value) || null) : null,
