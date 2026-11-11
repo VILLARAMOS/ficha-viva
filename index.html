@@ -17316,7 +17316,7 @@ async function renderPCP(){
           <span class="hint">${pcpSalSobDiasSel.size} de ${DIAS_ORDEM.length}</span>
         </div>
         <div class="panel-body">
-          <div class="footnote" style="margin:0 0 10px;">Marque os dias que entram na Produção do dia e no Ajuste do dia abaixo — pode marcar mais de um, cada dia marcado vira um bloco separado. Mapa da semana e Etiquetas continuam juntando a semana/os dias marcados numa lista só.</div>
+          <div class="footnote" style="margin:0 0 10px;">Marque os dias que entram na Produção do dia abaixo — pode marcar mais de um, cada dia marcado vira um bloco separado. Mapa da semana e Preparar etiquetas continuam juntando a semana/os dias marcados numa lista só.</div>
           <div class="kk-dias-chips" id="pcp-dia-tabs" style="flex-wrap:wrap;">
             ${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia pcp-salsob-dia-chip ${pcpSalSobDiasSel.has(d)?"on":""}" data-dia="${d}">${DIA_LABEL[d]}</button>`).join("")}
           </div>
