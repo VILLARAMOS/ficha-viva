@@ -15180,8 +15180,11 @@ function pcpSalSobTabelaGrupoHtml(pratos, porDia, grupoLabel){
     const detalheDias = p.detalhePorDia
       .map((det, idx) => det ? `<strong>${DIA_LABEL[porDia[idx].dia].slice(0,3)}:</strong> ${pcpSalSobDetalheHtml(det)}` : null)
       .filter(Boolean);
+    // 11/11/2026, pedido do Marcelo: o detalhe não pode mais esticar até as colunas de dia (SEG...) — fica
+    // só na largura da coluna "Prato" (1ª célula), bem compacto (fonte menor, 1 dia por linha); o resto da
+    // linha (colunas de dia + Total) fica em branco em vez de colspan pela tabela toda.
     return `<tr><td class="name-cell">${escapeHtml(p.nome)}</td>${p.porDia.map(q => `<td class="num-cell">${q ? fmtNum(q,2) : "—"}</td>`).join("")}<td class="num-cell"><strong>${fmtNum(p.total,2)}</strong></td></tr>` +
-      (detalheDias.length ? `<tr><td colspan="${porDia.length+2}" class="footnote" style="margin:0; padding:2px 0 10px 8px; line-height:1.5;">${detalheDias.join(" · ")}</td></tr>` : "");
+      (detalheDias.length ? `<tr><td style="margin:0; padding:1px 0 8px 8px; line-height:1.4; font-size:10px; color:var(--text-muted); vertical-align:top;">${detalheDias.join("<br>")}</td><td colspan="${porDia.length+1}"></td></tr>` : "");
   }).join("");
   return `<div class="footnote" style="margin:0 0 4px; font-weight:600;">${escapeHtml(grupoLabel)}</div>
     <div class="table-wrap" style="margin-bottom:14px;"><table><thead><tr><th>Prato</th>${cab}<th style="text-align:right;">Total</th></tr></thead><tbody>${linhas}</tbody></table></div>`;
