@@ -12949,11 +12949,14 @@ function pcpBuscarAjusteAcg(dia, contratoId, produtoId, insumoId){
   const porDia = pcpAjustesAcgCache.get(dia);
   return porDia ? (porDia.get(contratoId + "|" + produtoId + "|" + insumoId) || null) : null;
 }
-async function pcpSalvarAjusteAcg(semana, dia, unidade, contratoId, produtoId, insumoId, valorEfetivo, motivo, observacao){
+async function pcpSalvarAjusteAcg(semana, dia, unidade, contratoId, produtoId, insumoId, valorEfetivo, motivo, observacao, insumoSubstitutoId){
   const porDia = pcpAjustesAcgCache.get(dia) || new Map();
   const chave = contratoId + "|" + produtoId + "|" + insumoId;
   const existente = porDia.get(chave);
-  const campos = { semana, dia, unidade, contrato_id: contratoId, produto_id: produtoId, insumo_id: insumoId, valor_efetivo: valorEfetivo, motivo: motivo || "", observacao: observacao || "", alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
+  // insumoSubstitutoId (11/11/2026, opcional, pedido do Marcelo "ajustar também o corte"): quando
+  // preenchido, o kg efetivo migra pra esse corte em vez do original (insumoId) em todo o resto do cálculo
+  // — ver pcpAcumularInsumosDia. null/undefined = sem troca (comportamento de sempre, só a quantidade).
+  const campos = { semana, dia, unidade, contrato_id: contratoId, produto_id: produtoId, insumo_id: insumoId, valor_efetivo: valorEfetivo, insumo_substituto_id: insumoSubstitutoId || null, motivo: motivo || "", observacao: observacao || "", alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
   const { data, error } = existente
     ? await sb.from('pcp_ajustes_acougue').update(campos).eq('id', existente.id).select().single()
     : await sb.from('pcp_ajustes_acougue').insert(campos).select().single();
@@ -13234,23 +13237,32 @@ function pcpAcumularInsumosDia(dayDoc, numPessoas, acougueSet, buckets, pessoasS
     } else return;
     porInsumo.forEach((kg, insumoId) => {
       const destino = (setor === "cozinha" && acougueSet.has(insumoId)) ? "acougue" : setor;
-      let kgEf = kg, ajuste = null;
+      // 11/11/2026, pedido do Marcelo ("ajustar também o corte"): além de sobrepor a quantidade, o ajuste do
+      // açougue agora pode trocar QUAL corte entra no lugar do original (insumo_substituto_id) — ex. acabou
+      // a peça prevista na ficha técnica, usa outra pra esse cliente/dia. A busca do ajuste continua pelo
+      // insumo ORIGINAL (é a chave real do cardápio/receita); só o destino do kg (bucket/coletor/cartão por
+      // cliente) é que migra pro corte substituto — assim Requisição do estoque, baixa e Mapa da semana já
+      // contam certo pro corte que vai ser usado de verdade, não o original.
+      let kgEf = kg, ajuste = null, insumoFinal = insumoId;
       if(destino === "acougue" && porClienteCtx){
         ajuste = pcpBuscarAjusteAcg(dia, porClienteCtx.contratoId, porClienteCtx.produtoId, insumoId);
-        if(ajuste) kgEf = Number(ajuste.valor_efetivo);
+        if(ajuste){
+          kgEf = Number(ajuste.valor_efetivo);
+          if(ajuste.insumo_substituto_id) insumoFinal = ajuste.insumo_substituto_id;
+        }
       }
       const mapa = buckets.get(destino) || new Map();
-      mapa.set(insumoId, (mapa.get(insumoId) || 0) + kgEf);
+      mapa.set(insumoFinal, (mapa.get(insumoFinal) || 0) + kgEf);
       buckets.set(destino, mapa);
-      if(coletor) coletor.add(insumoId, kgEf, nomeReceita, dia);
+      if(coletor) coletor.add(insumoFinal, kgEf, nomeReceita, dia);
       if(destino === "acougue" && porClienteCtx){
-        const porInsumoCli = porClienteCtx.map.get(insumoId) || new Map();
+        const porInsumoCli = porClienteCtx.map.get(insumoFinal) || new Map();
         const chave = porClienteCtx.contratoId + "|" + porClienteCtx.produtoId;
-        const pc = porInsumoCli.get(chave) || { contratoId: porClienteCtx.contratoId, nome: porClienteCtx.nomeCliente, produtoId: porClienteCtx.produtoId, kg: 0, kgOriginal: 0, ajuste: null };
-        pc.kg += kgEf; pc.kgOriginal += kg;
+        const pc = porInsumoCli.get(chave) || { contratoId: porClienteCtx.contratoId, nome: porClienteCtx.nomeCliente, produtoId: porClienteCtx.produtoId, kg: 0, kgOriginal: 0, ajuste: null, insumoOriginal: insumoId };
+        pc.kg += kgEf; pc.kgOriginal += kg; pc.insumoOriginal = insumoId;
         if(ajuste) pc.ajuste = ajuste;
         porInsumoCli.set(chave, pc);
-        porClienteCtx.map.set(insumoId, porInsumoCli);
+        porClienteCtx.map.set(insumoFinal, porInsumoCli);
       }
     });
   });
@@ -13436,12 +13448,15 @@ function pcpAcgPreparoSemana(semana, unidadeFiltro, servicosFiltro, diasAtivos, 
     // nunca diverge do que aparece em Produção pro mesmo cliente/dia.
     const diaCalc = pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro, clienteFiltro);
     const pessoasPorCliente = new Map(diaCalc.clientes.map(c => [c.id, c.pessoas]));
-    const porClienteMap = new Map(); // contratoId -> {id, nome, pessoas, linhas:[{insumoId,corte,unidade,produtoId,nomeProduto,qtdCalculada,ajuste}]}
+    // insumoId aqui é sempre o corte ORIGINAL (chave real de busca/salvamento do ajuste — ver
+    // pcpAcumularInsumosDia); corteAtualId é o corte que de fato vai ser usado (== insumoId quando não há
+    // troca, ou o insumo_substituto_id quando há) — é o que o <select> de corte mostra pré-selecionado.
+    const porClienteMap = new Map(); // contratoId -> {id, nome, pessoas, linhas:[{insumoId,corteAtualId,corte,unidade,produtoId,nomeProduto,qtdCalculada,ajuste}]}
     (bucket ? bucket.itens : []).forEach(it => {
       (it.porCliente || []).forEach(pc => {
         const grupo = porClienteMap.get(pc.contratoId) || { id: pc.contratoId, nome: pc.nome, pessoas: pessoasPorCliente.get(pc.contratoId) || 0, linhas: [] };
         const cat = catalogoPorProduto(pc.produtoId);
-        grupo.linhas.push({ insumoId: it.insumoId, corte: it.nome, unidade: it.unidade, produtoId: pc.produtoId, nomeProduto: cat ? cat.nome : pc.produtoId, qtdCalculada: pc.kgOriginal, ajuste: pc.ajuste || null });
+        grupo.linhas.push({ insumoId: pc.insumoOriginal || it.insumoId, corteAtualId: it.insumoId, corte: it.nome, unidade: it.unidade, produtoId: pc.produtoId, nomeProduto: cat ? cat.nome : pc.produtoId, qtdCalculada: pc.kgOriginal, ajuste: pc.ajuste || null });
         porClienteMap.set(pc.contratoId, grupo);
       });
     });
@@ -14904,15 +14919,22 @@ function pcpAcgAvulsosDiaHtml(dia, semana, unidadeFiltro){
 // Mesmo padrão visual/UX de pcpAjustesHtml (Fase 5, Ajustes do dia da Produção): 1 card por cliente, linhas
 // editáveis (Calculado × Efetivo), motivo/observação, "Salvar ajustes" em lote por card. A diferença é a
 // chave: lá é ficha×serviço, aqui é corte(insumo)×produto — o Açougue não separa por serviço na tabela.
+// lista de cortes pra trocar (11/11/2026, pedido do Marcelo: "ajustar também o corte") — mesmo catálogo que
+// alimenta a Requisição do açougue (pcpAcougueSet), ordenado por nome.
+function pcpAcgCortesDisponiveis(){
+  return [...pcpAcougueSet()].map(id => [id, insumos.get(id)]).filter(([,ins]) => ins).sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+}
 function pcpAcgAjustesClienteHtml(porCliente, dia){
   if(!porCliente || !porCliente.length) return "";
   const opcoesMotivo = atual => `<option value="">—</option>` + PCP_AJUSTE_MOTIVOS.map(m => `<option value="${escapeHtml(m)}" ${atual===m?"selected":""}>${escapeHtml(m)}</option>`).join("");
+  const cortesDisp = pcpAcgCortesDisponiveis();
+  const opcoesCorte = atualId => cortesDisp.map(([id,ins]) => `<option value="${id}" ${atualId===id?"selected":""}>${escapeHtml(ins.nome)}</option>`).join("");
   const cards = porCliente.map(g => `<div class="panel" style="margin-bottom:10px;" data-ajusteacg-card="${escapeHtml(g.id)}">
       <div class="panel-head"><h3 style="font-size:13px;">${escapeHtml(g.nome)}</h3><span class="hint">Pessoas atendidas: <strong>${fmtNum(g.pessoas,0)}</strong></span></div>
       <div class="panel-body"><div class="table-wrap"><table>
         <thead><tr><th>Corte</th><th>Produto</th><th style="text-align:right;">Calculado</th><th style="text-align:right;">Efetivo (kg)</th><th>Motivo</th><th>Observação</th></tr></thead>
         <tbody>${g.linhas.map(l => `<tr data-ajusteacg-contrato="${g.id}" data-ajusteacg-insumo="${l.insumoId}" data-ajusteacg-produto="${l.produtoId}" data-ajusteacg-dia="${dia}" ${l.ajuste ? `data-ajusteacg-id="${l.ajuste.id}"` : ""}>
-          <td class="name-cell">${escapeHtml(l.corte)}</td>
+          <td class="name-cell"><select class="ajusteacg-corte" data-orig="${l.corteAtualId || l.insumoId}" style="width:150px;" title="Trocar o corte que vai ser usado nesta linha">${opcoesCorte(l.corteAtualId || l.insumoId)}</select></td>
           <td>${escapeHtml(l.nomeProduto)}</td>
           <td class="num-cell">${fmtNum(l.qtdCalculada,3)}</td>
           <td><input type="number" step="0.001" min="0" class="ajusteacg-valor" value="${l.ajuste ? Number(l.ajuste.valor_efetivo) : ""}" data-orig="${l.ajuste ? Number(l.ajuste.valor_efetivo) : ""}" placeholder="${fmtNum(l.qtdCalculada,3)}" style="width:90px;"></td>
@@ -14920,13 +14942,14 @@ function pcpAcgAjustesClienteHtml(porCliente, dia){
           <td><input type="text" class="ajusteacg-obs" value="${l.ajuste ? escapeHtml(l.ajuste.observacao||"") : ""}" data-orig="${l.ajuste ? escapeHtml(l.ajuste.observacao||"") : ""}" maxlength="200" style="width:160px;" placeholder="observação"></td>
         </tr>`).join("")}</tbody>
       </table></div>
+      <p class="footnote" style="margin:0 14px 10px;">Trocar o corte exige informar a quantidade (kg) do corte novo — o "Calculado" é sempre do corte original da ficha técnica.</p>
       <div style="display:flex; justify-content:flex-end; align-items:center; gap:10px; padding:10px 14px;"><span class="footnote" data-ajusteacg-msg="${escapeHtml(g.id)}" style="margin:0;"></span><button type="button" class="btn small primary" data-ajusteacg-salvar="${escapeHtml(g.id)}">Salvar ajustes</button></div>
       </div>
     </div>`).join("");
   return `<div class="footnote" style="margin:14px 0 6px;">Ajustes por cliente:</div>${cards}`;
 }
 function pcpAcgAjustesClienteBind(content, semana){
-  content.querySelectorAll(".ajusteacg-valor, .ajusteacg-motivo, .ajusteacg-obs").forEach(el => {
+  content.querySelectorAll(".ajusteacg-corte, .ajusteacg-valor, .ajusteacg-motivo, .ajusteacg-obs").forEach(el => {
     el.addEventListener("input", () => pcpAjustesMarcarSuja(el));
     el.addEventListener("change", () => pcpAjustesMarcarSuja(el));
   });
@@ -14938,19 +14961,23 @@ function pcpAcgAjustesClienteBind(content, semana){
     if(!card) return;
     const linhas = Array.from(card.querySelectorAll("tr[data-ajusteacg-contrato]"));
     const sujas = linhas.filter(tr => {
-      const inpV = tr.querySelector(".ajusteacg-valor"), selM = tr.querySelector(".ajusteacg-motivo"), inpO = tr.querySelector(".ajusteacg-obs");
-      return inpV.value.trim() !== (inpV.dataset.orig||"") || selM.value !== (selM.dataset.orig||"") || inpO.value.trim() !== (inpO.dataset.orig||"");
+      const selC = tr.querySelector(".ajusteacg-corte"), inpV = tr.querySelector(".ajusteacg-valor"), selM = tr.querySelector(".ajusteacg-motivo"), inpO = tr.querySelector(".ajusteacg-obs");
+      return selC.value !== (selC.dataset.orig||"") || inpV.value.trim() !== (inpV.dataset.orig||"") || selM.value !== (selM.dataset.orig||"") || inpO.value.trim() !== (inpO.dataset.orig||"");
     });
     if(!sujas.length){ if(msg) msg.textContent = "Nada mudou."; return; }
     btnSalvar.disabled = true; btnSalvar.textContent = "Salvando...";
     let algumErro = false;
     for(const tr of sujas){
       const contratoId = tr.dataset.ajusteacgContrato, insumoId = tr.dataset.ajusteacgInsumo, produtoId = tr.dataset.ajusteacgProduto, diaLinha = tr.dataset.ajusteacgDia;
-      const nomeCorte = tr.querySelector(".name-cell")?.textContent || insumoId;
+      const selC = tr.querySelector(".ajusteacg-corte");
+      const corteEscolhido = selC.value;
+      const corteMudou = corteEscolhido !== insumoId;
+      const nomeCorte = selC.options[selC.selectedIndex]?.text || insumoId;
       const inpV = tr.querySelector(".ajusteacg-valor"), selM = tr.querySelector(".ajusteacg-motivo"), inpO = tr.querySelector(".ajusteacg-obs");
       const raw = inpV.value.trim();
       const existenteId = tr.dataset.ajusteacgId;
       if(raw === ""){
+        if(corteMudou){ showAlert(`${nomeCorte}: pra trocar o corte, informe também a quantidade (kg) do corte novo.`); algumErro = true; continue; }
         if(existenteId) await pcpRemoverAjusteAcg(existenteId, diaLinha, contratoId, produtoId, insumoId);
         continue;
       }
@@ -14959,7 +14986,7 @@ function pcpAcgAjustesClienteBind(content, semana){
       if(!selM.value){ showAlert(`${nomeCorte}: escolha um motivo para o ajuste.`); algumErro = true; continue; }
       const ct = contratos.get(contratoId);
       if(!ct || !ct.unidade){ showAlert(`Não achei a unidade do contrato de ${nomeCorte} — esse ajuste não foi salvo.`); algumErro = true; continue; }
-      await pcpSalvarAjusteAcg(semana, diaLinha, ct.unidade, contratoId, produtoId, insumoId, valor, selM.value, inpO.value);
+      await pcpSalvarAjusteAcg(semana, diaLinha, ct.unidade, contratoId, produtoId, insumoId, valor, selM.value, inpO.value, corteMudou ? corteEscolhido : null);
     }
     if(algumErro){ btnSalvar.disabled = false; btnSalvar.textContent = "Salvar ajustes"; }
     // mesmo princípio de pcpAjustesBind: renderPCP recarrega pcpAjustesAcgCache antes de recalcular — o
@@ -14991,7 +15018,7 @@ function pcpAcgPreparoSemanaHtml(preparoSemana, semana, unidadeFiltro){
 }
 function pcpAcgPreparoDiaPrintHtml(diaInfo, semana, unidadeLabel){
   const { dia, data, linhas, custoDia, pessoasTot } = diaInfo;
-  return `<h1>AÇOUGUE — PARA SERVIR EM ${escapeHtml(DIA_LABEL[dia]||dia)} ${escapeHtml(fmtData(data))}</h1>
+  return `<h1>AÇOUGUE — Para servir em ${escapeHtml(DIA_LABEL[dia]||dia)} ${escapeHtml(fmtData(data))}</h1>
     <div style="font-size:12px; color:#666; margin-bottom:14px;">${escapeHtml(unidadeLabel)} · ${escapeHtml(rotuloSemana(semana))} · Pessoas atendidas: <strong>${fmtNum(pessoasTot||0,0)}</strong> · Custo do dia: <strong>${fmtMoney(custoDia)}</strong></div>
     <table style="width:100%; border-collapse:collapse; font-size:13px;"><thead><tr><th style="text-align:left; padding-bottom:4px;">Corte (Receita)</th><th style="text-align:right; padding-bottom:4px;">Quantidade</th><th style="text-align:left; padding-bottom:4px;">Data de utilização</th><th style="text-align:right; padding-bottom:4px;">Custo total</th></tr></thead><tbody>
     ${linhas.length ? linhas.map(l => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(l.corte)} (${escapeHtml(l.receita)})</td><td style="padding:4px 0; border-top:1px solid #ddd; text-align:right;">${fmtNum(l.kg,3)} ${escapeHtml(l.unidade)}</td><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(fmtData(data))}</td><td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtMoney(l.custo)}</td></tr>`).join("") : `<tr><td colspan="4">Nada a cortar neste dia.</td></tr>`}
