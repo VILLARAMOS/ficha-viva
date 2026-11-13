@@ -15534,6 +15534,16 @@ function pcpFmtPorcao(q){
   if(q === null || q === undefined || !isFinite(q)) return "—";
   return fmtNum(q, 2);
 }
+// 13/11/2026, pedido do Marcelo: Salada arredonda pro múltiplo de 100g (0,1) mais próximo — mais fácil
+// pra bancada pesar do que guardar 2 casas decimais; o meio exato (50g) usa arredondamento padrão
+// (Math.round), sem convenção especial pra qual lado vai. Só SALADA — Sobremesa é unitário (conta por
+// item, não por peso), não entra aqui. Só se aplica ao valor CALCULADO automaticamente (padrão do
+// cardápio ou escalado pelo ajuste pontual de pessoas) — um ajuste pontual de porção que você mesmo
+// digitou e salvou numa linha (pcpSalSobAjusteDoItem) fica exatamente como foi salvo, sem arredondar.
+function pcpArredondarSalada(qtd, grupo){
+  if(grupo !== "SALADA" || qtd === null || qtd === undefined || !isFinite(qtd)) return qtd;
+  return Math.round(qtd * 10) / 10;
+}
 // 20/10/2026, pedido do Marcelo: as duas tabelas (Produção do dia por cliente + Total a preparar) viram
 // UMA SÓ, Total primeiro e depois cliente a cliente — e cada cliente pode ser desmarcado pra sair do total
 // E da impressão (ex.: cidade atendida em feriado naquele dia). A exclusão é só de tela/sessão (não grava
@@ -15607,13 +15617,13 @@ function pcpSalSobProducaoPorCliente(res){
       if(ajuste !== null){
         qtd = ajuste;
       } else if(ajustePessoas && pc.pessoas > 0){
-        qtd = pc.qtd * ((pc.pessoas + Number(ajustePessoas.delta)) / pc.pessoas);
+        qtd = pcpArredondarSalada(pc.qtd * ((pc.pessoas + Number(ajustePessoas.delta)) / pc.pessoas), r.grupo);
         ajustadoPessoas = true;
       } else {
-        qtd = pc.qtd;
+        qtd = pcpArredondarSalada(pc.qtd, r.grupo);
       }
       const c = porCliente.get(pc.contratoId) || { id: pc.contratoId, nome: pc.nome, pessoas: pc.pessoas, linhas: [], total: 0 };
-      c.linhas.push({ prato: r.nome, grupo: r.grupo, qtd, qtdOriginal: pc.qtd, ajustado: ajuste !== null, ajustadoPessoas, fichaId: r.fichaId, produtoId: pc.produtoId });
+      c.linhas.push({ prato: r.nome, grupo: r.grupo, qtd, qtdOriginal: pcpArredondarSalada(pc.qtd, r.grupo), ajustado: ajuste !== null, ajustadoPessoas, fichaId: r.fichaId, produtoId: pc.produtoId });
       c.total += qtd;
       porCliente.set(pc.contratoId, c);
     });
@@ -15632,6 +15642,16 @@ function pcpSalSobTotalPreparar(porClienteIncluidos){
     porOpcao.set(chave, cur);
   }));
   return [...porOpcao.values()].sort((a,b) => a.grupo.localeCompare(b.grupo,'pt-BR') || b.qtd - a.qtd);
+}
+// 13/11/2026, pedido do Marcelo: além do total prato a prato, 1 total só por grupo — peso de salada (kg,
+// já com o arredondamento de 100g aplicado em cada linha) e unidades de sobremesa (sobremesa é por
+// unidade/item, não por peso — por isso o total de sobremesa aqui é arredondado pro inteiro mais próximo,
+// só nessa soma final; as linhas individuais de "Total a preparar" continuam exatamente como já eram).
+function pcpSalSobTotalPorGrupo(totalPreparar){
+  const totais = { SALADA: 0, SOBREMESA: 0 };
+  totalPreparar.forEach(o => { if(totais[o.grupo] !== undefined) totais[o.grupo] += o.qtd; });
+  totais.SOBREMESA = Math.round(totais.SOBREMESA);
+  return totais;
 }
 // 11/11/2026, pedido do Marcelo: pra cada item que um cliente recebe, saber TAMBÉM qual cardápio e a
 // categoria exata dentro dele (pra poder oferecer o botão "Trocar" certo, igual o antigo painel "Ajuste
@@ -15674,6 +15694,7 @@ function pcpSalSobProducaoHtml(res, trocasAposImpressao, dia, diaLabelPrefixo, s
   // 11/11/2026, pedido do Marcelo: total de pessoas atendidas (soma dos clientes incluídos, já com ajuste
   // de tela quando houver) também aparece na tabela — não só no card de cada cliente.
   const pessoasIncluidas = incluidos.reduce((s,c) => s + pcpSalSobPessoasEfetivo(dia, c), 0);
+  const totaisPorGrupo = pcpSalSobTotalPorGrupo(totalPreparar);
   // 11/11/2026, pedido do Marcelo: abaixo de cada opção do Total, mostrar qual cardápio e quais clientes
   // recebem aquele prato hoje — mesma ideia do detalhe do Mapa da semana, mas de só 1 dia (não precisa
   // separar por dia aqui, já é o bloco de um dia só).
@@ -15754,7 +15775,7 @@ function pcpSalSobProducaoHtml(res, trocasAposImpressao, dia, diaLabelPrefixo, s
   return `<div class="panel" style="margin-bottom:14px;">
     <div class="panel-head">${diaLabelPrefixo || ""}<h3 style="font-size:15px;"><i class="ico" data-lucide="salad"></i>Produção do dia</h3>${dataTxt}<button class="btn small primary" data-salsob-producao-imprimir="${dia}" style="margin-left:auto;">Imprimir</button></div>
     <div class="panel-body">${alertaReimpressao}<div class="table-wrap"><table><thead><tr><th>Total a preparar</th><th style="text-align:right;">Quantidade</th><th></th></tr></thead><tbody>
-      <tr><th colspan="3" style="background:var(--surface-alt); text-transform:uppercase; letter-spacing:.04em; font-size:11.5px;">Total <span class="footnote" style="text-transform:none; font-weight:400; margin:0;">· ${fmtNum(pessoasIncluidas,0)} pessoas atendidas${excluidos.size ? ` (sem ${excluidos.size} cliente${excluidos.size===1?"":"s"} desmarcado${excluidos.size===1?"":"s"})` : ""}</span></th></tr>
+      <tr><th colspan="3" style="background:var(--surface-alt); text-transform:uppercase; letter-spacing:.04em; font-size:11.5px;">Total <span class="footnote" style="text-transform:none; font-weight:400; margin:0;">· ${fmtNum(pessoasIncluidas,0)} pessoas atendidas${excluidos.size ? ` (sem ${excluidos.size} cliente${excluidos.size===1?"":"s"} desmarcado${excluidos.size===1?"":"s"})` : ""} · peso de salada: <strong>${pcpFmtPorcao(totaisPorGrupo.SALADA)}</strong> · sobremesa: <strong>${fmtNum(totaisPorGrupo.SOBREMESA,0)}</strong> un.</span></th></tr>
       ${linhasTotal || `<tr><td colspan="3" class="footnote" style="margin:0;">Nenhum cliente incluído no total.</td></tr>`}
     </tbody></table></div>
     <div style="display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px; margin-top:14px;">${cardsCliente}</div>
@@ -15765,10 +15786,13 @@ function pcpImprimirSalSobProducaoDia(porClienteIncluidos, totalPreparar, semana
   // 11/11/2026, pedido do Marcelo: total de pessoas atendidas também sai na página "Total a preparar"
   // da impressão (mesma soma que já aparece na tela, com ajuste quando houver).
   const pessoasTotalImpressao = porClienteIncluidos.reduce((s,c) => s + pcpSalSobPessoasEfetivo(dia, c), 0);
+  // 13/11/2026, pedido do Marcelo: a impressão também mostra o total de peso de salada e o total de
+  // sobremesa (em unidades) separados — mesmo cálculo de pcpSalSobTotalPorGrupo que já aparece na tela.
+  const totaisPorGrupoImpressao = pcpSalSobTotalPorGrupo(totalPreparar);
   const paginaTotal = `<div style="page-break-after:always; break-inside:avoid; border:1px solid #333; border-radius:8px; padding:20px; max-width:480px;">
     <div style="font-size:11px; color:#666; margin-bottom:4px;">${escapeHtml(rotuloSemana(semana))} · ${escapeHtml(DIA_LABEL[dia]||dia)} · ${escapeHtml(fmtDataCompleta(dataDoDia(semana, dia)))} · ${escapeHtml(unidadeLabel)}</div>
     <div style="font-size:20px; font-weight:700; margin-bottom:2px;">Total a preparar</div>
-    <div style="font-size:12px; color:#666; margin-bottom:10px;">${fmtNum(pessoasTotalImpressao,0)} pessoas atendidas no total</div>
+    <div style="font-size:12px; color:#666; margin-bottom:10px;">${fmtNum(pessoasTotalImpressao,0)} pessoas atendidas no total · peso de salada: <strong>${pcpFmtPorcao(totaisPorGrupoImpressao.SALADA)}</strong> · sobremesa: <strong>${fmtNum(totaisPorGrupoImpressao.SOBREMESA,0)}</strong> un.</div>
     <table style="width:100%; border-collapse:collapse; font-size:13px;">${totalPreparar.map(o => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(o.nome)} <span class="footnote" style="margin:0;">(${escapeHtml(o.grupo)})</span></td><td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(o.qtd,2)}</td></tr>`).join("") || `<tr><td>Nenhum cliente incluído.</td></tr>`}</table>
   </div>`;
   // 11/11/2026, pedido do Marcelo: "pessoas atendidas" (com o ajuste de tela, se houver — pcpSalSobPessoasEfetivo)
