@@ -13063,8 +13063,12 @@ function pcpAcumularDia(dayDoc, numPessoas, contratoId, nomeCliente, produtoId, 
       const R = receitas.get(r.fichaId) || { fichaId: r.fichaId, nome: f ? f.nome : (it.nome || r.fichaId), grupo: pcpGrupoFicha(f), total: 0, porTurno: {almoco:0, jantar:0, ceia:0}, porCliente: new Map() };
       R.total += qtdEf;
       R.porTurno[turno] = (R.porTurno[turno] || 0) + qtdEf;
-      const pc = R.porCliente.get(chave) || { contratoId, nome: nomeCliente, produtoId, qtd: 0, qtdOriginal: 0, pessoas: 0, ajuste: null };
+      // 13/11/2026, pedido do Marcelo (Saladas/Sobremesas, impressão por almoço/jantar/ceia): `pc.porTurno`
+      // é NOVO e só adiciona informação — nenhum código existente lê esse campo, então nenhuma tela ou
+      // cálculo que já usa `pc.qtd`/`pc.qtdOriginal`/`pc.pessoas` muda de comportamento.
+      const pc = R.porCliente.get(chave) || { contratoId, nome: nomeCliente, produtoId, qtd: 0, qtdOriginal: 0, pessoas: 0, ajuste: null, porTurno: {almoco:0, jantar:0, ceia:0} };
       pc.qtd += qtdEf; pc.qtdOriginal += qtdOriginal; pc.pessoas += pessoasEf;
+      pc.porTurno[turno] = (pc.porTurno[turno] || 0) + qtdEf;
       if(ajuste) pc.ajuste = ajuste;
       R.porCliente.set(chave, pc);
       receitas.set(r.fichaId, R);
@@ -15622,8 +15626,17 @@ function pcpSalSobProducaoPorCliente(res){
       } else {
         qtd = pcpArredondarSalada(pc.qtd, r.grupo);
       }
+      // 13/11/2026, pedido do Marcelo: detalhamento por almoço/jantar/ceia ao lado da quantidade na
+      // impressão — escala o `pc.porTurno` (bruto, por turno) na MESMA proporção em que `qtd` já foi
+      // ajustada/arredondada acima, pra bater com o número final mostrado (inclusive quando a linha tem
+      // ajuste pontual de pessoas). Quando a linha tem ajuste MANUAL de porção (ajuste !== null), não tem
+      // como saber como esse número arbitrário se divide entre os turnos — divide na mesma proporção
+      // original só como estimativa; se o cliente só atende 1 turno (caso comum), a proporção é exata.
+      const fatorTurno = pc.qtd > 0 ? qtd / pc.qtd : 0;
+      const porTurno = { almoco: 0, jantar: 0, ceia: 0 };
+      ["almoco","jantar","ceia"].forEach(t => { porTurno[t] = ((pc.porTurno && pc.porTurno[t]) || 0) * fatorTurno; });
       const c = porCliente.get(pc.contratoId) || { id: pc.contratoId, nome: pc.nome, pessoas: pc.pessoas, linhas: [], total: 0 };
-      c.linhas.push({ prato: r.nome, grupo: r.grupo, qtd, qtdOriginal: pcpArredondarSalada(pc.qtd, r.grupo), ajustado: ajuste !== null, ajustadoPessoas, fichaId: r.fichaId, produtoId: pc.produtoId });
+      c.linhas.push({ prato: r.nome, grupo: r.grupo, qtd, qtdOriginal: pcpArredondarSalada(pc.qtd, r.grupo), ajustado: ajuste !== null, ajustadoPessoas, fichaId: r.fichaId, produtoId: pc.produtoId, porTurno });
       c.total += qtd;
       porCliente.set(pc.contratoId, c);
     });
@@ -15634,11 +15647,12 @@ function pcpSalSobProducaoPorCliente(res){
 // tirava direto de res.receitas, mas agora precisa respeitar a exclusão, então soma a partir das linhas por
 // cliente já filtradas.
 function pcpSalSobTotalPreparar(porClienteIncluidos){
-  const porOpcao = new Map(); // "grupo|prato" -> {nome, grupo, qtd, fichaId}
+  const porOpcao = new Map(); // "grupo|prato" -> {nome, grupo, qtd, fichaId, porTurno}
   porClienteIncluidos.forEach(c => c.linhas.forEach(l => {
     const chave = `${l.grupo}|${l.prato}`;
-    const cur = porOpcao.get(chave) || { nome: l.prato, grupo: l.grupo, qtd: 0, fichaId: l.fichaId };
+    const cur = porOpcao.get(chave) || { nome: l.prato, grupo: l.grupo, qtd: 0, fichaId: l.fichaId, porTurno: {almoco:0, jantar:0, ceia:0} };
     cur.qtd += l.qtd;
+    if(l.porTurno) ["almoco","jantar","ceia"].forEach(t => { cur.porTurno[t] += (l.porTurno[t]||0); });
     porOpcao.set(chave, cur);
   }));
   return [...porOpcao.values()].sort((a,b) => a.grupo.localeCompare(b.grupo,'pt-BR') || b.qtd - a.qtd);
@@ -15782,18 +15796,27 @@ function pcpSalSobProducaoHtml(res, trocasAposImpressao, dia, diaLabelPrefixo, s
     </div>
   </div>`;
 }
-function pcpImprimirSalSobProducaoDia(porClienteIncluidos, totalPreparar, semana, dia, unidadeLabel){
+function pcpImprimirSalSobProducaoDia(porClienteIncluidos, totalPreparar, semana, dia, unidadeLabel, servicosAtivos){
   // 11/11/2026, pedido do Marcelo: total de pessoas atendidas também sai na página "Total a preparar"
   // da impressão (mesma soma que já aparece na tela, com ajuste quando houver).
   const pessoasTotalImpressao = porClienteIncluidos.reduce((s,c) => s + pcpSalSobPessoasEfetivo(dia, c), 0);
   // 13/11/2026, pedido do Marcelo: a impressão também mostra o total de peso de salada e o total de
   // sobremesa (em unidades) separados — mesmo cálculo de pcpSalSobTotalPorGrupo que já aparece na tela.
   const totaisPorGrupoImpressao = pcpSalSobTotalPorGrupo(totalPreparar);
+  // 13/11/2026, pedido do Marcelo: ao lado da quantidade de cada prato, mostrar quanto é de almoço/jantar/
+  // ceia. Mesmo critério já usado em "Produção da cozinha" (ver mostrarBreakdown): só aparece quando o dia
+  // tem mais de 1 serviço ativo — a maioria dos clientes de Salada/Sobremesa é só almoço, então nesse caso
+  // (o mais comum) a impressão fica exatamente como já era, sem colunas vazias de jantar/ceia.
+  const PCP_SALSOB_TURNO_NOME = { almoco: "Almoço", jantar: "Jantar", ceia: "Ceia" };
+  const turnosMostrar = (servicosAtivos && servicosAtivos.length > 1) ? servicosAtivos : [];
+  const colsTurnoHead = turnosMostrar.map(t => `<th style="text-align:right; padding:4px 0; border-bottom:1px solid #333; font-size:11px; color:#666;">${PCP_SALSOB_TURNO_NOME[t]}</th>`).join("");
+  const theadTurno = turnosMostrar.length ? `<tr><th></th>${colsTurnoHead}<th style="text-align:right; padding:4px 0; border-bottom:1px solid #333; font-size:11px; color:#666;">Total</th></tr>` : "";
+  const colsTurnoCelulas = (porTurno) => turnosMostrar.map(t => `<td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; color:#555;">${fmtNum(porTurno ? (porTurno[t]||0) : 0,2)}</td>`).join("");
   const paginaTotal = `<div style="page-break-after:always; break-inside:avoid; border:1px solid #333; border-radius:8px; padding:20px; max-width:480px;">
     <div style="font-size:11px; color:#666; margin-bottom:4px;">${escapeHtml(rotuloSemana(semana))} · ${escapeHtml(DIA_LABEL[dia]||dia)} · ${escapeHtml(fmtDataCompleta(dataDoDia(semana, dia)))} · ${escapeHtml(unidadeLabel)}</div>
     <div style="font-size:20px; font-weight:700; margin-bottom:2px;">Total a preparar</div>
     <div style="font-size:12px; color:#666; margin-bottom:10px;">${fmtNum(pessoasTotalImpressao,0)} pessoas atendidas no total · peso de salada: <strong>${pcpFmtPorcao(totaisPorGrupoImpressao.SALADA)}</strong> · sobremesa: <strong>${fmtNum(totaisPorGrupoImpressao.SOBREMESA,0)}</strong> un.</div>
-    <table style="width:100%; border-collapse:collapse; font-size:13px;">${totalPreparar.map(o => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(o.nome)} <span class="footnote" style="margin:0;">(${escapeHtml(o.grupo)})</span></td><td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(o.qtd,2)}</td></tr>`).join("") || `<tr><td>Nenhum cliente incluído.</td></tr>`}</table>
+    <table style="width:100%; border-collapse:collapse; font-size:13px;">${theadTurno}${totalPreparar.map(o => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(o.nome)} <span class="footnote" style="margin:0;">(${escapeHtml(o.grupo)})</span></td>${colsTurnoCelulas(o.porTurno)}<td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(o.qtd,2)}</td></tr>`).join("") || `<tr><td>Nenhum cliente incluído.</td></tr>`}</table>
   </div>`;
   // 11/11/2026, pedido do Marcelo: "pessoas atendidas" (com o ajuste de tela, se houver — pcpSalSobPessoasEfetivo)
   // passou a sair na impressão por cliente, ao lado do nome.
@@ -15801,7 +15824,7 @@ function pcpImprimirSalSobProducaoDia(porClienteIncluidos, totalPreparar, semana
     <div style="font-size:11px; color:#666; margin-bottom:4px;">${escapeHtml(rotuloSemana(semana))} · ${escapeHtml(DIA_LABEL[dia]||dia)} · ${escapeHtml(fmtDataCompleta(dataDoDia(semana, dia)))} · ${escapeHtml(unidadeLabel)}</div>
     <div style="font-size:20px; font-weight:700; margin-bottom:2px;">${escapeHtml(c.nome)}</div>
     <div style="font-size:12px; color:#666; margin-bottom:10px;">${fmtNum(pcpSalSobPessoasEfetivo(dia, c),0)} pessoas atendidas</div>
-    <table style="width:100%; border-collapse:collapse; font-size:13px;">${c.linhas.map(l => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(l.prato)} <span class="footnote" style="margin:0;">(${escapeHtml(l.grupo)})</span></td><td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(l.qtd,2)}</td></tr>`).join("")}</table>
+    <table style="width:100%; border-collapse:collapse; font-size:13px;">${theadTurno}${c.linhas.map(l => `<tr><td style="padding:4px 0; border-top:1px solid #ddd;">${escapeHtml(l.prato)} <span class="footnote" style="margin:0;">(${escapeHtml(l.grupo)})</span></td>${colsTurnoCelulas(l.porTurno)}<td style="padding:4px 0; border-top:1px solid #ddd; text-align:right; font-weight:600;">${fmtNum(l.qtd,2)}</td></tr>`).join("")}</table>
     <div style="margin-top:14px; font-size:13px; font-weight:700; display:flex; justify-content:space-between; border-top:1px solid #333; padding-top:6px;"><span>Total</span><span>${fmtNum(c.total,2)}</span></div>
     <div style="margin-top:30px; border-top:1px dashed #999; padding-top:8px; font-size:11px; color:#666;">Separado por: ______________________________</div>
   </div>`).join("");
@@ -18338,7 +18361,7 @@ async function renderPCP(){
       const excluidos = pcpSalSobExcluidosDoDia(dia);
       const incluidos = pcpSalSobProducaoPorCliente(b.res).filter(c => !excluidos.has(c.id));
       await pcpRegistrarImpressaoSalSob(pcpSemanaSel, dia, pcpUnidadeSel);
-      pcpImprimirSalSobProducaoDia(incluidos, pcpSalSobTotalPreparar(incluidos), pcpSemanaSel, dia, unidadeLabel);
+      pcpImprimirSalSobProducaoDia(incluidos, pcpSalSobTotalPreparar(incluidos), pcpSemanaSel, dia, unidadeLabel, b.res.servicos);
       renderPCP();
     }));
     content.querySelectorAll(".salsob-cli-incluir").forEach(chk => chk.addEventListener("change", () => {
