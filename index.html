@@ -792,7 +792,7 @@ const ORIENTACOES_POR_VIEW = {
     <p><strong>Romaneio:</strong> atribuição cliente→rota é fixa (cadastrada no contrato) — pra mudar, edite o contrato do cliente. Sem ordem de entrega dentro da rota nesta versão. "Preparo da semana" (corte/receita por dia de utilização, com custo) deixa escolher os dias e imprimir, cada um numa folha. "Mapa da semana" (açougue): peça grande congelada, use essa visão pra tirar do freezer com antecedência (48–72h antes do dia de preparo).</p>
     <p><strong>Conferência de expedição:</strong> cozinha confirma que produziu/embalou, expedição confirma que carregou. Salva sozinho a cada campo alterado.</p>
     <p><strong>Etiquetas:</strong> validade, temperatura e peso (açougue) ou data e responsável (saladas/sobremesas) ficam em branco pra anotar na embalagem.</p>
-    <p><strong>Volume por cliente:</strong> volume líquido por cliente, sem margem de produção — é o que vai pra etiqueta da cuba. "Cubas" só aparece pras fichas com cadastro de cuba (Fichas técnicas).</p>
+    <p><strong>Volume por cliente:</strong> volume líquido por cliente, sem margem de produção — é o que vai pra etiqueta da cuba. "Cubas" é a sugestão (qtd× modelo) calculada do cadastro da ficha técnica; dá pra preencher/corrigir esse cadastro direto nos dois campos ao lado da sugestão, sem abrir a Ficha Técnica — vale pra todos os clientes/dias que usam a mesma receita, por isso o preenchimento muda em todas as tabelas de uma vez. Sai também na impressão da Ordem de produção (Composição principal) assim que a receita tiver os dois campos preenchidos.</p>
     <p><strong>Peso por prato (por cliente):</strong> peso por pessoa que a expedição manda pra cada cliente, item a item (igual ao Volume por cliente/etiquetas e à Lista de compra) — refeição transportada, marmita e marmita especial (11/11/2026: antes só refeição transportada). Em branco segue o cardápio; <strong>±</strong> soma ou tira gramas do cardápio do dia (ex.: +20 no arroz); <strong>=</strong> fixa o peso por pessoa em qualquer cardápio (ex.: = 180), vale pra todos os dias/turnos do cliente. O cardápio e o custo/preço dele não mudam.</p>
   `,
 };
@@ -14438,6 +14438,24 @@ function pcpCubaTxt(fichaId, kg){
   return c ? `${c.qtd}× ${escapeHtml(c.nome)}` : "—";
 }
 
+// Célula "Cubas" editável (13/11/2026, pedido do Marcelo): a sugestão (qtd× modelo) continua vindo do
+// cadastro da ficha técnica (fichas.cuba_nome/cuba_kg_por_un — vale pra todos os clientes/dias que usam
+// essa receita, não é por cliente), mas agora dá pra preencher/corrigir esse cadastro direto daqui, sem
+// abrir a Ficha Técnica. Os dois campos somem se a receita já tem ambos preenchidos — aí só a sugestão
+// calculada aparece, igual antes. Grava com o mesmo helper (carimbo) e recarrega as fichas pra atualizar
+// a sugestão em todas as tabelas do PCP (Produção, Ordem de produção, impressão) de uma vez.
+function pcpCubaCelulaHtml(fichaId, qtd){
+  if(!fichaId) return "—";
+  const f = fichas.get(fichaId);
+  const fid = escapeHtml(fichaId);
+  const temCadastro = !!(f && f.cuba_nome && f.cuba_kg_por_un);
+  const sugestao = temCadastro ? `<span class="pcp-cuba-sugestao" data-fid="${fid}">${pcpCubaTxt(fichaId, qtd)}</span>` : "";
+  return `<div class="pcp-cuba-editor" style="display:flex; gap:4px; align-items:center; justify-content:flex-end; flex-wrap:wrap;">
+    ${sugestao}
+    <input type="text" class="pcp-cuba-nome" data-fid="${fid}" value="${escapeHtml((f&&f.cuba_nome)||"")}" placeholder="modelo da cuba" title="Modelo da cuba (ex.: 4D - Média)" style="width:110px; font-size:12px;">
+    <input type="number" step="0.01" min="0" class="pcp-cuba-kg" data-fid="${fid}" value="${f&&f.cuba_kg_por_un!=null?f.cuba_kg_por_un:""}" placeholder="kg/cuba" title="Quantos kg dessa receita cabem numa cuba" style="width:62px; font-size:12px;">
+  </div>`;
+}
 function pcpVolumeHtml(res){
   if(!res.clientes.length) return `<div class="empty-state">Nenhum cliente com produção prevista para este dia.</div>`;
   const cards = res.clientes.map(cli => {
@@ -14447,10 +14465,38 @@ function pcpVolumeHtml(res){
     if(!linhas.length) return "";
     return `<div class="panel" data-pcp-cliente-card="${cli.id}">
       <div class="panel-head"><h3>${escapeHtml(cli.nome)}</h3><span class="hint">${fmtNum(cli.pessoas,0)} pessoas · ${nomeUnidadeCompra(cli.unidade)}</span></div>
-      <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Item</th><th style="text-align:right;">Quantidade</th><th style="text-align:right;">Cubas</th></tr></thead><tbody>${linhas.map(l => `<tr><td class="name-cell">${escapeHtml(l.nome)}</td><td class="num-cell">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd, l.fichaId)}</td><td class="num-cell">${l.fichaId ? pcpCubaTxt(l.fichaId, l.qtd) : "—"}</td></tr>`).join("")}</tbody></table></div></div>
+      <div class="panel-body"><div class="table-wrap"><table><thead><tr><th>Item</th><th style="text-align:right;">Quantidade</th><th style="text-align:right; min-width:220px;">Cubas</th></tr></thead><tbody>${linhas.map(l => `<tr><td class="name-cell">${escapeHtml(l.nome)}</td><td class="num-cell">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd, l.fichaId)}</td><td class="num-cell">${l.fichaId ? pcpCubaCelulaHtml(l.fichaId, l.qtd) : "—"}</td></tr>`).join("")}</tbody></table></div></div>
     </div>`;
   }).join("");
   return cards;
+}
+
+// Grava o cadastro de cuba (fichas.cuba_nome/cuba_kg_por_un) a partir dos dois campos que agora aparecem
+// direto na célula "Cubas" de Volume por cliente (13/11/2026). Só salva quando os dois campos têm valor
+// (nome E kg) ou quando os dois estão vazios (apaga o cadastro) — um valor sem o outro não calcula
+// sugestão nenhuma (mesma regra de pcpCubasRecomendadas), então não grava pela metade.
+async function pcpSalvarCubaFicha(fichaId, nome, kgTxt){
+  const f = fichas.get(fichaId);
+  if(!f) return;
+  const kg = kgTxt === "" ? null : parseFloat(String(kgTxt).replace(",", "."));
+  if(kgTxt !== "" && !isFinite(kg)){ showAlert("Kg por cuba inválido."); renderPCP(); return; }
+  const novoNome = nome.trim() || null;
+  if((kg === null) !== (novoNome === null)) return; // meio preenchido — espera o outro campo antes de salvar
+  if(f.cuba_nome === novoNome && (f.cuba_kg_por_un ?? null) === kg) return; // nada mudou
+  const { error } = await sb.from('fichas').update({ cuba_nome: novoNome, cuba_kg_por_un: kg, ...carimbo() }).eq('id', fichaId);
+  if(error){ showAlert("Erro ao salvar cuba: " + (error.message||error.code||error)); return; }
+  await loadFichas();
+  renderPCP();
+}
+function pcpVolumeBind(content){
+  content.querySelectorAll(".pcp-cuba-nome, .pcp-cuba-kg").forEach(inp => {
+    inp.addEventListener("change", () => {
+      const fid = inp.dataset.fid;
+      const wrap = inp.closest(".pcp-cuba-editor");
+      const nomeInp = wrap.querySelector(".pcp-cuba-nome"), kgInp = wrap.querySelector(".pcp-cuba-kg");
+      pcpSalvarCubaFicha(fid, nomeInp.value, kgInp.value.trim());
+    });
+  });
 }
 
 // ---------- Impressão de etiquetas (15/10/2026) ----------
@@ -18222,6 +18268,7 @@ async function renderPCP(){
   `;
 
   content.querySelector("#pcp-subview-tabs").addEventListener("click", e => { const b = e.target.closest("button[data-pcpsub]"); if(!b) return; pcpSubView = b.dataset.pcpsub; renderPCP(); });
+  pcpVolumeBind(content); // edição inline da coluna Cubas em Volume por cliente (13/11/2026) — defensivo, não falha se a seção não estiver na tela
   // 10/11/2026: o seletor Matriz/Filial/Ambas do topo some na Produção da cozinha (unidade única) — ficou
   // redundante com os atalhos Grupo inteiro/Matriz/Filial do painel "Clientes" logo abaixo (achado do
   // Marcelo); continua existindo normalmente em "Ambas" (onde o painel Clientes não aparece) e nas demais
