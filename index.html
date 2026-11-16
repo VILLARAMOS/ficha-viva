@@ -3017,9 +3017,27 @@ function custoFichaOuInsumo(item){
 // preenchidos); mesmo achado provavelmente se aplica (precisa checar o rendimento_und real de Suco antes de
 // confiar no número — ver lista levantada junto com esta mudança).
 const GRUPOS_PORCAO_NAO_PESO = ["SALADA", "SOBREMESA", "SUCO SIMPLES", "SUCO NATURAL"];
+// CORREÇÃO (16/11/2026, pedido do Marcelo): checado direto no banco pra fechar o "ponto em aberto" citado
+// acima (linha ~3008) — Salada hoje já está com gramagem_kg real (10-80g/pessoa, não tem cara de porção/
+// flag, não precisa de conversão; não alterado aqui). Sobremesa é outra história: TODO lançamento, sem
+// exceção, em qualquer prato (pudim, gelatina, bolo de pote, fruta...), tem gramagem_kg = 0 ou 1 — não é
+// peso nem fração de porção, é um flag binário "servida (1) ou não (0) nesse dia/cliente". Confirmado com
+// o Marcelo: Sobremesa é mesmo unitária (1 porção = 1 unidade do prato), então o "1" está certo como
+// CONTAGEM — o que falta é o peso real de 1 unidade pra converter em kg de insumo (Requisição do estoque e
+// custo). A régua por rendimento_kg/rendimento_und não serve pra isso (achado de 17/10 acima: rendimento_und
+// é sempre cópia de rendimento_kg, proporção sempre 1 — não existe peso de porção cadastrado em lugar
+// nenhum). Decisão do Marcelo: usar um peso padrão único (100g/porção) por enquanto, pra toda Sobremesa,
+// até cadastrar peso real por ficha depois (mesmo padrão já usado pra "Pratos especiais", que tem peso de
+// prato próprio em vez de depender de rendimento_und). ATENÇÃO — isso muda número em mais lugar do que só
+// PCP: custoLinhaCardapio (Cardápio/CMV/Orçamento) usa esta mesma função, então o custo de toda sobremesa
+// no sistema cai pra ~10% do valor atual (hoje custeada como se fosse 1kg cheio por pessoa). Suco não entra
+// aqui — continua "fora" da Requisição do estoque (pcpSetorDoGrupo) e sem decisão tomada ainda sobre custo.
+const SOBREMESA_PESO_PORCAO_KG_PADRAO = 0.1; // 100g — decisão do Marcelo, 16/11/2026, enquanto não há peso real por ficha
 function gramagemPorcaoParaKg(valor, ficha){
   if(valor === null || valor === undefined) return valor;
-  if(!ficha || !GRUPOS_PORCAO_NAO_PESO.includes(ficha.grupo)) return valor;
+  if(!ficha) return valor;
+  if(ficha.grupo === "SOBREMESA") return valor * SOBREMESA_PESO_PORCAO_KG_PADRAO;
+  if(!GRUPOS_PORCAO_NAO_PESO.includes(ficha.grupo)) return valor;
   if(!(ficha.rendimento_kg > 0) || !(ficha.rendimento_und > 0)) return valor;
   return valor * (ficha.rendimento_kg / ficha.rendimento_und);
 }
@@ -12585,11 +12603,16 @@ function pcpOrdemGrupo(grupo){
 // confiável (Proteína/Base/Guarnição) com peso suspeito, essas 3 linhas CONTINUAM aparecendo na tabela de
 // Receitas a produzir/Volume por cliente (cozinha ainda precisa saber quanto preparar, cuba ainda precisa
 // da etiqueta) — só saem do "Kg a produzir (sem margem)"/"com margem" e do detalhamento por turno.
-// Ponto em aberto, não resolvido aqui: a Requisição do estoque/mapa de insumos (Fase 2) usa a MESMA
-// gramagem_kg através de pcpItemProducao pra calcular quanto puxar de alface/sobremesa/suco do estoque —
-// esse filtro foi colocado só em pcpCalcularDia (Produção/Volume), de propósito, pra não zerar também a
-// Requisição; então a Requisição continua puxando a quantidade errada até a gramagem ser corrigida na
-// origem (cardápio). Avisar o Marcelo disso na resposta.
+// ATUALIZAÇÃO (16/11/2026): o "ponto em aberto" original — Requisição do estoque/Fase 2 usa a MESMA
+// gramagem_kg através de pcpItemProducao, então herdava o mesmo número suspeito — foi corrigido pra
+// Sobremesa (ver gramagemPorcaoParaKg/SOBREMESA_PESO_PORCAO_KG_PADRAO: peso padrão de 100g/porção, decisão
+// do Marcelo) e descartado pra Salada (checado no banco: gramagem_kg já é peso real, 10-80g/pessoa, não
+// precisa de correção). Suco continua sem decisão tomada sobre peso/custo — mas nem entra na Requisição do
+// estoque de qualquer forma (pcpSetorDoGrupo retorna "fora" pra Suco, decisão de 12/10). Este filtro
+// (pcpGrupoForaDoPeso, só exclui do "Kg a produzir"/detalhamento por turno da tela de Produção) continua
+// como estava — Sobremesa agora tem um número bem melhor, mas ainda é estimativa (padrão único, não peso
+// real por ficha), então decidi não reincluir sozinho; é decisão do Marcelo se/quando confiar nesse peso
+// pra entrar na soma de novo.
 function pcpGrupoForaDoPeso(grupo){
   return /^(SALADA|SOBREMESA|SUCO)/.test(grupo || "");
 }
