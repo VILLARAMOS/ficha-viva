@@ -2290,7 +2290,7 @@ function renderTabInsumoCadastro(){
     const tbody = document.getElementById("insumo-tbody");
     tbody.innerHTML = rows.map(r => `
               <tr>
-                <td class="name-cell">${escapeHtml(r.nome)}</td>
+                <td class="name-cell">${escapeHtml(r.nome)}${r.disponivel_como_receita?' <span class="chip neutral" title="Disponível como receita no Cardápio/Café da manhã">receita</span>':''}</td>
                 <td class="tag-sheet">${escapeHtml(r.grupo_compra||"—")}</td>
                 <td class="num-cell">${escapeHtml(r.unidade_medida||"—")} ${r.unidade_convertida?("· "+fmtNum(r.unidade_convertida,3)):""}</td>
                 <td class="num-cell">${fmtMoney(r.custo_unitario)}${r.custo_atualizado_em ? `<div class="footnote" style="margin:2px 0 0; text-align:right;" title="${r.custo_anterior != null ? "preço anterior: " + fmtMoney(r.custo_anterior) : ""}">pedido de ${fmtDataYMD(r.custo_atualizado_em)}</div>` : ""}</td>
@@ -2694,6 +2694,7 @@ function openInsumoModal(id, opts){
             <input type="text" id="f-grupo-novo" hidden placeholder="Nome do novo bloco (ex.: CONGELADOS)" style="margin-top:6px;">
           </div>
           <div class="footnote">Custo por kg/L/un (usado no cálculo das fichas): <strong id="f-preview">—</strong> &nbsp;=&nbsp; custo de compra ÷ unid. convertida</div>
+          <div class="field"><label><input type="checkbox" id="f-como-receita" style="width:auto; display:inline-block; margin-right:6px;" ${existing && existing.disponivel_como_receita===true?"checked":""}> Disponível como receita (este insumo passa a aparecer na busca de itens do Cardápio/Café da manhã, como se fosse um prato pronto — ex.: kit talher, marmita, sobremesa pronta)</label></div>
           ${existing ? historicoPrecoHtml(existing) : ""}
           ${existing ? `<div class="footnote" id="f-autor" style="margin-top:6px;">${ultimaAlteracaoTxt(existing)}</div>` : ""}
           <div class="footnote" id="err-msg" style="color:var(--critical); margin-top:10px;"></div>
@@ -2737,7 +2738,8 @@ function openInsumoModal(id, opts){
     const data = {
       nome, unidade_medida, unidade_convertida, custo_unitario,
       custo_kg_l_und: custo_unitario / unidade_convertida,
-      grupo_compra: grupo_compra || null
+      grupo_compra: grupo_compra || null,
+      disponivel_como_receita: document.getElementById("f-como-receita").checked
     };
     const antes = id ? insumos.get(id) : null;
     if(antes && antes.custo_unitario !== custo_unitario){
@@ -2865,6 +2867,14 @@ function buscarPorNome(entries, texto, limite){
 // "Disponível como insumo" no cadastro da ficha). excludeId tira a própria ficha sendo editada da lista.
 function fichasComoInsumoOptions(excludeId){
   return [...fichas.entries()].filter(([id,d]) => d.disponivel_como_insumo === true && id !== excludeId);
+}
+// insumos disponíveis para uso direto como item de uma célula de Cardápio/Café da manhã (marcados com o
+// checkbox "Disponível como receita" no cadastro do insumo) — espelho de fichasComoInsumoOptions, pro
+// sentido contrário. 16/11/2026, pedido do Marcelo: por padrão um insumo não aparece na lista de receitas,
+// só se marcado (evita poluir a busca do Cardápio com os ~850 insumos que nunca são lançados direto numa
+// célula — só os que de fato são, como KIT TALHER, MARMITA, sobremesas prontas etc.).
+function insumosComoReceitaOptions(excludeId){
+  return [...insumos.entries()].filter(([id,d]) => d.disponivel_como_receita === true && id !== excludeId);
 }
 
 /* tipos de proteína — usados na classificação de fichas e na tabela de incidência (mapa de carnes) */
@@ -3849,7 +3859,10 @@ function montarGradeOrcamento(){
   `;
   if(window.lucide) lucide.createIcons();
 
-  const todosInsumos = [...insumos.entries()];
+  // 16/11/2026: lista de receitas da célula = todas as fichas (sem filtro) + só os insumos marcados
+  // "Disponível como receita" — espelha o modo "receita" de abrirBuscaInsumoModal, pra caixa de texto e
+  // lupa mostrarem exatamente a mesma coisa.
+  const todosInsumos = insumosComoReceitaOptions();
   const todasFichas = [...fichas.entries()];
 
   function recomputarCustoColuna(cl){
@@ -3889,7 +3902,7 @@ function montarGradeOrcamento(){
       const campoNome = host.querySelector(`.cel-nome[data-ci="${ci}"][data-cl="${cl}"]`);
       if(campoNome){ campoNome.value = l.nome; campoNome.title = l.nome; }
       recomputarCustoColuna(cl); recomputarCustoCelula(ci, cl);
-    });
+    }, "receita");
   }));
 
   host.querySelectorAll(".cel-nome[data-ci]").forEach(inp => {
@@ -4344,7 +4357,10 @@ function montarTabelaAlmoco(num, semana){
   }
   atualizarResumoSemana();
 
-  const todosInsumos = [...insumos.entries()];
+  // 16/11/2026: lista de receitas da célula = todas as fichas (sem filtro) + só os insumos marcados
+  // "Disponível como receita" — espelha o modo "receita" de abrirBuscaInsumoModal, pra caixa de texto e
+  // lupa mostrarem exatamente a mesma coisa.
+  const todosInsumos = insumosComoReceitaOptions();
   const todasFichas = [...fichas.entries()];
 
   function recomputarCustoDia(dia){
@@ -4374,7 +4390,7 @@ function montarTabelaAlmoco(num, semana){
       const campoNome = host.querySelector(`.cel-nome[data-dia="${dia}"][data-ci="${ci}"]`);
       if(campoNome){ campoNome.value = l.nome; campoNome.title = l.nome; }
       recomputarCustoDia(dia); recomputarCustoCelula(dia, ci);
-    });
+    }, "receita");
   }));
 
   host.querySelectorAll(".cel-nome").forEach(inp => {
@@ -4544,7 +4560,10 @@ function montarTabelaCafe(num, semana){
   `;
   if(window.lucide) lucide.createIcons();
 
-  const todosInsumos = [...insumos.entries()];
+  // 16/11/2026: lista de receitas da célula = todas as fichas (sem filtro) + só os insumos marcados
+  // "Disponível como receita" — espelha o modo "receita" de abrirBuscaInsumoModal, pra caixa de texto e
+  // lupa mostrarem exatamente a mesma coisa.
+  const todosInsumos = insumosComoReceitaOptions();
   const todasFichas = [...fichas.entries()];
 
   // Café não tem preço de venda planejado, então o resumo mostra só o custo médio/dia
@@ -4579,7 +4598,7 @@ function montarTabelaCafe(num, semana){
         const campoNome = host.querySelector(`.cel-nome[data-dia="${dia}"][data-ci="${ci}"]`);
         if(campoNome){ campoNome.value = l.nome; campoNome.title = l.nome; }
         recomputarCustoCelulaCafe(dia, ci);
-      });
+      }, "receita");
     }));
     host.querySelectorAll(".cel-nome").forEach(inp => {
       const dia = inp.dataset.dia, ci = +inp.dataset.ci;
@@ -6822,13 +6841,23 @@ function imprimirFichaCompleta(draft, id){
   setTimeout(() => { try{ w.print(); }catch(e){} }, 300);
 }
 
-/* Busca na lista de insumos (e fichas disponíveis como sub-receita) pra escolher um ingrediente clicando,
-   em vez de só digitar o nome. excludeId tira a própria ficha sendo editada da lista de sub-receitas.
-   onEscolher(tipo, refId) é chamado com tipo "insumo" ou "ficha". */
-function abrirBuscaInsumoModal(excludeId, onEscolher){
+/* Busca na lista de insumos/fichas pra escolher um item clicando, em vez de só digitar o nome.
+   onEscolher(tipo, refId) é chamado com tipo "insumo" ou "ficha".
+   modo "ingrediente" (padrão, usado dentro do cadastro de uma ficha técnica pra montar os ingredientes
+   dela): lista de insumos completa + só as fichas marcadas "Disponível como insumo" (sub-receita).
+   excludeId tira a própria ficha sendo editada da lista de sub-receitas.
+   modo "receita" (usado no Cardápio/Café da manhã/Orçamento pra escolher o item de uma célula): lista de
+   receitas completa (todas as fichas) + só os insumos marcados "Disponível como receita" — espelho do
+   modo "ingrediente". 16/11/2026, correção pedida pelo Marcelo: antes os dois modos usavam a mesma lista
+   restrita de fichas (só as marcadas como sub-receita), escondendo praticamente toda ficha (ex. MANDIOCA
+   FRITA) da busca do Cardápio. */
+function abrirBuscaInsumoModal(excludeId, onEscolher, modo){
   const root = document.getElementById("picker-root");
-  const insumoList = [...insumos.entries()].sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
-  const fichaList = fichasComoInsumoOptions(excludeId).sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+  const ehReceita = modo === "receita";
+  const insumoList = (ehReceita ? insumosComoReceitaOptions(excludeId) : [...insumos.entries()])
+    .sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+  const fichaList = (ehReceita ? [...fichas.entries()] : fichasComoInsumoOptions(excludeId))
+    .sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
 
   function render(busca){
     const nb = normalizeText(busca||"");
@@ -6837,9 +6866,9 @@ function abrirBuscaInsumoModal(excludeId, onEscolher){
     const listEl = root.querySelector(".insumo-picker-list");
     if(!listEl) return;
     listEl.innerHTML = `
-      ${ficF.length ? `<div class="ipk-group">Fichas técnicas (sub-receitas)</div>` + ficF.map(([fid,d]) => `<div class="ipk-item" data-ficha="${fid}"><span>${escapeHtml(d.nome)}</span><span class="footnote">${fmtMoney(computeFicha(d, fid).custoKg)}/kg</span></div>`).join("") : ""}
-      <div class="ipk-group">Insumos</div>
-      ${insF.length ? insF.map(([iid,d]) => `<div class="ipk-item" data-insumo="${iid}"><span>${escapeHtml(d.nome)}</span><span class="footnote">${fmtMoney(d.custo_kg_l_und)}/${unidadeCustoInsumo(d)}</span></div>`).join("") : `<div class="empty-state">Nenhum insumo encontrado.</div>`}
+      ${ficF.length ? `<div class="ipk-group">${ehReceita ? "Receitas (fichas técnicas)" : "Fichas técnicas (sub-receitas)"}</div>` + ficF.map(([fid,d]) => `<div class="ipk-item" data-ficha="${fid}"><span>${escapeHtml(d.nome)}</span><span class="footnote">${fmtMoney(computeFicha(d, fid).custoKg)}/kg</span></div>`).join("") : ""}
+      <div class="ipk-group">${ehReceita ? "Insumos (disponíveis como receita)" : "Insumos"}</div>
+      ${insF.length ? insF.map(([iid,d]) => `<div class="ipk-item" data-insumo="${iid}"><span>${escapeHtml(d.nome)}</span><span class="footnote">${fmtMoney(d.custo_kg_l_und)}/${unidadeCustoInsumo(d)}</span></div>`).join("") : `<div class="empty-state">${ehReceita ? "Nenhum insumo disponível como receita encontrado." : "Nenhum insumo encontrado."}</div>`}
     `;
     listEl.querySelectorAll("[data-insumo]").forEach(el => el.addEventListener("click", () => { root.innerHTML=""; onEscolher("insumo", el.dataset.insumo); }));
     listEl.querySelectorAll("[data-ficha]").forEach(el => el.addEventListener("click", () => { root.innerHTML=""; onEscolher("ficha", el.dataset.ficha); }));
@@ -6848,9 +6877,9 @@ function abrirBuscaInsumoModal(excludeId, onEscolher){
   root.innerHTML = `
     <div class="modal-overlay" id="pk-ov">
       <div class="modal">
-        <div class="modal-head"><h2>Escolher ingrediente</h2><button class="close-x" id="pk-close">&times;</button></div>
+        <div class="modal-head"><h2>${ehReceita ? "Escolher item do cardápio" : "Escolher ingrediente"}</h2><button class="close-x" id="pk-close">&times;</button></div>
         <div class="modal-body">
-          <div class="field"><input type="text" id="pk-busca" placeholder="Buscar insumo ou ficha técnica…" autofocus></div>
+          <div class="field"><input type="text" id="pk-busca" placeholder="Buscar receita ou insumo…" autofocus></div>
           <div class="insumo-picker-list"></div>
         </div>
       </div>
