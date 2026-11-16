@@ -3026,13 +3026,16 @@ const GRUPOS_PORCAO_NAO_PESO = ["SALADA", "SOBREMESA", "SUCO SIMPLES", "SUCO NAT
 // CONTAGEM — o que falta é o peso real de 1 unidade pra converter em kg de insumo (Requisição do estoque e
 // custo). A régua por rendimento_kg/rendimento_und não serve pra isso (achado de 17/10 acima: rendimento_und
 // é sempre cópia de rendimento_kg, proporção sempre 1 — não existe peso de porção cadastrado em lugar
-// nenhum). Decisão do Marcelo: usar um peso padrão único (100g/porção) por enquanto, pra toda Sobremesa,
-// até cadastrar peso real por ficha depois (mesmo padrão já usado pra "Pratos especiais", que tem peso de
-// prato próprio em vez de depender de rendimento_und). ATENÇÃO — isso muda número em mais lugar do que só
-// PCP: custoLinhaCardapio (Cardápio/CMV/Orçamento) usa esta mesma função, então o custo de toda sobremesa
-// no sistema cai pra ~10% do valor atual (hoje custeada como se fosse 1kg cheio por pessoa). Suco não entra
-// aqui — continua "fora" da Requisição do estoque (pcpSetorDoGrupo) e sem decisão tomada ainda sobre custo.
-const SOBREMESA_PESO_PORCAO_KG_PADRAO = 0.1; // 100g — decisão do Marcelo, 16/11/2026, enquanto não há peso real por ficha
+// nenhum). Decisão do Marcelo: usar um peso padrão único (80g/porção, ajustado de 100g no mesmo dia) por
+// enquanto, pra toda Sobremesa, até cadastrar peso real por ficha depois — ele vai preencher uma planilha
+// por ficha (rendimento_und real ou peso da unidade) e manda de volta pra substituir este padrão único pela
+// régua certa (rendimento_kg/rendimento_und), que já existe no código só esperando dado real (mesmo padrão
+// já usado pra "Pratos especiais", que tem peso de prato próprio em vez de depender de rendimento_und).
+// ATENÇÃO — isso muda número em mais lugar do que só PCP: custoLinhaCardapio (Cardápio/CMV/Orçamento) usa
+// esta mesma função, então o custo de toda sobremesa no sistema cai bastante (hoje custeada como se fosse
+// 1kg cheio por pessoa). Suco não entra aqui — continua "fora" da Requisição do estoque (pcpSetorDoGrupo) e
+// sem decisão tomada ainda sobre custo.
+const SOBREMESA_PESO_PORCAO_KG_PADRAO = 0.08; // 80g — decisão do Marcelo, 16/11/2026 (ajustado de 100g), enquanto não há peso real por ficha
 function gramagemPorcaoParaKg(valor, ficha){
   if(valor === null || valor === undefined) return valor;
   if(!ficha) return valor;
