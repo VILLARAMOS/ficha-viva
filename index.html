@@ -12549,6 +12549,26 @@ function pcpDiasCobertos(diaProd, diasOp){
   }
   return cobertos;
 }
+// Dia de SEPARAÇÃO de um dia de USO — o inverso de pcpDiasCobertos, mas SEM o gap de virada de semana que
+// pcpDiasCobertos tem de propósito (ele só olha pra frente, dentro da mesma semana). Caminha dia a dia pra
+// TRÁS a partir da data de uso até achar o último dia em que o setor opera — é exatamente a regra "produzir
+// no dia útil anterior ao consumo" (WORKDAY -1), só que andando na direção contrária e em datas de
+// calendário (não em DIAS_ORDEM), por isso atravessa a virada de semana de graça: segunda (sem operação no
+// fim de semana) cai direto na sexta ANTERIOR, mesmo que seja da semana passada. Pedido do Marcelo
+// (16/11/2026): mostrar esse dia junto do dia de uso na Requisição do estoque, o que a tela nunca mostrou —
+// até aqui só a visão "hoje" mostrava cobertura, e só pra frente.
+function pcpDiaDaData(data){
+  return ["DOMINGO","SEGUNDA","TERCA","QUARTA","QUINTA","SEXTA","SABADO"][data.getDay()];
+}
+function pcpDataSeparacao(dataUso, diasOp){
+  const d = new Date(dataUso);
+  let guard = 0;
+  do {
+    d.setDate(d.getDate() - 1);
+    guard++;
+  } while(!diasOp.includes(pcpDiaDaData(d)) && guard < 14);
+  return d;
+}
 
 // mesmo agrupamento/ordem já usado em Fichas técnicas (GRUPOS_FICHA_BASE) — não cria uma segunda
 // taxonomia de grupo só pra PCP.
@@ -13415,9 +13435,9 @@ function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosF
 // precisa antes de prazos reais por categoria confirmados com a nutricionista, como foi feito pro açougue).
 // servicosFiltro (18/10/2026, pedido do Marcelo): Requisição do estoque passa a respeitar Almoço/Jantar/
 // Ceia igual Produção/Açougue já faziam — antes era sempre undefined (= soma os 3 serviços) nesta função.
-function pcpCalcularRequisicaoComMapa(semana, dia, unidadeFiltro, servicosFiltro){
+function pcpCalcularRequisicaoComMapa(semana, dia, unidadeFiltro, servicosFiltro, clienteFiltro){
   const coletor = criarColetorReceitas();
-  const res = pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosFiltro);
+  const res = pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosFiltro, clienteFiltro);
   const setores = res.porSetor.filter(s => s.setor !== "acougue").map(s => {
     const mapa = [];
     s.itens.forEach(it => {
@@ -13435,22 +13455,20 @@ function pcpCalcularRequisicaoComMapa(semana, dia, unidadeFiltro, servicosFiltro
 // ---------- Requisição do estoque (17/10/2026, redesenho pedido pelo Marcelo, com planilha de referência
 // — abas "PCP - COZINHA"/"PCP - AÇOUGUE" da ficha técnica antiga) ----------
 // Regra de produção da planilha de referência, confirmada com o Marcelo: "produzir no dia útil anterior
-// ao consumo" (WORKDAY -1) — ver pcpDiasCobertos, que agora implementa exatamente essa regra (antes a
-// separação cobria o PRÓPRIO dia + fins de semana seguintes; agora cobre só o(s) dia(s) seguinte(s)).
-// Layout replicado da planilha: lista ÚNICA (sem separar por setor Cozinha/Saladas/Sobremesas — aqui
-// "Grupo" é a categoria de COMPRA do próprio insumo, igual à planilha, não o setor de produção), em blocos
-// "PRODUZIR EM <dia> <data> → PARA SERVIR EM <dia> <data>", um por dia servido coberto pela separação
-// selecionada. Proteínas do açougue continuam fora (aba "Açougue"). "Fichas" (cartão por insumo) saiu.
-function pcpCalcularReqComCobertura(semana, diaProd, unidadeFiltro, servicosFiltro){
-  const diasCobertos = pcpDiasCobertos(diaProd, pcpEstDias());
-  const porDia = diasCobertos.map(dia => ({ diaProd, diaServido: dia, ...pcpReqListaDia(semana, dia, unidadeFiltro, servicosFiltro) }));
-  return { diasCobertos, porDia };
-}
+// ao consumo" (WORKDAY -1) — ver pcpDiasCobertos (cobertura pra frente, só dentro da mesma semana) e
+// pcpDataSeparacao (o inverso, por data de calendário, que atravessa virada de semana — ver comentário lá).
+// 16/11/2026: a visão "hoje" (1 dia de produção → cobertura, lista única sem bloco/grupo/filtro de cliente)
+// saiu de vez — decisão do Marcelo, por ficar redundante e com comportamento diferente da "Semana inteira
+// — por dia de uso" (que já tinha blocos por grupo/custo e agora ganha filtro de cliente + dia de
+// separação). Essa seção única, abaixo, passou a ser a ÚNICA forma de ver/imprimir/dar baixa na Requisição
+// do estoque. Funções antigas da visão "hoje" (pcpCalcularReqComCobertura/pcpReqDiaHtml/
+// pcpReqFolhaDiaPrintHtml/pcpImprimirReqSeparacao/pcpImprimirReqSemana/pcpReqAvisoHtml/pcpReqLinhaHtml/
+// PCP_REQ_COLS_HEAD) foram removidas junto — não tinham mais nenhum chamador.
 // lista única (cozinha+saladas+sobremesas somados por insumo, sem distinguir setor) pra um dia SERVIDO
-// específico — sempre o dia exato passado, sem cobertura (a cobertura entre dias é tratada em
-// pcpCalcularReqComCobertura, que chama esta função 1x por dia coberto).
-function pcpReqListaDia(semana, dia, unidadeFiltro, servicosFiltro){
-  const res = pcpCalcularRequisicaoComMapa(semana, dia, unidadeFiltro, servicosFiltro);
+// específico — sempre o dia exato passado (quem decide QUAL dia de separação cobre esse dia servido é
+// pcpDataSeparacao, chamado por pcpReqSemanaPorDiaServido, que é quem chama esta função 1x por dia).
+function pcpReqListaDia(semana, dia, unidadeFiltro, servicosFiltro, clienteFiltro){
+  const res = pcpCalcularRequisicaoComMapa(semana, dia, unidadeFiltro, servicosFiltro, clienteFiltro);
   const porInsumo = new Map(); // insumoId -> {insumoId, nome, unidade, qtd, receitas:Map(receita->qtd)}
   res.setores.forEach(s => {
     s.itens.forEach(it => {
@@ -13697,17 +13715,25 @@ function pcpAcgListaDia(semana, dia, unidadeFiltro, servicosFiltro){
 // segunda, produzido na sexta da semana ANTERIOR, não entrava no print da semana): aqui cada dia servido é
 // calculado direto (mesma conta de sempre, só sem passar pelo agrupamento "dia de produção"), então a
 // segunda desta semana sai certa sem precisar ir buscar nada na semana passada.
-// Não troca nem reaproveita pcpCalcularReqComCobertura (continua do jeito que estava, pro print/tela de
-// "hoje" da Requisição do estoque) — esta é só pra "semana inteira"/escolha de dias, pedido novo.
 // 18/10/2026, pedido do Marcelo: sempre devolve os 7 dias (Segunda→Domingo), mesmo os sem nada a requisitar
 // — antes um dia sem itens desaparecia da tela (filter(linhas.length)), o que na prática fazia parecer que
 // só a segunda tinha tabela. pcpReqBlocosGrupoHtml já trata o caso vazio ("Nada a separar para este dia."),
 // então manter o dia na lista só mostra esse aviso em vez de sumir o bloco inteiro.
-function pcpReqSemanaPorDiaServido(semana, unidadeFiltro, area, servicosFiltro){
+// clienteFiltro (16/11/2026, pedido do Marcelo, "mesmo filtro de clientes do Açougue"): só entra pro lado
+// "estoque" (pcpReqListaDia já aceita — ver pcpCalcularRequisicaoDia). O lado "acougue" desta função está
+// em desuso hoje (o Açougue passou a usar pcpAcgPreparoSemana/"Preparo da semana" direto — ver comentário
+// grande ali) e fica sem o filtro de propósito, pra não mexer em código que não tem mais chamador real.
+// dataUso/dataSeparacao (16/11/2026): pcpDataSeparacao faz o cálculo reverso (WORKDAY -1 andando pra trás
+// em datas de calendário) — mostra ao estoquista os dois dias juntos no título de cada bloco (ver
+// pcpTituloBlocoReqUso), cobrindo inclusive virada de semana (segunda → sexta da semana anterior).
+function pcpReqSemanaPorDiaServido(semana, unidadeFiltro, area, servicosFiltro, clienteFiltro){
+  const diasOp = area === "acougue" ? pcpAcgDias() : pcpEstDias();
   return DIAS_ORDEM.map(dia => {
-    const base = area === "acougue" ? pcpAcgListaDia(semana, dia, unidadeFiltro, servicosFiltro) : pcpReqListaDia(semana, dia, unidadeFiltro, servicosFiltro).linhas;
+    const base = area === "acougue" ? pcpAcgListaDia(semana, dia, unidadeFiltro, servicosFiltro) : pcpReqListaDia(semana, dia, unidadeFiltro, servicosFiltro, clienteFiltro).linhas;
     const linhas = pcpMesclarAvulsas(base, semana, dia, unidadeFiltro, area);
-    return { dia, linhas };
+    const dataUso = dataDoDia(semana, dia);
+    const dataSeparacao = pcpDataSeparacao(dataUso, diasOp);
+    return { dia, linhas, dataUso, dataSeparacao };
   });
 }
 // custo do dia = mesma soma usada na baixa do kardex (qtd × custo_kg_l_und do insumo) — é o número que
@@ -13878,6 +13904,12 @@ let pcpConferirRevisados = new Set(); // chaves marcadas como "já vi/corrigido"
 // dias marcados pra impressão na seção "Semana inteira — por dia de uso" (18/10/2026) — só da sessão, não
 // grava no banco; um Set por área (Estoque/Açougue) porque são telas independentes.
 let pcpReqDiasSel = new Set();
+// clientes selecionados na Requisição do estoque (16/11/2026, pedido do Marcelo: "mesmo layout/clientes do
+// Açougue") — mesmo padrão de pcpAcgClientesSel (Set de contratoId, ou null = "Grupo inteiro"/unidade
+// inteira). Filtra as listas/impressão E os KPIs do topo da aba. NUNCA filtra a baixa real no kardex
+// (pcpBaixarReqUnidades/pcpBaixarDiaServido continuam somando o dia inteiro, de propósito — baixar só a
+// parcela dos clientes marcados na tela deixaria o estoque desalinhado do que de fato saiu da cozinha).
+let pcpReqClientesSel = null;
 // 11/11/2026 (pedido do Marcelo, "layout igual Produção da cozinha"): pcpAcgDiasSel passou a ter DUPLO
 // papel — além de decidir em quais dias as ações (baixa/imprimir/etiquetas) atuam (como já era), agora
 // também decide QUAIS dias ganham painel no Preparo da semana (antes sempre mostrava os 7 dias, inclusive
@@ -14760,104 +14792,23 @@ function pcpAbrirGerenciarRotas(){
 // setor "acougue" agora é a aba separada "Açougue" (pcpAcgPreparoSemanaHtml/pcpEtiquetasCarnesHtml) — aqui
 // só entram as bancadas do dia a dia (cozinha/saladas/sobremesas), que são a aba "Requisição do estoque".
 const PCP_DIA_LABEL_FEIRA = {SEGUNDA:"SEGUNDA-FEIRA",TERCA:"TERÇA-FEIRA",QUARTA:"QUARTA-FEIRA",QUINTA:"QUINTA-FEIRA",SEXTA:"SEXTA-FEIRA",SABADO:"SÁBADO",DOMINGO:"DOMINGO"};
-// "PRODUZIR EM <dia+data> → PARA SERVIR EM <dia+data>" — mesmo título da planilha de referência.
-function pcpTituloBlocoReq(semana, diaProd, diaServido){
-  const dProd = fmtData(dataDoDia(semana, diaProd)), dServ = fmtData(dataDoDia(semana, diaServido));
-  return `PRODUZIR EM ${PCP_DIA_LABEL_FEIRA[diaProd]||diaProd} ${dProd}   →   PARA SERVIR EM ${PCP_DIA_LABEL_FEIRA[diaServido]||diaServido} ${dServ}`;
+// "DIA DE USO: <dia+data> · DIA DE SEPARAÇÃO: <dia+data>" (16/11/2026, pedido do Marcelo) — substitui o
+// antigo "PRODUZIR EM → PARA SERVIR EM" (que só existia na visão "hoje", agora removida). dataSeparacao já
+// vem calculada por pcpDataSeparacao (ver pcpReqSemanaPorDiaServido) — aqui só formata os dois rótulos.
+function pcpTituloBlocoReqUso(dataUso, dataSeparacao){
+  return `DIA DE USO: ${PCP_DIA_LABEL_FEIRA[pcpDiaDaData(dataUso)]} ${fmtData(dataUso)}   ·   DIA DE SEPARAÇÃO: ${PCP_DIA_LABEL_FEIRA[pcpDiaDaData(dataSeparacao)]} ${fmtData(dataSeparacao)}`;
 }
-// linha de um item a separar (tela e impressão compartilham a mesma linha — só a moldura muda). Colunas
-// replicadas da planilha de referência (abas "PCP - COZINHA"/"PCP - AÇOUGUE"): Ingrediente | Grupo (grupo
-// de COMPRA do próprio insumo, não setor de produção) | Un. | Qtd necessária | Em embalagens (adição nossa,
-// já existia na Requisição) | Pratos/receitas que usam | Ajuste (em branco) | Conferido | Observação.
-function pcpReqLinhaHtml(l, print){
-  const receitasTxt = l.receitas.length ? l.receitas.map(r => escapeHtml(r.nome)).join(" | ") : "";
-  const td = print ? `padding:5px 4px; border-top:1px solid #ddd;` : "";
-  return `<tr>
-    <td style="${td}">${escapeHtml(l.nome)}</td>
-    <td style="${td} white-space:nowrap;">${escapeHtml(l.grupo)}</td>
-    <td style="${td} white-space:nowrap;">${escapeHtml(l.unidade)}</td>
-    <td style="${td} text-align:right; font-weight:600; white-space:nowrap;">${fmtNum(l.qtd,2)}</td>
-    <td style="${td} text-align:right; white-space:nowrap;">${pcpFmtEmb(l) || "—"}</td>
-    <td style="${td} font-size:${print?11:12}px;">${receitasTxt}</td>
-    <td style="${td} min-width:70px;">&nbsp;</td>
-    <td style="${td} min-width:60px;">&nbsp;</td>
-    <td style="${td} min-width:120px;">&nbsp;</td>
-  </tr>`;
-}
-const PCP_REQ_COLS_HEAD = `<th>Ingrediente</th><th>Grupo</th><th>Un.</th><th style="text-align:right;">Qtd necessária</th><th style="text-align:right;">Em embalagens</th><th>Pratos / receitas que usam</th><th>Ajuste</th><th>Conferido</th><th>Observação</th>`;
-// painel de UM bloco (1 dia de produção → 1 dia servido), na tela — lista única, sem separar por setor.
-function pcpReqDiaHtml(diaInfo, semana){
-  const { diaProd, diaServido, linhas } = diaInfo;
-  return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3 style="font-size:13.5px;">${escapeHtml(pcpTituloBlocoReq(semana, diaProd, diaServido))}</h3><span class="hint">${linhas.length} item${linhas.length===1?"":"s"}</span></div>
-    <div class="panel-body"><div class="table-wrap"><table><thead><tr>${PCP_REQ_COLS_HEAD}</tr></thead><tbody>
-      ${linhas.length ? linhas.map(l => pcpReqLinhaHtml(l, false)).join("") : `<tr><td colspan="9" class="footnote">Nada a separar para este dia.</td></tr>`}
-    </tbody></table></div>
-    </div>
-  </div>`;
-}
-// conteúdo (sem moldura de documento) de UM bloco, pra impressão — reaproveitado tanto pra imprimir a
-// separação selecionada quanto, em lote, pra imprimir a semana inteira (pcpImprimirReqSemana).
-function pcpReqFolhaDiaPrintHtml(diaInfo, semana, unidadeLabel){
-  const { diaProd, diaServido, linhas } = diaInfo;
-  return `<h1>${escapeHtml(pcpTituloBlocoReq(semana, diaProd, diaServido))}</h1>
-    <div style="font-size:12px; color:#666; margin-bottom:14px;">${escapeHtml(unidadeLabel)} · ${escapeHtml(rotuloSemana(semana))}</div>
-    <table style="width:100%; border-collapse:collapse; font-size:12px;"><thead><tr>${PCP_REQ_COLS_HEAD}</tr></thead><tbody>
-      ${linhas.length ? linhas.map(l => pcpReqLinhaHtml(l, true)).join("") : `<tr><td colspan="9">Nada a separar.</td></tr>`}
-    </tbody></table>
-    <p style="font-size:11px; color:#666; margin-top:12px;">Mesma conta da lista de compra (peso bruto da ficha × produção). Suco e carnes do açougue não entram aqui.</p>
-    <div style="margin-top:24px; font-size:11px; color:#666; display:flex; justify-content:space-between;"><span>Separado por: ____________________ &nbsp; Entregue por: ____________________</span><span>Impresso em ${fmtDataCompleta(new Date())}</span></div>`;
-}
-// imprime a separação selecionada na tela (1 ou mais dias SERVIDOS cobertos pela produção de hoje, ex.:
-// sexta produz pra sábado+domingo) — cada dia servido sai como sua própria página/bloco.
-function pcpImprimirReqSeparacao(cobertura, semana, unidadeLabel){
-  if(!cobertura.porDia.length){ showAlert("Estoque não opera neste dia — nada a imprimir."); return; }
-  const partes = cobertura.porDia.map(d => pcpReqFolhaDiaPrintHtml(d, semana, unidadeLabel));
-  const w = window.open("", "_blank");
-  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
-  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Requisição do estoque</title>
-    <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()} .pcp-req-folha{page-break-after:always;}</style></head><body>
-    ${partes.map((h,i) => `<div class="${i<partes.length-1?"pcp-req-folha":""}">${printHeadHtml()}${h}</div>`).join("")}
-    </body></html>`);
-  w.document.close(); w.focus(); w.print();
-}
-// Imprimir a semana inteira: uma separação por dia de operação do estoque (pcpEstDias) — sexta também
-// produz pra sábado+domingo (fim de semana sem operação); cada dia SERVIDO coberto sai como seu próprio
-// bloco/página, em sequência. GAP CONHECIDO (ver pcpDiasCobertos): não atravessa pra a segunda da semana
-// seguinte.
-function pcpImprimirReqSemana(semana, unidadeFiltro, unidadeLabel){
-  const op = pcpEstDias();
-  const partes = [];
-  DIAS_ORDEM.filter(d => op.includes(d)).forEach(dia => {
-    const cob = pcpCalcularReqComCobertura(semana, dia, unidadeFiltro);
-    cob.porDia.forEach(d => partes.push(pcpReqFolhaDiaPrintHtml(d, semana, unidadeLabel)));
-  });
-  if(!partes.length){ showAlert("Nada a requisitar nesta semana."); return; }
-  const w = window.open("", "_blank");
-  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
-  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Requisição do estoque — semana</title>
-    <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()} .pcp-req-folha{page-break-after:always;}</style></head><body>
-    ${partes.map((h,i) => `<div class="${i<partes.length-1?"pcp-req-folha":""}">${printHeadHtml()}${h}</div>`).join("")}
-    </body></html>`);
-  w.document.close(); w.focus(); w.print();
-}
-function pcpReqAvisoHtml(diasCobertos){
-  if(!diasCobertos.length) return `<p class="footnote">Estoque não opera neste dia — não há produção/separação (confira os dias de operação em "Cortes e dias").</p>`;
-  if(diasCobertos.length > 1){
-    const rotulo = diasCobertos.map(d => DIA_LABEL[d]).join(" + ");
-    return `<p class="footnote" style="margin-bottom:12px;">O estoque não separa entre um dia e outro: esta produção também cobre ${escapeHtml(rotulo)} (fim de semana sem operação). Cada dia abaixo tem seu próprio bloco e quantidade — não somada.</p>`;
-  }
-  return "";
-}
-
 // ---------- Blocos por Grupo + Custo do dia + retirada avulsa (18/10/2026) ----------
-// Tabela nova, em blocos por grupo_compra do insumo (mesma ordem de ORDEM_GRUPO_COMPRA_BASE/blocosCadastro)
-// — ajuda o estoquista a separar por bancada/corredor em vez de uma lista única alfabética. Usada pela visão
-// "Todos os dias" e pelo print com escolha de dias; a tela/print "de hoje" (pcpReqDiaHtml/pcpReqFolhaDiaPrintHtml,
-// ambos acima) continuam do jeito que estavam, sem Grupo em blocos nem Custo — não mexi nelas.
+// Tabela em blocos por grupo_compra do insumo (mesma ordem de ORDEM_GRUPO_COMPRA_BASE/blocosCadastro) —
+// ajuda o estoquista a separar por bancada/corredor em vez de uma lista única alfabética. Única forma de
+// ver/imprimir a Requisição do estoque desde 16/11/2026 (a visão "hoje", ungrouped, saiu — ver comentário
+// grande acima de pcpReqListaDia).
 function pcpReqLinhaGrupoHtml(l, print, podeRemover){
   const receitasTxt = l.receitas.length ? l.receitas.map(r => escapeHtml(r.nome)).join(" | ") : "";
-  const td = print ? `padding:5px 4px; border-top:1px solid #ddd;` : "";
+  // 16/11/2026, pedido do Marcelo ("impressão tipo tabela, com os campos para preenchimento com bom
+  // espaço"): linha impressa ganhou padding bem mais generoso (era 5px 4px) e as colunas de preenchimento à
+  // mão (Conferido/Observação) ficaram mais largas — só no print, a tela continua compacta.
+  const td = print ? `padding:12px 7px; border-top:1px solid #ddd;` : "";
   const custo = pcpCustoLinha(l);
   const temAvulsoPendente = podeRemover && (l.avulsos||[]).some(a => !a.avulsoBaixado);
   return `<tr${l.avulsos && l.avulsos.length ? ` style="background:${print?"#f7f3e8":"var(--warn-bg,#fff8e6)"};"` : ""}>
@@ -14867,12 +14818,16 @@ function pcpReqLinhaGrupoHtml(l, print, podeRemover){
     <td style="${td} text-align:right; white-space:nowrap;">${pcpFmtEmb(l) || "—"}</td>
     <td style="${td} text-align:right; white-space:nowrap;">${fmtMoney(custo)}</td>
     <td style="${td} font-size:${print?11:12}px;">${receitasTxt}</td>
-    ${print ? `<td style="${td} min-width:60px;">&nbsp;</td><td style="${td} min-width:120px;">&nbsp;</td>` : `
+    ${print ? `<td style="${td} min-width:80px;">&nbsp;</td><td style="${td} min-width:170px;">&nbsp;</td>` : `
     <td style="min-width:60px;">&nbsp;</td>
     <td>${temAvulsoPendente ? l.avulsos.filter(a=>!a.avulsoBaixado).map(a => `<button class="btn small ghost" data-pcp-avulso-remover="${a.avulsoId}" title="Remover esta retirada avulsa"><i class="ico" data-lucide="trash-2" style="width:14px; height:14px;"></i></button>`).join("") : ""}</td>`}
   </tr>`;
 }
-const PCP_REQ_GRUPO_COLS_HEAD = `<th>Ingrediente</th><th>Un.</th><th style="text-align:right;">Qtd necessária</th><th style="text-align:right;">Em embalagens</th><th style="text-align:right;">Custo</th><th>Pratos / receitas que usam</th><th>Conferido</th><th></th>`;
+// 16/11/2026: a última coluna (fill-in de observação) não tinha rótulo no cabeçalho impresso — ficava uma
+// coluna em branco sem dizer o que preencher ali. Rotulada agora. Cabeçalho do print ganhou padding próprio
+// (pedido do Marcelo, "bom espaço pra preenchimento") — tela continua compacta, só o print muda.
+const PCP_REQ_GRUPO_COLS_HEAD = `<th>Ingrediente</th><th>Un.</th><th style="text-align:right;">Qtd necessária</th><th style="text-align:right;">Em embalagens</th><th style="text-align:right;">Custo</th><th>Pratos / receitas que usam</th><th>Conferido</th><th>Observação</th>`;
+const PCP_REQ_GRUPO_COLS_HEAD_PRINT = `<th style="padding:4px 7px; text-align:left;">Ingrediente</th><th style="padding:4px 7px; text-align:left;">Un.</th><th style="padding:4px 7px; text-align:right;">Qtd necessária</th><th style="padding:4px 7px; text-align:right;">Em embalagens</th><th style="padding:4px 7px; text-align:right;">Custo</th><th style="padding:4px 7px; text-align:left;">Pratos / receitas que usam</th><th style="padding:4px 7px; text-align:left;">Conferido</th><th style="padding:4px 7px; text-align:left;">Observação</th>`;
 function pcpReqBlocosGrupoHtml(linhas, print){
   if(!linhas.length) return print ? `<p>Nada a separar.</p>` : `<p class="footnote">Nada a separar para este dia.</p>`;
   const grupos = blocosCadastro();
@@ -14884,7 +14839,7 @@ function pcpReqBlocosGrupoHtml(linhas, print){
     const subtotal = pcpCustoLinhas(ls);
     return `<div class="${print?"":"table-wrap"}" style="margin-bottom:${print?16:14}px;">
       <div style="font-weight:700; font-size:${print?12:12.5}px; text-transform:uppercase; letter-spacing:.03em; padding:${print?"6px 0":"4px 2px"}; border-bottom:2px solid ${print?"#333":"var(--border,#333)"}; margin-bottom:4px; display:flex; justify-content:space-between;"><span>${escapeHtml(g)}</span><span style="font-weight:600;">${fmtMoney(subtotal)}</span></div>
-      <table${print?' style="width:100%; border-collapse:collapse; font-size:12px;"':""}><thead><tr>${PCP_REQ_GRUPO_COLS_HEAD}</tr></thead><tbody>
+      <table${print?' style="width:100%; border-collapse:collapse; font-size:12px;"':""}><thead><tr${print?' style="border-bottom:1px solid #999;"':""}>${print ? PCP_REQ_GRUPO_COLS_HEAD_PRINT : PCP_REQ_GRUPO_COLS_HEAD}</tr></thead><tbody>
         ${ls.map(l => pcpReqLinhaGrupoHtml(l, print, true)).join("")}
       </tbody></table>
     </div>`;
@@ -14912,20 +14867,22 @@ function pcpAvulsoFormHtml(dia, unidadeFiltro, area){
     </div>
   </div>`;
 }
-// bloco "PARA SERVIR EM <dia> <data>" por dia servido — usado pela visão "Todos os dias" na tela.
+// bloco "DIA DE USO ... · DIA DE SEPARAÇÃO ..." por dia servido — usado pela visão "Todos os dias" na
+// tela. 16/11/2026, pedido do Marcelo: título passou a trazer os dois dias (antes só mostrava o dia de
+// uso) — dataSeparacao vem pronta de pcpReqSemanaPorDiaServido (pcpDataSeparacao, cobre a virada de semana).
 function pcpReqDiaServidoHtml(diaInfo, semana, unidadeFiltro, area){
-  const { dia, linhas } = diaInfo;
+  const { dia, linhas, dataUso, dataSeparacao } = diaInfo;
   const custoDia = pcpCustoLinhas(linhas);
   return `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3 style="font-size:13.5px;">PARA SERVIR EM ${escapeHtml(PCP_DIA_LABEL_FEIRA[dia]||dia)} ${escapeHtml(fmtData(dataDoDia(semana,dia)))}</h3><span class="hint">${linhas.length} item${linhas.length===1?"":"s"} · Custo do dia: <strong>${fmtMoney(custoDia)}</strong></span></div>
+    <div class="panel-head"><h3 style="font-size:13.5px;">${escapeHtml(pcpTituloBlocoReqUso(dataUso, dataSeparacao))}</h3><span class="hint">${linhas.length} item${linhas.length===1?"":"s"} · Custo do dia: <strong>${fmtMoney(custoDia)}</strong></span></div>
     <div class="panel-body">${pcpReqBlocosGrupoHtml(linhas, false)}</div>
     ${pcpAvulsoFormHtml(dia, unidadeFiltro, area)}
   </div>`;
 }
 function pcpReqDiaServidoPrintHtml(diaInfo, semana, unidadeLabel, area){
-  const { dia, linhas } = diaInfo;
+  const { dia, linhas, dataUso, dataSeparacao } = diaInfo;
   const custoDia = pcpCustoLinhas(linhas);
-  return `<h1>${area === "acougue" ? "AÇOUGUE" : "ESTOQUE"} — PARA SERVIR EM ${escapeHtml(PCP_DIA_LABEL_FEIRA[dia]||dia)} ${escapeHtml(fmtData(dataDoDia(semana,dia)))}</h1>
+  return `<h1>${area === "acougue" ? "AÇOUGUE" : "ESTOQUE"} — ${escapeHtml(pcpTituloBlocoReqUso(dataUso, dataSeparacao))}</h1>
     <div style="font-size:12px; color:#666; margin-bottom:14px;">${escapeHtml(unidadeLabel)} · ${escapeHtml(rotuloSemana(semana))} · Custo do dia: <strong>${fmtMoney(custoDia)}</strong></div>
     ${pcpReqBlocosGrupoHtml(linhas, true)}
     <div style="margin-top:24px; font-size:11px; color:#666; display:flex; justify-content:space-between;"><span>Separado por: ____________________ &nbsp; Entregue por: ____________________</span><span>Impresso em ${fmtDataCompleta(new Date())}</span></div>`;
@@ -14935,11 +14892,11 @@ function pcpReqDiaServidoPrintHtml(diaInfo, semana, unidadeLabel, area){
 // imprimir (decisão anterior desta mesma sessão) — agora é um botão separado (ver pcpReqSemanaSecaoBind:
 // data-pcp-reqdia-baixar), com um botão de desfazer do lado pra reverter um clique acidental. Imprimir
 // continua podendo ser feito quantas vezes quiser, antes ou depois da baixa, sem efeito no estoque.
-async function pcpImprimirReqDiasEscolhidos(dias, semana, unidadeFiltro, unidadeLabel, area, servicosFiltro){
+async function pcpImprimirReqDiasEscolhidos(dias, semana, unidadeFiltro, unidadeLabel, area, servicosFiltro, clienteFiltro){
   if(!dias.length){ showAlert("Escolha ao menos um dia pra imprimir."); return; }
-  const todos = pcpReqSemanaPorDiaServido(semana, unidadeFiltro, area, servicosFiltro);
+  const todos = pcpReqSemanaPorDiaServido(semana, unidadeFiltro, area, servicosFiltro, clienteFiltro);
   const porDia = new Map(todos.map(d => [d.dia, d]));
-  const partes = dias.map(dia => pcpReqDiaServidoPrintHtml(porDia.get(dia) || {dia, linhas:[]}, semana, unidadeLabel, area));
+  const partes = dias.map(dia => pcpReqDiaServidoPrintHtml(porDia.get(dia) || {dia, linhas:[], dataUso: dataDoDia(semana,dia), dataSeparacao: pcpDataSeparacao(dataDoDia(semana,dia), area === "acougue" ? pcpAcgDias() : pcpEstDias())}, semana, unidadeLabel, area));
   const w = window.open("", "_blank");
   if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${area==="acougue"?"Açougue":"Requisição do estoque"} — dias selecionados</title>
@@ -14948,31 +14905,82 @@ async function pcpImprimirReqDiasEscolhidos(dias, semana, unidadeFiltro, unidade
     </body></html>`);
   w.document.close(); w.focus(); w.print();
 }
-// seção completa "Semana inteira — por dia de uso": checkboxes de dia (default: todos marcados na 1ª vez
-// que a semana aparece, preservando a marcação entre renders dentro da mesma sessão), botões de impressão,
-// baixa e desfazer baixa, e os blocos por dia servido (grupo + custo + avulso) — sempre os 7 dias, mesmo os
-// sem nada a requisitar (18/10/2026, pedido do Marcelo; ver pcpReqSemanaPorDiaServido). `diasSelState` é o
-// Set vindo de pcpReqDiasSel (Estoque) ou pcpAcgDiasSel (Açougue) — mutado in-place pelos checkboxes.
-function pcpReqSemanaSecaoHtml(dias, diasSelState, semana, unidadeFiltro, area){
+// Painel "Dias da semana" + "Clientes" da Requisição do estoque (16/11/2026, pedido do Marcelo: "mesmo
+// layout do painel ... clientes que temos na aba açougue") — mesmo visual de pcpAcgFiltrosHtml, SEM o botão
+// "Gerar tabela": a Requisição do estoque sempre recalculou na hora (é um cálculo leve, mais parecido com
+// Ajustes do dia que com o Preparo da semana do Açougue), então marcar dia/cliente já atualiza a tabela
+// embaixo, sem clique extra — confirmado com o Marcelo. "Dias da semana" aqui NÃO esconde bloco nenhum (os
+// 7 dias sempre aparecem, ver pcpReqSemanaPorDiaServido) — só decide quais dias entram em
+// Imprimir/Baixa/Desfazer/Fichas. "Clientes" filtra de verdade as listas/impressão/KPIs, mas nunca a baixa.
+function pcpReqFiltrosHtml(diasSelState, contratosMatriz, contratosFilial, idsMatriz, idsFilial, clienteFiltro, idsUnidade, clientesSelRaw, unidadeFiltro){
+  const diasPanel = `
+  <div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head">
+      <h3>Dias da semana</h3>
+      <span class="hint">${diasSelState.size} de ${DIAS_ORDEM.length}</span>
+    </div>
+    <div class="panel-body">
+      <div class="footnote" style="margin:0 0 10px;">Os 7 dias sempre aparecem abaixo — marque aqui só os dias que entram em "Imprimir dias marcados", "Dar baixa"/"Desfazer baixa" e "Imprimir fichas técnicas".</div>
+      <div class="kk-dias-chips" id="pcp-dia-tabs" style="flex-wrap:wrap;">
+        ${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia pcp-reqdia-chip ${diasSelState.has(d)?"on":""}" data-dia="${d}">${DIA_LABEL[d]}</button>`).join("")}
+      </div>
+    </div>
+  </div>`;
+  const grupoClientesHtml = (titulo, lista, unidadeKey) => {
+    const ativa = !unidadeFiltro || unidadeFiltro === unidadeKey;
+    return `<div class="grid2-box ${ativa?"":"grid2-box-dim"}">
+      <div class="footnote" style="margin:0 0 8px; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
+        <span>${escapeHtml(titulo)} (${lista.length})</span>
+        ${ativa ? `<span class="hint" style="margin:0;">${lista.filter(([id]) => clienteFiltro.has(id)).length} de ${lista.length} selecionados</span>` : `<span class="hint" style="margin:0;">não selecionada</span>`}
+      </div>
+      ${lista.length ? `<div class="kk-dias-chips" style="flex-wrap:wrap;">
+        ${lista.map(([id,c]) => `<button type="button" class="chip-dia ${ativa?"pcp-req-cli-chip":""} ${ativa && clienteFiltro.has(id)?"on":""}" data-id="${id}" ${ativa?"":"disabled"}>${escapeHtml(c.nome_cliente)}</button>`).join("")}
+      </div>` : `<div class="footnote">Nenhum contrato ativo.</div>`}
+    </div>`;
+  };
+  const clientesPanel = `
+  <div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head">
+      <h3>Clientes</h3>
+      <span class="hint">${clienteFiltro.size} de ${idsUnidade.length}</span>
+    </div>
+    <div class="panel-body">
+      <div class="footnote" style="margin:0 0 10px;">Filtra as listas de separação, os KPIs acima e a impressão abaixo — pra gerar a requisição só de alguns clientes. Nunca filtra a baixa real no estoque (sempre o dia inteiro, de todos os clientes — ver aviso junto aos botões abaixo).</div>
+      <div class="kk-dias-chips" style="margin-bottom:10px; flex-wrap:wrap; align-items:center;">
+        <button type="button" class="chip-dia ${!unidadeFiltro||unidadeFiltro==="todos"?"on":""}" data-req-atalho="todos">Grupo inteiro (${idsMatriz.length + idsFilial.length})</button>
+        <button type="button" class="chip-dia ${unidadeFiltro==="matriz"?"on":""}" data-req-atalho="matriz">Matriz (${idsMatriz.length})</button>
+        <button type="button" class="chip-dia ${unidadeFiltro==="filial"?"on":""}" data-req-atalho="filial">Filial (${idsFilial.length})</button>
+        <button type="button" class="btn small ghost" id="pcp-req-cli-limpar" ${clientesSelRaw===null?"disabled":""} style="margin-left:6px;">Limpar seleção</button>
+      </div>
+      <div class="grid2">
+        ${grupoClientesHtml("Matriz", contratosMatriz, "matriz")}
+        ${grupoClientesHtml("Filial", contratosFilial, "filial")}
+      </div>
+    </div>
+  </div>`;
+  return diasPanel + clientesPanel;
+}
+// seção completa "Semana inteira — por dia de uso": botões de impressão/baixa/desfazer (agem sobre os dias
+// marcados no painel "Dias da semana", ver pcpReqFiltrosHtml) + os blocos por dia servido (grupo + custo +
+// avulso) — sempre os 7 dias, mesmo os sem nada a requisitar (18/10/2026, pedido do Marcelo; ver
+// pcpReqSemanaPorDiaServido). 16/11/2026: os chips de dia saíram de dentro desta função (duplicavam o
+// painel novo "Dias da semana") — a seleção em si continua em pcpReqDiasSel, só passou a ser desenhada lá.
+function pcpReqSemanaSecaoHtml(dias, semana, unidadeFiltro, area){
   if(!dias.length) return `<div class="panel"><div class="empty-state">Nada a separar nesta semana.</div></div>`;
-  const disponiveis = dias.map(d => d.dia);
-  if(![...diasSelState].some(d => disponiveis.includes(d))) disponiveis.forEach(d => diasSelState.add(d));
-  [...diasSelState].forEach(d => { if(!disponiveis.includes(d)) diasSelState.delete(d); });
   return `
     <div class="panel" style="margin-bottom:14px;">
-      <div class="panel-body" style="display:flex; flex-wrap:wrap; gap:14px; align-items:center;">
-        <div class="kk-dias-chips">${dias.map(d => `<button type="button" class="chip-dia pcp-reqdia-chip ${diasSelState.has(d.dia)?"on":""}" data-dia="${d.dia}" data-area="${area}">${escapeHtml((PCP_DIA_LABEL_FEIRA[d.dia]||d.dia).slice(0,3))}</button>`).join("")}</div>
-        <span style="flex:1 1 auto;"></span>
+      <div class="panel-body" style="display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end;">
         <button class="btn small primary" data-pcp-reqdia-fichas="1">Imprimir fichas técnicas (dias marcados)</button>
         <button class="btn small primary" data-pcp-reqdia-imprimir="1">Imprimir dias marcados</button>
         <button class="btn small ghost" data-pcp-reqdia-desfazer="1" style="color:var(--danger,#c0392b); border-color:var(--danger,#c0392b);">Desfazer baixa (dias marcados)</button>
         <button class="btn small primary" data-pcp-reqdia-baixar="1">Dar baixa no estoque (dias marcados)</button>
       </div>
+      <div class="panel-body" style="padding-top:0;"><p class="footnote" style="margin:0;">A baixa real no estoque sempre lança o dia inteiro, de todos os clientes — o filtro de clientes acima não reduz o que é baixado no kardex, só o que aparece nas listas/impressão.</p></div>
     </div>
     ${dias.map(d => pcpReqDiaServidoHtml(d, semana, unidadeFiltro, area)).join("")}
   `;
 }
-function pcpReqSemanaSecaoBind(content, semana, unidadeFiltro, unidadeLabel, area, diasSelState, servicosFiltro, margemPct){
+function pcpReqSemanaSecaoBind(content, semana, unidadeFiltro, unidadeLabel, area, diasSelState, servicosFiltro, margemPct, clienteFiltro){
   content.querySelectorAll("[data-pcp-avulso-toggle]").forEach(b => {
     b.addEventListener("click", () => {
       const form = content.querySelector(`[data-pcp-avulso-form="${peCss(b.dataset.pcpAvulsoToggle)}"]`);
@@ -14989,14 +14997,14 @@ function pcpReqSemanaSecaoBind(content, semana, unidadeFiltro, unidadeLabel, are
   const btnImprimir = content.querySelector("button[data-pcp-reqdia-imprimir]");
   if(btnImprimir) btnImprimir.addEventListener("click", async () => {
     const dias = DIAS_ORDEM.filter(d => diasSelState.has(d));
-    await pcpImprimirReqDiasEscolhidos(dias, semana, unidadeFiltro, unidadeLabel, area, servicosFiltro);
+    await pcpImprimirReqDiasEscolhidos(dias, semana, unidadeFiltro, unidadeLabel, area, servicosFiltro, clienteFiltro);
   });
   const btnBaixar = content.querySelector("button[data-pcp-reqdia-baixar]");
   if(btnBaixar) btnBaixar.addEventListener("click", async () => {
     const dias = DIAS_ORDEM.filter(d => diasSelState.has(d));
     if(!dias.length){ showAlert("Marque ao menos um dia."); return; }
     const rotulo = dias.map(d => PCP_DIA_LABEL_FEIRA[d]||d).join(", ");
-    if(!(await confirmDialog(`Dar baixa real no estoque dos dias marcados (${rotulo})? Isso lança o consumo no kardex — reimprimir/clicar de novo não duplica, mas se marcar por engano use "Desfazer baixa".`))) return;
+    if(!(await confirmDialog(`Dar baixa real no estoque dos dias marcados (${rotulo})? Isso lança o consumo no kardex — reimprimir/clicar de novo não duplica, mas se marcar por engano use "Desfazer baixa". A baixa é sempre do dia inteiro (todos os clientes), independente do filtro de clientes da tela.`))) return;
     const resumo = await pcpBaixarReqUnidades(semana, dias, unidadeFiltro, area, servicosFiltro);
     const msg = resumo.totalGerado ? `Baixa gerada no estoque: ${resumo.totalGerado} dia(s)/unidade(s), ${fmtMoney(resumo.custoTotal)}.${resumo.totalJaTinha ? ` (${resumo.totalJaTinha} já tinham baixa anterior — não duplicado.)` : ""}` : (resumo.totalJaTinha ? "Todos os dias marcados já tinham baixa anterior — nada a fazer." : "Nada a baixar (nenhum item nos dias marcados).");
     showAlert(msg);
@@ -15017,7 +15025,7 @@ function pcpReqSemanaSecaoBind(content, semana, unidadeFiltro, unidadeLabel, are
   if(btnFichas) btnFichas.addEventListener("click", () => {
     const dias = DIAS_ORDEM.filter(d => diasSelState.has(d));
     if(!dias.length){ showAlert("Marque ao menos um dia."); return; }
-    dias.forEach(dia => pcpImprimirReceitasProducao(pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro), margemPct));
+    dias.forEach(dia => pcpImprimirReceitasProducao(pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro, clienteFiltro), margemPct));
   });
   content.querySelectorAll("[data-pcp-avulso-form]").forEach(form => {
     const dia = form.dataset.pcpAvulsoForm;
@@ -15556,7 +15564,7 @@ function pcpBaixarPdfEtiquetasAcougue(linhas, tamanho, orient, unidadeLabel){
 // ---------- Saladas/Sobremesas (18/10/2026, pedido do Marcelo) ----------
 // Aba nova, mesmo modelo de 3 peças do Açougue (produção do dia, mapa da semana, etiquetas) — mas pras
 // bancadas de Salada e Sobremesa, que preparam TODO dia (sem cobertura entre dias, igual às bancadas da
-// Requisição do estoque — ver pcpCalcularReqComCobertura) e usam o MESMO motor (pcpCalcularDia) que já
+// Requisição do estoque — ver pcpReqListaDia) e usam o MESMO motor (pcpCalcularDia) que já
 // alimenta "Produção da cozinha", só filtrado por grupo — não é um cálculo novo, é o mesmo número.
 // Suco fica de fora do mapa da semana e das etiquetas: confirmado com o Marcelo (12/10/2026, revalidado
 // nesta sessão) que Suco é preparado na própria unidade do cliente, não sai pronto da cozinha central —
@@ -17817,7 +17825,21 @@ async function renderPCP(){
   const ajustesIdsUnidade = !unidadeFiltro || unidadeFiltro === "todos" ? [...ajustesIdsMatriz, ...ajustesIdsFilial] : (unidadeFiltro === "matriz" ? ajustesIdsMatriz : ajustesIdsFilial);
   const ajustesSelIds = pcpAjustesClientesSel === null ? ajustesIdsUnidade : ajustesIdsUnidade.filter(id => pcpAjustesClientesSel.has(id));
   const ajustesClienteFiltro = new Set(ajustesSelIds);
-  const reqCobertura = ehEstoque ? pcpCalcularReqComCobertura(pcpSemanaSel, pcpDiaSel, unidadeFiltro, servicosFiltro) : null;
+  // Painel "Dias da semana"/"Clientes" da Requisição do estoque (16/11/2026, pedido do Marcelo: "mesmo
+  // layout do painel ... clientes que temos na aba açougue" — ver pcpReqFiltrosHtml). Mesmo padrão de
+  // semeadura/cálculo do Açougue (ajustesIdsUnidade/acgClienteFiltro acima), só que SEM gate de "Gerar
+  // tabela" — recalcula na hora (decisão confirmada com o Marcelo: a Requisição do estoque é um cálculo
+  // leve, não precisa da etapa manual que o Preparo da semana do Açougue tem). Abre sempre com os 7 dias
+  // marcados (mesmo critério do Açougue), porque sempre foi assim nesta aba (nenhum dia nunca esteve
+  // escondido — os checkboxes só decidem o que entra em imprimir/baixa, nunca o que é exibido).
+  if(ehEstoque && !pcpReqDiasSel.size) DIAS_ORDEM.forEach(d => pcpReqDiasSel.add(d));
+  const reqContratosMatriz = ehEstoque ? [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === "matriz").sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente))) : [];
+  const reqContratosFilial = ehEstoque ? [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === "filial").sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente))) : [];
+  const reqIdsMatriz = reqContratosMatriz.map(([id]) => id);
+  const reqIdsFilial = reqContratosFilial.map(([id]) => id);
+  const reqIdsUnidade = !unidadeFiltro || unidadeFiltro === "todos" ? [...reqIdsMatriz, ...reqIdsFilial] : (unidadeFiltro === "matriz" ? reqIdsMatriz : reqIdsFilial);
+  const reqSelIds = pcpReqClientesSel === null ? reqIdsUnidade : reqIdsUnidade.filter(id => pcpReqClientesSel.has(id));
+  const reqClienteFiltro = new Set(reqSelIds);
   // 11/11/2026, pedido do Marcelo ("layout igual Produção da cozinha ... dias ... clientes"): painéis "Dias
   // da semana"/"Clientes" do Açougue — mesma semeadura/mesmo cálculo de Ajustes do dia (ver ajustesIdsUnidade/
   // ajustesClienteFiltro acima). O Mapa da semana (mapaSemana, logo abaixo) NUNCA usa esses filtros — continua
@@ -17846,7 +17868,11 @@ async function renderPCP(){
   // — ver comentário da função). Precisa das retiradas avulsas carregadas ANTES de montar os blocos.
   if(ehEstoque) await pcpCarregarAvulsas(pcpSemanaSel, unidadeFiltro, "estoque");
   if(ehAcougue) await pcpCarregarAvulsas(pcpSemanaSel, unidadeFiltro, "acougue");
-  const reqSemana = ehEstoque ? pcpReqSemanaPorDiaServido(pcpSemanaSel, unidadeFiltro, "estoque", servicosFiltro) : null;
+  const reqSemana = ehEstoque ? pcpReqSemanaPorDiaServido(pcpSemanaSel, unidadeFiltro, "estoque", servicosFiltro, reqClienteFiltro) : null;
+  // KPIs do topo (16/11/2026, pedido do Marcelo: "o filtro vale pra tudo, inclusive os KPIs") — somam os 7
+  // dias de reqSemana, que já saem filtrados pelos clientes marcados acima.
+  const reqKpiItens = reqSemana ? reqSemana.reduce((s,d) => s + d.linhas.length, 0) : 0;
+  const reqKpiCusto = reqSemana ? reqSemana.reduce((s,d) => s + pcpCustoLinhas(d.linhas), 0) : 0;
   // aba "Saladas/Sobremesas" — mapa da semana (sempre semana inteira, não depende do dia marcado).
   const salSobMapaSemana = ehSalSob ? pcpSalSobMapaSemana(pcpSemanaSel, unidadeFiltro, servicosFiltro) : null;
   // 11/11/2026, pedido do Marcelo ("mesmo padrão de caixas de Substituições"): painel "Dias da semana"
@@ -17903,9 +17929,9 @@ async function renderPCP(){
       <button type="button" data-pcpsub="romaneio" class="${pcpSubView==="romaneio"?"active":""}">Romaneio por rota</button>
     </div>
     <div class="menu-controls" style="margin-bottom:16px;">
-      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes || ehCafe || ehSalSob || ehAcougue ? "" : `<div class="kk-dias-chips" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" class="chip-dia ${pcpUnidadeSel===u.id?"on":""}" data-pcpuni="${u.id}">${u.nome}${u.id !== "todos" ? ` · ${pcpContagemUnidade(u.id)}` : ""}</button>`).join("")}</div>`}
+      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes || ehCafe || ehSalSob || ehAcougue || ehEstoque ? "" : `<div class="kk-dias-chips" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" class="chip-dia ${pcpUnidadeSel===u.id?"on":""}" data-pcpuni="${u.id}">${u.nome}${u.id !== "todos" ? ` · ${pcpContagemUnidade(u.id)}` : ""}</button>`).join("")}</div>`}
       <select id="pcp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===pcpSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
-      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes || ehCafe || ehSalSob || ehAcougue ? "" : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
+      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes || ehCafe || ehSalSob || ehAcougue || ehEstoque ? "" : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
       ${servicosAplicavel ? `<div class="kk-dias-chips" id="pcp-serv-tabs">${PCP_TURNOS.filter(t=>t.id!=="todos").map(t => `<button type="button" class="chip-dia ${pcpServicosSel.has(t.id)?"on":""}" data-pcp-serv="${t.id}">${t.nome}</button>`).join("")}</div>` : ""}
     </div>
     ${ehAcougue ? `
@@ -17922,21 +17948,13 @@ async function renderPCP(){
            ${pcpAcgPreparoSemanaHtml(acgPreparoSemana, pcpSemanaSel, unidadeFiltro)}`}
     ` : ehEstoque ? (
       pcpPainelAreaHtml([
-        {label:"Itens a requisitar", valor: reqCobertura.porDia.reduce((s,d)=>s+d.linhas.length,0)},
-        {label:"Dias cobertos por esta separação", valor: reqCobertura.diasCobertos.length}
+        {label:"Itens a requisitar (semana)", valor: reqKpiItens},
+        {label:"Custo total da semana", valor: fmtMoney(reqKpiCusto)},
+        {label:"Clientes selecionados", valor: `${reqSelIds.length} de ${reqIdsUnidade.length}`}
       ]) +
-      (!reqCobertura.diasCobertos.length ? pcpReqAvisoHtml(reqCobertura.diasCobertos) : `
-        ${pcpReqAvisoHtml(reqCobertura.diasCobertos)}
-        <div style="display:flex; justify-content:flex-end; gap:8px; margin-bottom:14px;">
-          <button class="btn small primary" id="pcp-req-imprimir">Imprimir separação de hoje</button>
-        </div>
-        ${reqCobertura.porDia.every(d => !d.linhas.length) ? `<div class="panel"><div class="empty-state">Nada a requisitar nesta separação.</div></div>` :
-          reqCobertura.porDia.map(d => pcpReqDiaHtml(d, pcpSemanaSel)).join("")}
-      `)
-    ) + `
-      <div class="panel-head" style="margin:20px 0 10px; border:none;"><h3><i class="ico" data-lucide="calendar-range"></i>Semana inteira — por dia de uso</h3></div>
-      ${pcpReqSemanaSecaoHtml(reqSemana, pcpReqDiasSel, pcpSemanaSel, unidadeFiltro, "estoque")}
-    ` : ehConferencia ? (
+      pcpReqFiltrosHtml(pcpReqDiasSel, reqContratosMatriz, reqContratosFilial, reqIdsMatriz, reqIdsFilial, reqClienteFiltro, reqIdsUnidade, pcpReqClientesSel, unidadeFiltro) +
+      pcpReqSemanaSecaoHtml(reqSemana, pcpSemanaSel, unidadeFiltro, "estoque")
+    ) : ehConferencia ? (
       !unidadeFiltro
         ? `<div class="empty-state">Selecione Matriz ou Filial acima — a conferência é por unidade real (é o que sai na doca de verdade), "Ambas" não se aplica aqui.</div>`
         : `${pcpConferenciaPainelHtml(confLinhas, pcpDiaSel, unidadeFiltro)}<div id="pcp-conf-wrap">${pcpConferenciaHtml(confLinhas)}</div>`
@@ -18536,9 +18554,25 @@ async function renderPCP(){
   } else if(ehEstoque){
     document.getElementById("pcp-acg-config").addEventListener("click", pcpAbrirConfigAcougue);
     const unidadeLabel = unidadeFiltro ? nomeUnidadeCompra(unidadeFiltro) : "Matriz + Filial";
-    const btnReq = document.getElementById("pcp-req-imprimir");
-    if(btnReq) btnReq.addEventListener("click", () => pcpImprimirReqSeparacao(reqCobertura, pcpSemanaSel, unidadeLabel));
-    pcpReqSemanaSecaoBind(content, pcpSemanaSel, unidadeFiltro, unidadeLabel, "estoque", pcpReqDiasSel, servicosFiltro, margemPct);
+    // Painel "Clientes" (16/11/2026, mesmo padrão de pcpAcgClientesSel/.pcp-acg-cli-chip) — atalho troca a
+    // unidade do topo de verdade e some com a seleção individual (volta pra "Grupo inteiro" da unidade
+    // nova); chip e "Limpar seleção" operam só dentro da unidade já selecionada.
+    content.querySelectorAll("[data-req-atalho]").forEach(b => b.addEventListener("click", () => {
+      const k = b.dataset.reqAtalho;
+      pcpUnidadeSel = k === "todos" ? "todos" : k;
+      pcpReqClientesSel = null;
+      renderPCP();
+    }));
+    content.querySelectorAll(".pcp-req-cli-chip").forEach(b => b.addEventListener("click", () => {
+      const id = b.dataset.id;
+      const base = pcpReqClientesSel === null ? new Set(reqIdsUnidade) : new Set(pcpReqClientesSel);
+      if(base.has(id)) base.delete(id); else base.add(id);
+      pcpReqClientesSel = base;
+      renderPCP();
+    }));
+    const btnReqCliLimpar = document.getElementById("pcp-req-cli-limpar");
+    if(btnReqCliLimpar) btnReqCliLimpar.addEventListener("click", () => { pcpReqClientesSel = null; renderPCP(); });
+    pcpReqSemanaSecaoBind(content, pcpSemanaSel, unidadeFiltro, unidadeLabel, "estoque", pcpReqDiasSel, servicosFiltro, margemPct, reqClienteFiltro);
   } else if(ehConferencia){
     const btnConfImprimir = document.getElementById("pcp-conf-imprimir");
     if(btnConfImprimir) btnConfImprimir.addEventListener("click", () => pcpImprimirConferencia(confLinhas, pcpSemanaSel, pcpDiaSel, nomeUnidadeCompra(unidadeFiltro)));
