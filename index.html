@@ -16519,25 +16519,31 @@ async function pcpCarregarConferencia(semana, dias, unidade){
 // cada prato. Por isso só entra na tabela de itens a entrada cujo produto é "cardapio_refeicao" (transportado
 // puro) — entradas de marmita/marmita especial da mesma receita (`r.porCliente` tem 1 entrada por produto,
 // chave contratoId+"|"+produtoId, ver pcpAcumularDia) nunca aparecem aqui.
-// EXCEÇÃO (17/11/2026, mesmo pedido, confirmado depois de implementar no resto do PCP): suco nunca entra
-// pro transportado puro (continua feito na própria unidade do cliente, pcpSetorDoGrupo "fora", a cozinha
-// central não pesa), mas ENTRA como item pra conferir quando tem demanda de marmita — é o suco que sai
-// embalado junto com as marmitas desse cliente, e isso sim precisa ser conferido na expedição. Quantidade é
-// só a parte marmita (ver pcpEntradasClientePorItem, mesma régua da Composição principal/Receitas da
-// produção) — nunca soma com a parte fantasma do transportado.
+// EXCEÇÃO (17/11/2026, mesmo pedido, confirmado depois de implementar no resto do PCP): SALADA, SOBREMESA
+// e SUCO saem em pote/bandeja PRÓPRIA pra marmita (confirmado com o Marcelo — não vêm embaladas dentro da
+// marmita junto com proteína/base/guarnição, por isso NÃO estão cobertas pela contagem de marmitas), então
+// ENTRAM como item pra conferir na expedição, com a quantidade sendo só a parte marmita (ver
+// pcpEntradasClientePorItem — nunca soma com a parte transportada). Suco nunca tem item transportado (é
+// fantasma pro transportado, pcpSetorDoGrupo "fora" — a cozinha central não pesa suco de transportado).
+// Salada/sobremesa SÃO reais pros dois formatos ao mesmo tempo — um cliente com transportado + marmita no
+// mesmo dia pode ter 2 itens de "Salada" na lista (um pesado pro transportado, outro pra marmita), por isso
+// usam uma chave diferente ("ficha-marmita:") da entrada transportada normal — senão os 2 checklists
+// colidiriam no banco (mesma chave = mesma linha salva).
 // Repare que isso quebra de propósito a paridade com Volume por cliente/Etiquetas (que ainda mostram só a
 // 1ª entrada, sem distinguir formato) — são telas com objetivo diferente, Conferência não é "tudo que o
-// cliente recebe", é só "o que precisa ser confirmado antes de sair pro transportado (+ suco da marmita)".
+// cliente recebe", é só "o que precisa ser confirmado antes de sair" (transportado pesado + o que sai em
+// pote/bandeja própria pra marmita).
 function pcpConferenciaLinhas(res, dia){
   if(!res.clientes.length) return [];
   const ehTransportado = x => { const c = catalogoPorProduto(x.produtoId); return c && c.tipo_custo === "cardapio_refeicao"; };
   return res.clientes.map(cli => {
     const itens = [];
     res.receitas.forEach(r => {
-      if(/^SUCO/.test(r.grupo || "")){
+      const ehPacoteSeparadoMarmita = /^(SALADA|SOBREMESA|SUCO)/.test(r.grupo || "");
+      if(ehPacoteSeparadoMarmita){
         const qtd = pcpEntradasClientePorItem(r, cli.id).reduce((s,x)=>s+x.qtd,0);
-        if(qtd > 0) itens.push({ chave: "ficha:"+r.fichaId, nome: r.nome, qtdPrevista: qtd, unidade: null, fichaId: r.fichaId });
-        return;
+        if(qtd > 0) itens.push({ chave: "ficha-marmita:"+r.fichaId, nome: r.nome + " (marmita)", qtdPrevista: qtd, unidade: null, fichaId: r.fichaId });
+        if(/^SUCO/.test(r.grupo || "")) return; // suco não tem item transportado — segue direto pro próximo item
       }
       const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id && ehTransportado(x));
       if(p) itens.push({ chave: "ficha:"+r.fichaId, nome: r.nome, qtdPrevista: p.qtd, unidade: null, fichaId: r.fichaId });
