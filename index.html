@@ -15131,16 +15131,25 @@ function pcpImprimirFolhaRota(grupo, semana, dia){
 // que já tem reordenar com ↑/↓ — não duplicado aqui pra não ter 2 lugares de mexer na mesma coisa.
 let pcpRotaNovaSel = []; // ordem de inclusão = ordem de entrega provisória
 let pcpRotaNovaDados = new Map(); // contratoId -> {horario, endereco}
+// campos do CABEÇALHO da rota nova (nome/saída/motorista/veículo) — achado testando ao vivo: toggle de
+// cliente redesenha o modal inteiro, e sem guardar esses 4 campos também eles voltavam vazios a cada
+// clique num cliente (só horário/endereço por cliente estava sendo preservado). Mesmo mecanismo de
+// snapshot-antes-de-redesenhar usado pra pcpRotaNovaDados, agora cobrindo também o cabeçalho.
+let pcpRotaNovaHeader = { nome: "", horario: "", motorista: "", veiculo: "" };
 
 function pcpAbrirGerenciarRotas(){
   pcpRotaNovaSel = [];
   pcpRotaNovaDados = new Map();
+  pcpRotaNovaHeader = { nome: "", horario: "", motorista: "", veiculo: "" };
   pcpRenderGerenciarRotas();
 }
-// tira uma foto do que já foi digitado nos campos de horário/endereço da nova rota antes de redesenhar o
-// modal (toggle de cliente reconstrói o HTML inteiro) — senão perderia o que já tinha sido preenchido nos
-// outros clientes já incluídos.
+// tira uma foto do que já foi digitado (cabeçalho da rota nova + horário/endereço por cliente) antes de
+// redesenhar o modal (toggle de cliente reconstrói o HTML inteiro) — senão perderia o que já tinha sido
+// preenchido.
 function pcpRotaNovaSnapshot(root){
+  const elNome = document.getElementById("rot-novo-nome"), elHorario = document.getElementById("rot-novo-horario"),
+        elMotorista = document.getElementById("rot-novo-motorista"), elVeiculo = document.getElementById("rot-novo-veiculo");
+  if(elNome) pcpRotaNovaHeader = { nome: elNome.value, horario: elHorario.value, motorista: elMotorista.value, veiculo: elVeiculo.value };
   root.querySelectorAll("[data-rota-novo-horario]").forEach(inp => {
     const cid = inp.dataset.rotaNovoHorario;
     pcpRotaNovaDados.set(cid, { ...(pcpRotaNovaDados.get(cid)||{}), horario: inp.value });
@@ -15191,10 +15200,10 @@ function pcpRenderGerenciarRotas(){
           <p class="footnote">"Saída" é o horário usado na impressão "Controle de proteínas e substituições" (ex.: 8:00) — opcional, deixe em branco se não aplicável. Pra mudar os clientes de uma rota já existente, use a tela normal da aba Romaneio (painéis "Rotas"/"Clientes" e tabela "Ordem de entrega" — lá dá pra reordenar com ↑/↓).</p>
           <div style="border-top:1px solid var(--border); padding-top:12px; margin-top:4px;">
             <div class="field-row" style="align-items:flex-end;">
-              <div class="field" style="flex:2;"><label>Nova rota — nome</label><input type="text" id="rot-novo-nome" placeholder="Ex.: Rota 1"></div>
-              <div class="field" style="max-width:90px;"><label>Saída</label><input type="text" id="rot-novo-horario" placeholder="8:00"></div>
-              <div class="field"><label>Motorista</label><input type="text" id="rot-novo-motorista"></div>
-              <div class="field"><label>Veículo</label><input type="text" id="rot-novo-veiculo"></div>
+              <div class="field" style="flex:2;"><label>Nova rota — nome</label><input type="text" id="rot-novo-nome" placeholder="Ex.: Rota 1" value="${escapeHtml(pcpRotaNovaHeader.nome)}"></div>
+              <div class="field" style="max-width:90px;"><label>Saída</label><input type="text" id="rot-novo-horario" placeholder="8:00" value="${escapeHtml(pcpRotaNovaHeader.horario)}"></div>
+              <div class="field"><label>Motorista</label><input type="text" id="rot-novo-motorista" value="${escapeHtml(pcpRotaNovaHeader.motorista)}"></div>
+              <div class="field"><label>Veículo</label><input type="text" id="rot-novo-veiculo" value="${escapeHtml(pcpRotaNovaHeader.veiculo)}"></div>
             </div>
             <div class="footnote" style="margin:10px 0 6px; font-weight:600;">Clientes da rota</div>
             <div class="kk-dias-chips" style="flex-wrap:wrap;">${clientesAtivos.length ? clientesAtivos.map(([cid,c]) => `<button type="button" class="chip-dia ${pcpRotaNovaSel.includes(cid)?"on":""}" data-rota-novo-toggle="${cid}">${escapeHtml(c.nome_cliente)}</button>`).join("") : `<span class="footnote">Nenhum contrato ativo.</span>`}</div>
@@ -15206,7 +15215,7 @@ function pcpRenderGerenciarRotas(){
         </div>
       </div>
     </div>`;
-  const close = () => { pcpRotaNovaSel = []; pcpRotaNovaDados = new Map(); root.innerHTML = ""; };
+  const close = () => { pcpRotaNovaSel = []; pcpRotaNovaDados = new Map(); pcpRotaNovaHeader = { nome: "", horario: "", motorista: "", veiculo: "" }; root.innerHTML = ""; };
   document.getElementById("rot-close").addEventListener("click", close);
   document.getElementById("rot-ov").addEventListener("click", e => { if(e.target.id==="rot-ov") close(); });
   root.querySelectorAll("[data-rota-salvar]").forEach(btn => btn.addEventListener("click", async () => {
@@ -15262,6 +15271,7 @@ function pcpRenderGerenciarRotas(){
     await loadRotas();
     pcpRotaNovaSel = [];
     pcpRotaNovaDados = new Map();
+    pcpRotaNovaHeader = { nome: "", horario: "", motorista: "", veiculo: "" };
     root.innerHTML = "";
     pcpRomaneioRotaSel = novoId;
     renderPCP();
