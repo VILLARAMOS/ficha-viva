@@ -10565,6 +10565,7 @@ function imprimirPedidoObjeto(p){
       <td class="num">${fmtNum(it.quantidade,3)}</td>
       <td>${escapeHtml(it.unidade||"")}</td>
       <td class="num">&nbsp;</td>
+      <td>${escapeHtml(it.observacao||"")}</td>
     </tr>`).join("");
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Pedido — ${escapeHtml(p.fornecedor||"—")} — ${fmtDataYMD(p.data_pedido)||""}</title>
     <style>
@@ -10597,9 +10598,9 @@ function imprimirPedidoObjeto(p){
       <div><strong>Valor total do pedido:</strong> ${fmtMoney(p.valor_total)}</div>
       ${p.cnpj_faturamento ? `<div style="grid-column:1/-1;"><strong>Faturar para CNPJ (Villa Ramos):</strong> ${escapeHtml(p.cnpj_faturamento)}</div>` : ""}
     </div>
-    ${p.observacoes ? `<div class="sub">Observações: ${escapeHtml(p.observacoes)}</div>` : ""}
+    ${p.observacoes ? `<div class="sub">Observações gerais do pedido: ${escapeHtml(p.observacoes)}</div>` : ""}
     <table>
-      <thead><tr><th>Insumo</th><th class="num">Pedido</th><th>Un.</th><th class="num">Recebido</th></tr></thead>
+      <thead><tr><th>Insumo</th><th class="num">Pedido</th><th>Un.</th><th class="num">Recebido</th><th>Observação</th></tr></thead>
       <tbody>${itensHtml}</tbody>
     </table>
     <div class="conf-box">
@@ -10898,8 +10899,16 @@ async function openPedidoModal(id, opts){
       row.querySelector(".pd-nome").addEventListener("change", e => {
         const texto = e.target.value;
         const match = insumosOrdenados.find(([,ins]) => normalizeText(ins.nome) === normalizeText(texto));
+        const insumoIdAntes = l.insumo_id;
         l.nome = texto;
         if(match){
+          // 17/11/2026, correção pedida pelo Marcelo: antes só preenchia preco_unitario quando a linha
+          // estava vazia (l.preco_unitario == null) — então, numa linha JÁ existente (pedido salvo, com
+          // preço do produto anterior lançado), trocar o produto não atualizava o valor pago nem o custo
+          // por kg/L/un: ficava com o preço do produto antigo, só mudando o nome/insumo_id. Agora, sempre
+          // que o insumo da linha realmente muda (troca de produto), o preço é recalculado a partir do
+          // novo produto — só preserva o preço já digitado quando o insumo escolhido é o mesmo de antes.
+          const trocouProduto = match[0] !== insumoIdAntes;
           l.insumo_id = match[0];
           const ins = match[1];
           const sug = fornecedorSugeridoParaInsumo(match[0]); // última compra desse insumo (qualquer fornecedor) — pré-preenche tudo
@@ -10908,9 +10917,9 @@ async function openPedidoModal(id, opts){
           if(sug){
             l.embalagem_tipo = sug.embalagem_tipo || null;
             l.embalagem_outra = sug.embalagem_outra || null;
-            if(l.preco_unitario == null) l.preco_unitario = sug.preco_unitario;
-          } else if(l.preco_unitario == null && ins.custo_unitario != null){
-            l.preco_unitario = ins.custo_unitario; // custo_unitario do cadastro já é o preço da embalagem (fator aplicado)
+            if(trocouProduto || l.preco_unitario == null) l.preco_unitario = sug.preco_unitario;
+          } else if(trocouProduto || (l.preco_unitario == null && ins.custo_unitario != null)){
+            l.preco_unitario = ins.custo_unitario != null ? ins.custo_unitario : null; // custo_unitario do cadastro já é o preço da embalagem (fator aplicado)
           }
           l.unidade = rotuloEmbalagemItem(l, ins);
         } else { l.insumo_id = null; l.unidade = ""; l.fator_embalagem = null; l.embalagem_tipo = null; l.embalagem_outra = null; }
