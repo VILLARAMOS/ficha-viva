@@ -789,7 +789,7 @@ const ORIENTACOES_POR_VIEW = {
     <p><strong>Requisição do estoque:</strong> mesma conta da lista de compra (peso bruto da ficha × produção). Suco e carnes do açougue não entram aqui (suco é feito na unidade do cliente; carnes saem pela ordem do açougue). O estoque não separa entre um dia e outro: a produção de sexta também cobre o fim de semana sem operação — cada dia tem seu próprio bloco e quantidade, não somada.</p>
     <p><strong>Substituições:</strong> um pra um — cada pessoa trocada tira 1 porção da proteína do cardápio naquele serviço (e também de Base/Guarnição quando for composição completa — Prato Especial/Fit/Lanche) e soma 1 unidade do item escolhido. O lançamento salvo aparece na Conferência de expedição, na produção e nas etiquetas, e o custo entra no CMV real do mês (painel "Custo de substituição — fechamento da semana" já soma dentro do CMV real do mês, por contrato). Os chips Almoço/Jantar/Ceia ao lado da semana filtram só a TELA (quais colunas da grade aparecem) — não afetam o que já foi lançado nos outros serviços.</p>
     <p><strong>Ajustes do dia:</strong> ajuste manual do valor efetivo de uma receita pra um cliente, num serviço específico — ex.: cliente pediu mais, sobra da véspera. O valor digitado substitui o calculado só nesta produção deste dia (não muda custo nem compra) e some se você remover o ajuste. Motivo é obrigatório, observação é livre. Suco e sobremesa não entram aqui, nem em Peso por prato.</p>
-    <p><strong>Romaneio:</strong> atribuição cliente→rota é fixa (vale todo dia, não muda sozinha) — monte/ajuste direto na própria aba (motorista, horário, veículo, clientes da rota, ordem de entrega com ↑/↓ e endereço), sem precisar abrir o cadastro do contrato. O painel "Dias da semana" filtra só a listagem de entregas (embaixo da tela) — marque mais de 1 dia pra ver/imprimir vários de uma vez; não muda a atribuição cliente→rota. "Ver no mapa" abre o Google Maps com o endereço já buscado (sem mapa embutido na tela — ainda não há chave de API de mapa configurada). "Preparo da semana" (corte/receita por dia de utilização, com custo) deixa escolher os dias e imprimir, cada um numa folha. "Mapa da semana" (açougue): peça grande congelada, use essa visão pra tirar do freezer com antecedência (48–72h antes do dia de preparo).</p>
+    <p><strong>Romaneio:</strong> atribuição cliente→rota é fixa (vale todo dia, não muda sozinha) — monte/ajuste direto na própria aba (motorista, horário, veículo, clientes da rota, ordem de entrega com ↑/↓ e endereço), sem precisar abrir o cadastro do contrato. O painel "Dias da semana" filtra só a listagem de entregas (embaixo da tela) — marque mais de 1 dia pra ver/imprimir vários de uma vez; não muda a atribuição cliente→rota. Os chips Almoço/Jantar/Ceia ao lado da semana filtram a quantidade que entra na entrega/impressão — desmarcando Jantar e Ceia, por exemplo, a listagem mostra só o volume do almoço. "Ver no mapa" abre o Google Maps com o endereço já buscado (sem mapa embutido na tela — ainda não há chave de API de mapa configurada). "Preparo da semana" (corte/receita por dia de utilização, com custo) deixa escolher os dias e imprimir, cada um numa folha. "Mapa da semana" (açougue): peça grande congelada, use essa visão pra tirar do freezer com antecedência (48–72h antes do dia de preparo).</p>
     <p><strong>Conferência de expedição:</strong> cozinha confirma que produziu/embalou, expedição confirma que carregou. Salva sozinho a cada campo alterado.</p>
     <p><strong>Etiquetas:</strong> validade, temperatura e peso (açougue) ou data e responsável (saladas/sobremesas) ficam em branco pra anotar na embalagem.</p>
     <p><strong>Volume por cliente:</strong> volume líquido por cliente, sem margem de produção — é o que vai pra etiqueta da cuba. "Cubas" é a sugestão (qtd× modelo) calculada do cadastro da ficha técnica; dá pra preencher/corrigir esse cadastro direto nos dois campos ao lado da sugestão, sem abrir a Ficha Técnica — vale pra todos os clientes/dias que usam a mesma receita, por isso o preenchimento muda em todas as tabelas de uma vez. Sai também na impressão da Ordem de produção (Composição principal) assim que a receita tiver os dois campos preenchidos.</p>
@@ -18217,7 +18217,7 @@ async function renderPCP(){
   const unidadeFiltro = pcpUnidadeSel === "todos" ? null : pcpUnidadeSel;
   // serviços (Almoço/Jantar/Ceia, multi-seleção) se aplica em Produção, Volume por cliente, Açougue (desde
   // 17/10/2026) e, desde 18/10/2026 (pedido do Marcelo), também Requisição do estoque — antes ficava sempre
-  // nos 3 serviços somados. Pesos/Romaneio continuam como sempre foram (não têm noção de serviço).
+  // nos 3 serviços somados. Pesos continua como sempre foi (não tem noção de serviço).
   // 17/11/2026 (pedido do Marcelo): Conferência de expedição também passa a ter os botões — confBlocosDia
   // já chamava pcpCalcularDia(..., servicosFiltro, ...) desde a criação do multi-dia, só faltava exibir os
   // chips e entrar na conta; confModelosSemana (cardápio da semana) continua de propósito com servicosFiltro
@@ -18226,7 +18226,10 @@ async function renderPCP(){
   // (ver pcpSubstGradeBlocoHtml, que lê pcpServicosSel direto pra decidir quais colunas Almoço/Jantar/Ceia
   // mostrar), NÃO entra no cálculo de pcpCalcularDia da grade (resPorDiaSubst continua passando serviço=null
   // pra sempre ter o porServico completo de cada cliente, mesmo com 1 serviço só marcado na tela).
-  const servicosAplicavel = ehProducao || ehAcougue || ehEstoque || ehSalSob || ehAjustes || ehConferencia || ehSubst;
+  // 17/11/2026 (pedido do Marcelo, 2ª rodada): Romaneio também ganhou os chips — aqui ENTRA no cálculo
+  // (resPorDiaRomaneio passa servicosFiltro pra pcpCalcularDia, igual Produção/Açougue) — a listagem de
+  // entregas por rota passa a mostrar só a quantidade do(s) serviço(s) marcado(s), não mais os 3 somados.
+  const servicosAplicavel = ehProducao || ehAcougue || ehEstoque || ehSalSob || ehAjustes || ehConferencia || ehSubst || ehRomaneio;
   const servicosFiltro = (servicosAplicavel && !ehSubst) ? pcpServicosSel : null;
   // precisa carregar a semana INTEIRA (não só o dia selecionado) porque a cobertura do açougue chama a
   // Requisição de outros dias internamente — ver comentário em pcpSubstituicoesCache.
@@ -18432,10 +18435,11 @@ async function renderPCP(){
   const cafeClienteFiltro = new Set(cafeSelIds);
   // 17/11/2026: 1 pcpCalcularDia + pcpRomaneioPorRota por dia marcado em pcpRomaneioDiasSel (mesmo padrão
   // multi-dia de resPorDiaSubst) — unidadeFiltro=null ("Ambas") já soma Matriz+Filial dentro do próprio
-  // pcpCalcularDia (comportamento de sempre do Romaneio, diferente de Produção/listaRes).
+  // pcpCalcularDia (comportamento de sempre do Romaneio, diferente de Produção/listaRes). servicosFiltro
+  // (2ª rodada, mesmo dia) passa a entrar aqui — chips Almoço/Jantar/Ceia filtram a entrega mostrada/impressa.
   const resPorDiaRomaneio = ehRomaneio ? romaneioDiasAtivos.map(d => ({
     dia: d,
-    grupos: pcpRomaneioPorRota(pcpCalcularDia(pcpSemanaSel, d, unidadeFiltro, null))
+    grupos: pcpRomaneioPorRota(pcpCalcularDia(pcpSemanaSel, d, unidadeFiltro, servicosFiltro))
   })) : null;
   const content = document.getElementById("content");
   content.innerHTML = `
