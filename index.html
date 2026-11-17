@@ -16603,7 +16603,8 @@ function pcpPainelAreaHtml(itens){
 // 17/11/2026 (pedido do Marcelo): "Cozinha confirmou"/"Expedição confirmou" ganharam "(preparos)" no
 // rótulo — o número é de PREPAROS (linhas de item×cliente), não de clientes, pra não confundir com o
 // cartão "Clientes" do lado. "Substituições lançadas" passou a listar QUAL substituição e a quantidade de
-// cada uma (antes só mostrava o total) — "{pessoas}× {ficha} — {cliente} ({turno})", uma por linha.
+// cada uma (antes só mostrava o total) — "{pessoas}× {ficha} ({turno})", uma por linha. 17/11/2026: tirado
+// o nome do cliente da linha (pedido do Marcelo) — só o preparo e a quantidade, sem dizer de quem é.
 function pcpConferenciaPainelHtml(blocosDia, unidadeFiltro){
   let totalItens = 0, confCozinha = 0, confExped = 0, pendente = false;
   const clientesSet = new Set();
@@ -16613,7 +16614,7 @@ function pcpConferenciaPainelHtml(blocosDia, unidadeFiltro){
       clientesSet.add(l.cliente.id);
       totalItens += l.itens.length;
       l.itens.forEach(it => { if(it.cozinhaOk) confCozinha++; if(it.expedicaoOk) confExped++; });
-      l.substituicoes.forEach(s => substDetalhes.push(`${fmtNum(s.pessoas,0)}× ${escapeHtml(s.fichaNome)} — ${escapeHtml(l.cliente.nome)} (${escapeHtml(pcpServicoAbrev(s.servico))})`));
+      l.substituicoes.forEach(s => substDetalhes.push(`${fmtNum(s.pessoas,0)}× ${escapeHtml(s.fichaNome)} (${escapeHtml(pcpServicoAbrev(s.servico))})`));
     });
     if(pcpSubstituicoesPendentes(dia, unidadeFiltro).length) pendente = true;
   });
