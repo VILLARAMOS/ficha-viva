@@ -789,7 +789,7 @@ const ORIENTACOES_POR_VIEW = {
     <p><strong>Requisição do estoque:</strong> mesma conta da lista de compra (peso bruto da ficha × produção). Suco e carnes do açougue não entram aqui (suco é feito na unidade do cliente; carnes saem pela ordem do açougue). O estoque não separa entre um dia e outro: a produção de sexta também cobre o fim de semana sem operação — cada dia tem seu próprio bloco e quantidade, não somada.</p>
     <p><strong>Substituições:</strong> um pra um — cada pessoa trocada tira 1 porção da proteína do cardápio naquele serviço (e também de Base/Guarnição quando for composição completa — Prato Especial/Fit/Lanche) e soma 1 unidade do item escolhido. O lançamento salvo aparece na Conferência de expedição, na produção e nas etiquetas, e o custo entra no CMV real do mês (painel "Custo de substituição — fechamento da semana" já soma dentro do CMV real do mês, por contrato). Os chips Almoço/Jantar/Ceia ao lado da semana filtram só a TELA (quais colunas da grade aparecem) — não afetam o que já foi lançado nos outros serviços.</p>
     <p><strong>Ajustes do dia:</strong> ajuste manual do valor efetivo de uma receita pra um cliente, num serviço específico — ex.: cliente pediu mais, sobra da véspera. O valor digitado substitui o calculado só nesta produção deste dia (não muda custo nem compra) e some se você remover o ajuste. Motivo é obrigatório, observação é livre. Suco e sobremesa não entram aqui, nem em Peso por prato.</p>
-    <p><strong>Romaneio:</strong> atribuição cliente→rota é fixa (vale todo dia, não muda sozinha) — monte/ajuste direto na própria aba (motorista, horário, veículo, clientes da rota, ordem de entrega com ↑/↓ e endereço), sem precisar abrir o cadastro do contrato. O painel "Dias da semana" filtra só a listagem de entregas (embaixo da tela) — marque mais de 1 dia pra ver/imprimir vários de uma vez; não muda a atribuição cliente→rota. Os chips Almoço/Jantar/Ceia ao lado da semana filtram a quantidade que entra na entrega/impressão — desmarcando Jantar e Ceia, por exemplo, a listagem mostra só o volume do almoço. "Ver no mapa" abre o Google Maps com o endereço já buscado (sem mapa embutido na tela — ainda não há chave de API de mapa configurada). "Preparo da semana" (corte/receita por dia de utilização, com custo) deixa escolher os dias e imprimir, cada um numa folha. "Mapa da semana" (açougue): peça grande congelada, use essa visão pra tirar do freezer com antecedência (48–72h antes do dia de preparo).</p>
+    <p><strong>Romaneio e rotas de entregas:</strong> atribuição cliente→rota é fixa (vale todo dia, não muda sozinha) — monte/ajuste direto na própria aba (motorista, horário, veículo, clientes da rota, ordem de entrega com ↑/↓ e endereço), sem precisar abrir o cadastro do contrato. O painel "Dias da semana" filtra só a listagem de entregas (embaixo da tela) — marque mais de 1 dia pra ver/imprimir vários de uma vez; não muda a atribuição cliente→rota. Os chips Almoço/Jantar/Ceia ao lado da semana filtram a quantidade que entra na entrega/impressão — desmarcando Jantar e Ceia, por exemplo, a listagem mostra só o volume do almoço. "Ver no mapa" abre o Google Maps com o endereço já buscado (sem mapa embutido na tela — ainda não há chave de API de mapa configurada). Cada rota tem 2 impressões: "Imprimir rota" é o roteiro pro motorista (ordem, horário e endereço de cada parada, sem os itens); "Imprimir romaneio" é por cliente, com os itens a entregar, em 2 vias (motorista/recebedor) pra conferência na entrega. "Preparo da semana" (corte/receita por dia de utilização, com custo) deixa escolher os dias e imprimir, cada um numa folha. "Mapa da semana" (açougue): peça grande congelada, use essa visão pra tirar do freezer com antecedência (48–72h antes do dia de preparo).</p>
     <p><strong>Conferência de expedição:</strong> cozinha confirma que produziu/embalou, expedição confirma que carregou. Salva sozinho a cada campo alterado.</p>
     <p><strong>Etiquetas:</strong> validade, temperatura e peso (açougue) ou data e responsável (saladas/sobremesas) ficam em branco pra anotar na embalagem.</p>
     <p><strong>Volume por cliente:</strong> volume líquido por cliente, sem margem de produção — é o que vai pra etiqueta da cuba. "Cubas" é a sugestão (qtd× modelo) calculada do cadastro da ficha técnica; dá pra preencher/corrigir esse cadastro direto nos dois campos ao lado da sugestão, sem abrir a Ficha Técnica — vale pra todos os clientes/dias que usam a mesma receita, por isso o preenchimento muda em todas as tabelas de uma vez. Sai também na impressão da Ordem de produção (Composição principal) assim que a receita tiver os dois campos preenchidos.</p>
@@ -15009,7 +15009,10 @@ function pcpRomaneioHtml(grupos, dia){
       <div class="panel-head">
         <h3>${semRota ? "Sem rota cadastrada" : escapeHtml(g.rota?.nome || "Rota")}</h3>
         <span class="hint">${g.rota?.motorista_nome ? escapeHtml(g.rota.motorista_nome)+(g.rota.veiculo?" · "+escapeHtml(g.rota.veiculo):"")+" · " : ""}${g.clientes.length} cliente${g.clientes.length===1?"":"s"} · ${fmtNum(totPessoas,0)} pessoas</span>
-        ${!semRota ? `<button class="btn small primary" data-romaneio-imprimir="${g.rotaId}" data-dia="${dia}" style="margin-left:auto;">Imprimir romaneio</button>` : ""}
+        ${!semRota ? `<div style="display:flex; gap:8px; margin-left:auto;">
+          <button class="btn small ghost" data-romaneio-imprimir-rota="${g.rotaId}" data-dia="${dia}">Imprimir rota</button>
+          <button class="btn small primary" data-romaneio-imprimir="${g.rotaId}" data-dia="${dia}">Imprimir romaneio</button>
+        </div>` : ""}
       </div>
       <div class="panel-body">
         ${semRota ? `<p class="footnote" style="margin:0 0 10px;">Esses clientes não têm rota de entrega cadastrada — atribua uma no painel "Clientes sem rota" acima.</p>` : ""}
@@ -15073,6 +15076,47 @@ function pcpImprimirRomaneio(grupo, semana, dia){
       .rom-folha{page-break-after:always; break-after:page;}
       .rom-folha:last-child{page-break-after:auto; break-after:auto;}</style></head><body>
     ${folhas}</body></html>`);
+  w.document.close(); w.focus(); w.print();
+}
+
+// 17/11/2026, pedido do Marcelo (Romaneio e rotas de entregas): folha pro MOTORISTA, separada do romaneio
+// por cliente acima (que tem os itens, pra conferência na entrega) — aqui é só o roteiro: nome da rota,
+// motorista, veículo, saída e a sequência de paradas com horário+endereço, sem os itens. 1 folha por rota/
+// dia (igual padrão do romaneio); usa os mesmos grupos de pcpRomaneioPorRota (ordem já é rota_ordem).
+function pcpImprimirFolhaRota(grupo, semana, dia){
+  if(!grupo.clientes.length){ showAlert("Nada a entregar nesta rota."); return; }
+  const rota = grupo.rota;
+  const dataStr = `${escapeHtml(diaSemanaExtenso(dia))} ${escapeHtml(fmtDataCompleta(dataDoDia(semana, dia)))}`;
+  const linhas = grupo.clientes.map((cli,i) => `<tr>
+      <td style="text-align:center; font-weight:700;">${i+1}</td>
+      <td>${escapeHtml(cli.nome)}</td>
+      <td style="text-align:center;">${cli.horarioEntrega ? escapeHtml(cli.horarioEntrega) : "—"}</td>
+      <td>${cli.endereco ? escapeHtml(cli.endereco) : `<span style="color:#999;">sem endereço cadastrado</span>`}</td>
+      <td style="text-align:center;">${fmtNum(cli.pessoas,0)}</td>
+      <td style="min-width:90px;"></td>
+    </tr>`).join("");
+  const w = window.open("", "_blank");
+  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
+  const titulo = `Rota — ${escapeHtml(rota?.nome || "Rota")} — ${escapeHtml(DIA_LABEL[dia])} ${escapeHtml(rotuloSemana(semana))}`;
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${titulo}</title>
+    <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:18px; margin:0 0 6px;}
+      ${printHeadStyle()}
+      table{width:100%; border-collapse:collapse; margin-top:14px; font-size:13px;}
+      th{text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.03em; border-bottom:2px solid #333; padding:6px 8px;}
+      td{padding:10px 8px; border-bottom:1px solid #ddd; vertical-align:top;}
+      </style></head><body>
+    <h1>${escapeHtml(rota?.nome || "Rota")}</h1>
+    <div style="font-size:13px; color:#333; margin-bottom:2px;">
+      ${rota?.motorista_nome ? `Motorista: <strong>${escapeHtml(rota.motorista_nome)}</strong> &nbsp;·&nbsp; ` : ""}
+      ${rota?.veiculo ? `Veículo: <strong>${escapeHtml(rota.veiculo)}</strong> &nbsp;·&nbsp; ` : ""}
+      ${rota?.horario ? `Saída: <strong>${escapeHtml(rota.horario)}</strong> &nbsp;·&nbsp; ` : ""}
+      ${dataStr}
+    </div>
+    <table><thead><tr>
+      <th style="width:30px; text-align:center;">#</th><th>Cliente</th><th style="width:90px; text-align:center;">Horário</th><th>Endereço</th><th style="width:70px; text-align:center;">Pessoas</th><th>Entregue / assinatura</th>
+    </tr></thead><tbody>${linhas}</tbody></table>
+    <p style="font-size:10.5px; color:#777; margin-top:16px;">Imprimido em ${escapeHtml(new Date().toLocaleString('pt-BR'))}. Use "Imprimir romaneio" pra conferência dos itens entregues em cada cliente.</p>
+    </body></html>`);
   w.document.close(); w.focus(); w.print();
 }
 
@@ -18452,7 +18496,7 @@ async function renderPCP(){
       <button type="button" data-pcpsub="acougue" class="${pcpSubView==="acougue"?"active":""}">Açougue</button>
       <button type="button" data-pcpsub="estoque" class="${pcpSubView==="estoque"?"active":""}">Requisição do estoque</button>
       <button type="button" data-pcpsub="conferencia" class="${pcpSubView==="conferencia"?"active":""}">Conferência de expedição</button>
-      <button type="button" data-pcpsub="romaneio" class="${pcpSubView==="romaneio"?"active":""}">Romaneio por rota</button>
+      <button type="button" data-pcpsub="romaneio" class="${pcpSubView==="romaneio"?"active":""}">Romaneio e rotas de entregas</button>
     </div>
     <div class="menu-controls" style="margin-bottom:16px;">
       ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes || ehCafe || ehSalSob || ehAcougue || ehEstoque || ehRomaneio ? "" : `<div class="kk-dias-chips" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" class="chip-dia ${pcpUnidadeSel===u.id?"on":""}" data-pcpuni="${u.id}">${u.nome}${u.id !== "todos" ? ` · ${pcpContagemUnidade(u.id)}` : ""}</button>`).join("")}</div>`}
@@ -19211,6 +19255,13 @@ async function renderPCP(){
       const porDia = resPorDiaRomaneio.find(x => x.dia === dia);
       const grupo = porDia && porDia.grupos.find(g => g.rotaId === btn.dataset.romaneioImprimir);
       if(grupo) pcpImprimirRomaneio(grupo, pcpSemanaSel, dia);
+    }));
+    // folha de rota pro motorista (roteiro, sem itens) — mesmo padrão de busca do grupo acima.
+    content.querySelectorAll("[data-romaneio-imprimir-rota]").forEach(btn => btn.addEventListener("click", () => {
+      const dia = btn.dataset.dia;
+      const porDia = resPorDiaRomaneio.find(x => x.dia === dia);
+      const grupo = porDia && porDia.grupos.find(g => g.rotaId === btn.dataset.romaneioImprimirRota);
+      if(grupo) pcpImprimirFolhaRota(grupo, pcpSemanaSel, dia);
     }));
     // painel "Dias da semana" (17/11/2026) — mesmo padrão de toggle de pcpSubstDiasSel/pcpAjustesDiasSel.
     content.querySelectorAll(".pcp-romaneiodia-chip").forEach(btn => btn.addEventListener("click", () => {
