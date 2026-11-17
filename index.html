@@ -16466,34 +16466,29 @@ async function pcpCarregarConferencia(semana, dias, unidade){
   if(error){ showAlert("Erro ao carregar conferência de expedição: " + error.message); return; }
   (data || []).forEach(row => pcpConferenciaCache.set(row.dia + "|" + row.contrato_id + "|" + row.chave_item, row));
 }
-// mesma fonte de res.receitas/res.diretos que pcpVolumeHtml usa — garante que a conferência mostra
-// exatamente os mesmos itens/quantidades que a tela de Volume por cliente já valida.
+// 17/11/2026 (pedido do Marcelo, esclarecendo o pedido anterior do suco): a Conferência da expedição é
+// EXCLUSIVA da comida transportada — é onde se confere peso/preparo de cuba antes de sair. A parte marmita
+// do mesmo cliente/dia não entra pesada aqui (ela já sai pronta, embalada em unidade): quando o cliente tem
+// marmita (junto com transportado ou só marmita), a única informação de conferência pra essa parte é a
+// QUANTIDADE DE MARMITAS (ver cliente.marmitas, somado em pcpCalcularDia), nunca o detalhe peso-a-peso de
+// cada prato. Por isso só entra na tabela de itens a entrada cujo produto é "cardapio_refeicao" (transportado
+// puro) — entradas de marmita/marmita especial da mesma receita (`r.porCliente` tem 1 entrada por produto,
+// chave contratoId+"|"+produtoId, ver pcpAcumularDia) nunca aparecem aqui. Suco nunca entra, nem pro
+// transportado: é feito na própria unidade do cliente (pcpSetorDoGrupo "fora"), a cozinha central não pesa.
+// Repare que isso quebra de propósito a paridade com Volume por cliente/Etiquetas (que ainda mostram só a
+// 1ª entrada, sem distinguir formato) — são telas com objetivo diferente, Conferência não é "tudo que o
+// cliente recebe", é só "o que a cozinha pesa/confere pra mandar pro transportado".
 function pcpConferenciaLinhas(res, dia){
   if(!res.clientes.length) return [];
+  const ehTransportado = x => { const c = catalogoPorProduto(x.produtoId); return c && c.tipo_custo === "cardapio_refeicao"; };
   return res.clientes.map(cli => {
     const itens = [];
     res.receitas.forEach(r => {
-      // Suco (17/11/2026, pedido do Marcelo): só sai na conferência pra quem recebe em formato marmita —
-      // comida transportada faz o próprio suco na unidade do cliente (não entra na pesagem/impressão da
-      // cozinha — ver pcpSetorDoGrupo "fora"), então a cozinha central nunca embala suco pra esse formato.
-      // `r.porCliente` tem 1 entrada por combinação cliente×produto (chave = contratoId+"|"+produtoId —
-      // ver pcpAcumularDia), então um cliente misto (transportado + marmita, caso comum: a maioria dos
-      // contratos tem os dois cardápios cadastrados) pode ter 2 entradas pra essa mesma ficha. Pra suco,
-      // soma só as entradas cujo produto é marmita/marmita especial; se não tiver nenhuma (cliente só
-      // transportado), o item nem aparece — nada pra conferir/embalar.
-      const ehSuco = /^SUCO/.test(r.grupo || "");
-      const entradas = [...r.porCliente.values()].filter(x => x.contratoId === cli.id);
-      if(!entradas.length) return;
-      let p;
-      if(ehSuco){
-        const marmitas = entradas.filter(x => { const c = catalogoPorProduto(x.produtoId); return c && (c.tipo_custo === "cardapio_marmita" || c.tipo_custo === "cardapio_marmita_especial"); });
-        p = marmitas.length ? { qtd: marmitas.reduce((s,x) => s + x.qtd, 0) } : null;
-      } else {
-        p = entradas[0]; // demais itens: comportamento de sempre (1ª entrada), igual Volume por cliente/Etiquetas
-      }
+      if(/^SUCO/.test(r.grupo || "")) return;
+      const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id && ehTransportado(x));
       if(p) itens.push({ chave: "ficha:"+r.fichaId, nome: r.nome, qtdPrevista: p.qtd, unidade: null, fichaId: r.fichaId });
     });
-    res.diretos.forEach(d => { const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id); if(p) itens.push({ chave: "direto:"+d.insumoId, nome: d.nome, qtdPrevista: p.qtd, unidade: d.unidade||"" }); });
+    res.diretos.forEach(d => { const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id && ehTransportado(x)); if(p) itens.push({ chave: "direto:"+d.insumoId, nome: d.nome, qtdPrevista: p.qtd, unidade: d.unidade||"" }); });
     itens.forEach(it => {
       const salvo = pcpConferenciaCache.get(dia + "|" + cli.id + "|" + it.chave);
       it.qtdEnviada = salvo ? salvo.qtd_enviada : null;
@@ -16506,7 +16501,7 @@ function pcpConferenciaLinhas(res, dia){
       return { id: s.id, fichaNome: f ? f.nome : s.fichaId, pessoas: s.pessoas, servico: s.servico || "almoco" };
     });
     return { cliente: cli, itens, substituicoes };
-  }).filter(c => c.itens.length || c.substituicoes.length);
+  }).filter(c => c.itens.length || c.substituicoes.length || c.cliente.marmitas); // cliente só-marmita entra mesmo sem item pesado — a conferência dele é a contagem no cabeçalho
 }
 // fichas que fazem sentido como substituição de proteína. Era só PROTEÍNA+EXTRA (onde ficam os "PRATO FIT
 // 1..6"), mas o próprio Marcelo pediu "Ovo frito" (16/10/2026) pra lista de itens substitutos — e no
