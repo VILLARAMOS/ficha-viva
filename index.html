@@ -14475,7 +14475,8 @@ function pcpImprimirOrdemProducao(res, margemPct, setorFiltro){
   // cliente" (ver pcpVolumeHtml), a margem só entra na tabela agregada de quanto produzir.
   const blocosClientesHtml = setorFiltro === "cozinha" ? res.clientes.map(cli => {
     const linhasCli = [];
-    lista.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhasCli.push({nome: r.nome, qtd: p.qtd, fichaId: r.fichaId}); });
+    // 17/11/2026: soma todas as entradas do cliente — mesmo achado/motivo de pcpVolumeHtml (caso real HOTEL).
+    lista.forEach(r => { const entradas = [...r.porCliente.values()].filter(x => x.contratoId === cli.id); if(entradas.length) linhasCli.push({nome: r.nome, qtd: entradas.reduce((s,x)=>s+x.qtd,0), fichaId: r.fichaId}); });
     if(!linhasCli.length) return "";
     return `<div style="break-inside:avoid; page-break-inside:avoid; margin-bottom:14px;">
       <h2 style="margin-bottom:6px;">${escapeHtml(cli.nome)} <span style="font-weight:400; text-transform:none; letter-spacing:0; color:#777;">— ${fmtNum(cli.pessoas,0)} pessoas · ${escapeHtml(nomeUnidadeCompra(cli.unidade))}</span></h2>
@@ -14570,8 +14571,15 @@ function pcpVolumeHtml(res){
   if(!res.clientes.length) return `<div class="empty-state">Nenhum cliente com produção prevista para este dia.</div>`;
   const cards = res.clientes.map(cli => {
     const linhas = [];
-    res.receitas.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: r.nome, qtd: p.qtd, fichaId: r.fichaId}); });
-    res.diretos.forEach(d => { const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: d.nome, qtd: p.qtd, unidade: d.unidade}); });
+    // 17/11/2026 (achado ao investigar o pedido de Conferência, confirmado no caso real do HOTEL): soma
+    // TODAS as entradas do cliente, não só a 1ª que o .find() encontrasse. `r.porCliente` tem 1 entrada por
+    // combinação cliente×produto (chave contratoId+"|"+produtoId — pcpAcumularDia), então um cliente com
+    // o mesmo prato nos dois formatos (transportado + marmita, ou amostra de um formato + volume real do
+    // outro) tinha só a 1ª entrada contada aqui — a 2ª some do card do cliente (ex.: HOTEL mostrava 1 unidade
+    // de um prato que tinha 1 transportado + 11 marmita de verdade). O total que a cozinha produz (R.total)
+    // nunca teve esse problema — só a quebra por cliente aqui e na etiqueta (pcpEtiquetasProdutoImprimir).
+    res.receitas.forEach(r => { const entradas = [...r.porCliente.values()].filter(x => x.contratoId === cli.id); if(entradas.length) linhas.push({nome: r.nome, qtd: entradas.reduce((s,x)=>s+x.qtd,0), fichaId: r.fichaId}); });
+    res.diretos.forEach(d => { const entradas = [...d.porCliente.values()].filter(x => x.contratoId === cli.id); if(entradas.length) linhas.push({nome: d.nome, qtd: entradas.reduce((s,x)=>s+x.qtd,0), unidade: d.unidade}); });
     if(!linhas.length) return "";
     return `<div class="panel" data-pcp-cliente-card="${cli.id}">
       <div class="panel-head"><h3>${escapeHtml(cli.nome)}</h3><span class="hint">${fmtNum(cli.pessoas,0)} pessoas · ${nomeUnidadeCompra(cli.unidade)}</span></div>
@@ -14625,13 +14633,15 @@ function pcpEtiquetasProdutoImprimir(res){
   res.clientes.forEach(cli => {
     // produtoId !== null exclui a linha injetada por substituição (ver pcpAplicarSubstituicoesReceitas) —
     // ela tem etiqueta própria logo abaixo, em QUANTIDADE (não peso).
+    // 17/11/2026: soma TODAS as entradas do cliente (não só a 1ª) — mesmo motivo/achado de pcpVolumeHtml
+    // (caso real HOTEL: transportado + marmita do mesmo prato são 2 entradas separadas em r.porCliente).
     res.receitas.forEach(r => {
-      const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id && x.produtoId !== null);
-      if(p) etiquetas.push({ cliente: cli.nome, produto: r.nome, pesoTxt: pcpFmtQtd(p.qtd, r.fichaId) });
+      const entradas = [...r.porCliente.values()].filter(x => x.contratoId === cli.id && x.produtoId !== null);
+      if(entradas.length) etiquetas.push({ cliente: cli.nome, produto: r.nome, pesoTxt: pcpFmtQtd(entradas.reduce((s,x)=>s+x.qtd,0), r.fichaId) });
     });
     res.diretos.forEach(d => {
-      const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id);
-      if(p) etiquetas.push({ cliente: cli.nome, produto: d.nome, pesoTxt: `${fmtNum(p.qtd,2)} ${d.unidade||""}` });
+      const entradas = [...d.porCliente.values()].filter(x => x.contratoId === cli.id);
+      if(entradas.length) etiquetas.push({ cliente: cli.nome, produto: d.nome, pesoTxt: `${fmtNum(entradas.reduce((s,x)=>s+x.qtd,0),2)} ${d.unidade||""}` });
     });
     // Substituições (21/10/2026, pedido do Marcelo): etiqueta em QUANTIDADE (unidades a produzir — já com
     // multiplicador do item + 1 de amostra por lançamento), não em kg. Direto de pcpListaSubstituicoes (não
@@ -14686,8 +14696,9 @@ function pcpRomaneioPorRota(res){
     let pesoTotal = 0;
     // grupo (PROTEÍNA/BASE/GUARNIÇÃO/SALADA/SOBREMESA/...) viaja junto com cada linha — é o que alimenta a
     // separação quente/frio do romaneio impresso (19/10/2026, ver pcpRomaneioCategoriaGrupo).
-    res.receitas.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p){ linhas.push({nome: r.nome, qtd: p.qtd, fichaId: r.fichaId, grupo: r.grupo}); pesoTotal += p.qtd; } });
-    res.diretos.forEach(d => { const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id); if(p) linhas.push({nome: d.nome, qtd: p.qtd, unidade: d.unidade, grupo: d.grupo}); });
+    // 17/11/2026: soma todas as entradas do cliente — mesmo achado/motivo de pcpVolumeHtml (caso real HOTEL).
+    res.receitas.forEach(r => { const entradas = [...r.porCliente.values()].filter(x => x.contratoId === cli.id); if(entradas.length){ const qtd = entradas.reduce((s,x)=>s+x.qtd,0); linhas.push({nome: r.nome, qtd, fichaId: r.fichaId, grupo: r.grupo}); pesoTotal += qtd; } });
+    res.diretos.forEach(d => { const entradas = [...d.porCliente.values()].filter(x => x.contratoId === cli.id); if(entradas.length) linhas.push({nome: d.nome, qtd: entradas.reduce((s,x)=>s+x.qtd,0), unidade: d.unidade, grupo: d.grupo}); });
     if(!linhas.length) return;
     const ct = contratos.get(cli.id);
     const rotaId = ct && ct.rota_id ? ct.rota_id : null;
