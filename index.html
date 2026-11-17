@@ -17911,7 +17911,11 @@ async function renderPCP(){
   // serviços (Almoço/Jantar/Ceia, multi-seleção) se aplica em Produção, Volume por cliente, Açougue (desde
   // 17/10/2026) e, desde 18/10/2026 (pedido do Marcelo), também Requisição do estoque — antes ficava sempre
   // nos 3 serviços somados. Substituições/Pesos/Romaneio continuam como sempre foram.
-  const servicosAplicavel = ehProducao || ehAcougue || ehEstoque || ehSalSob || ehAjustes;
+  // 17/11/2026 (pedido do Marcelo): Conferência de expedição também passa a ter os botões — confBlocosDia
+  // já chamava pcpCalcularDia(..., servicosFiltro, ...) desde a criação do multi-dia, só faltava exibir os
+  // chips e entrar na conta; confModelosSemana (cardápio da semana) continua de propósito com servicosFiltro
+  // null — ver comentário ali.
+  const servicosAplicavel = ehProducao || ehAcougue || ehEstoque || ehSalSob || ehAjustes || ehConferencia;
   const servicosFiltro = servicosAplicavel ? pcpServicosSel : null;
   // precisa carregar a semana INTEIRA (não só o dia selecionado) porque a cobertura do açougue chama a
   // Requisição de outros dias internamente — ver comentário em pcpSubstituicoesCache.
