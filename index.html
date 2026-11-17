@@ -15123,15 +15123,61 @@ function pcpImprimirFolhaRota(grupo, semana, dia){
   w.document.close(); w.focus(); w.print();
 }
 
+// Rascunho de clientes da NOVA rota, montado dentro do próprio modal "Gerenciar rotas" (17/11/2026, pedido
+// do Marcelo: "depois de colocar o veículo, selecionar os clientes com horário e endereço, salvar e fechar
+// a rota" — antes só dava pra criar a rota básica aqui e ir pra aba Romaneio atribuir cliente por cliente).
+// Só existe enquanto o modal está aberto — nada é gravado até "Salvar e fechar rota"; editar os clientes de
+// uma rota JÁ existente continua na tela normal da aba Romaneio (painéis Rotas/Clientes + Ordem de entrega),
+// que já tem reordenar com ↑/↓ — não duplicado aqui pra não ter 2 lugares de mexer na mesma coisa.
+let pcpRotaNovaSel = []; // ordem de inclusão = ordem de entrega provisória
+let pcpRotaNovaDados = new Map(); // contratoId -> {horario, endereco}
+
 function pcpAbrirGerenciarRotas(){
+  pcpRotaNovaSel = [];
+  pcpRotaNovaDados = new Map();
+  pcpRenderGerenciarRotas();
+}
+// tira uma foto do que já foi digitado nos campos de horário/endereço da nova rota antes de redesenhar o
+// modal (toggle de cliente reconstrói o HTML inteiro) — senão perderia o que já tinha sido preenchido nos
+// outros clientes já incluídos.
+function pcpRotaNovaSnapshot(root){
+  root.querySelectorAll("[data-rota-novo-horario]").forEach(inp => {
+    const cid = inp.dataset.rotaNovoHorario;
+    pcpRotaNovaDados.set(cid, { ...(pcpRotaNovaDados.get(cid)||{}), horario: inp.value });
+  });
+  root.querySelectorAll("[data-rota-novo-endereco]").forEach(inp => {
+    const cid = inp.dataset.rotaNovoEndereco;
+    pcpRotaNovaDados.set(cid, { ...(pcpRotaNovaDados.get(cid)||{}), endereco: inp.value });
+  });
+}
+function pcpRenderGerenciarRotas(){
   const root = document.getElementById("modal-root");
   const lista = [...rotas.entries()].sort((a,b) => (a[1].nome||"").localeCompare(b[1].nome||"",'pt-BR'));
+  const clientesAtivos = [...contratos.entries()].filter(([,c]) => c.ativo).sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)));
+  const novaClientesTable = pcpRotaNovaSel.length ? `<div class="table-wrap" style="margin-top:10px;"><table>
+      <thead><tr><th style="width:36px;">#</th><th>Cliente</th><th style="width:100px;">Horário</th><th>Endereço</th><th style="width:1%;"></th></tr></thead>
+      <tbody>
+        ${pcpRotaNovaSel.map((cid,i) => {
+          const c = contratos.get(cid);
+          const draft = pcpRotaNovaDados.get(cid) || {};
+          const horario = draft.horario !== undefined ? draft.horario : (c?.horario_entrega || "");
+          const endereco = draft.endereco !== undefined ? draft.endereco : (c?.endereco_entrega || "");
+          return `<tr>
+            <td style="text-align:center;">${i+1}</td>
+            <td class="name-cell">${escapeHtml(c?.nome_cliente||"")}</td>
+            <td><input type="text" data-rota-novo-horario="${cid}" value="${escapeHtml(horario)}" placeholder="12:00" style="width:90px;"></td>
+            <td><input type="text" data-rota-novo-endereco="${cid}" value="${escapeHtml(endereco)}" placeholder="Rua, número, bairro, cidade" style="width:100%;"></td>
+            <td><button class="btn small ghost" data-rota-novo-toggle="${cid}" title="Tirar da rota">Remover</button></td>
+          </tr>`;
+        }).join("")}
+      </tbody>
+    </table></div>` : `<p class="footnote" style="margin:8px 0 0;">Clique nos clientes abaixo pra incluir na rota.</p>`;
   root.innerHTML = `
     <div class="modal-overlay" id="rot-ov">
-      <div class="modal" style="max-width:620px;">
+      <div class="modal" style="max-width:720px;">
         <div class="modal-head"><h2>Rotas de entrega</h2><button class="close-x" id="rot-close">&times;</button></div>
         <div class="modal-body">
-          <p class="footnote">Cadastro fixo das rotas de motorista — a atribuição de cada cliente a uma rota é feita no cadastro do contrato.</p>
+          <p class="footnote">Cadastro fixo das rotas de motorista — a atribuição de cada cliente a uma rota também pode ser feita aqui, ao criar a rota, ou depois na própria aba Romaneio.</p>
           <div id="rot-lista" style="display:flex; flex-direction:column; gap:8px; margin:10px 0;">
             ${lista.map(([id,r]) => `<div class="field-row" data-rota-row="${id}" style="align-items:flex-end;">
               <div class="field" style="flex:2;"><label>Nome</label><input type="text" class="rot-nome" value="${escapeHtml(r.nome||"")}"></div>
@@ -15142,18 +15188,25 @@ function pcpAbrirGerenciarRotas(){
               <button class="btn small ghost" data-rota-salvar="${id}">Salvar</button>
             </div>`).join("") || "<p class='footnote'>Nenhuma rota cadastrada ainda.</p>"}
           </div>
-          <p class="footnote">"Saída" é o horário usado na impressão "Controle de proteínas e substituições" (ex.: 8:00) — opcional, deixe em branco se não aplicável.</p>
-          <div class="field-row" style="align-items:flex-end; border-top:1px solid var(--border); padding-top:10px;">
-            <div class="field" style="flex:2;"><label>Nova rota — nome</label><input type="text" id="rot-novo-nome" placeholder="Ex.: Rota 1"></div>
-            <div class="field" style="max-width:90px;"><label>Saída</label><input type="text" id="rot-novo-horario" placeholder="8:00"></div>
-            <div class="field"><label>Motorista</label><input type="text" id="rot-novo-motorista"></div>
-            <div class="field"><label>Veículo</label><input type="text" id="rot-novo-veiculo"></div>
-            <button class="btn small primary" id="rot-novo-criar">Adicionar</button>
+          <p class="footnote">"Saída" é o horário usado na impressão "Controle de proteínas e substituições" (ex.: 8:00) — opcional, deixe em branco se não aplicável. Pra mudar os clientes de uma rota já existente, use a tela normal da aba Romaneio (painéis "Rotas"/"Clientes" e tabela "Ordem de entrega" — lá dá pra reordenar com ↑/↓).</p>
+          <div style="border-top:1px solid var(--border); padding-top:12px; margin-top:4px;">
+            <div class="field-row" style="align-items:flex-end;">
+              <div class="field" style="flex:2;"><label>Nova rota — nome</label><input type="text" id="rot-novo-nome" placeholder="Ex.: Rota 1"></div>
+              <div class="field" style="max-width:90px;"><label>Saída</label><input type="text" id="rot-novo-horario" placeholder="8:00"></div>
+              <div class="field"><label>Motorista</label><input type="text" id="rot-novo-motorista"></div>
+              <div class="field"><label>Veículo</label><input type="text" id="rot-novo-veiculo"></div>
+            </div>
+            <div class="footnote" style="margin:10px 0 6px; font-weight:600;">Clientes da rota</div>
+            <div class="kk-dias-chips" style="flex-wrap:wrap;">${clientesAtivos.length ? clientesAtivos.map(([cid,c]) => `<button type="button" class="chip-dia ${pcpRotaNovaSel.includes(cid)?"on":""}" data-rota-novo-toggle="${cid}">${escapeHtml(c.nome_cliente)}</button>`).join("") : `<span class="footnote">Nenhum contrato ativo.</span>`}</div>
+            ${novaClientesTable}
+            <div style="display:flex; justify-content:flex-end; margin-top:12px;">
+              <button class="btn small primary" id="rot-novo-criar">Salvar e fechar rota</button>
+            </div>
           </div>
         </div>
       </div>
     </div>`;
-  const close = () => { root.innerHTML = ""; };
+  const close = () => { pcpRotaNovaSel = []; pcpRotaNovaDados = new Map(); root.innerHTML = ""; };
   document.getElementById("rot-close").addEventListener("click", close);
   document.getElementById("rot-ov").addEventListener("click", e => { if(e.target.id==="rot-ov") close(); });
   root.querySelectorAll("[data-rota-salvar]").forEach(btn => btn.addEventListener("click", async () => {
@@ -15166,20 +15219,52 @@ function pcpAbrirGerenciarRotas(){
       ativo: row.querySelector(".rot-ativo").checked
     });
     await loadRotas();
-    pcpAbrirGerenciarRotas();
+    pcpRenderGerenciarRotas();
+  }));
+  // toggle de cliente da nova rota (chip E botão "Remover" da tabela usam o mesmo data-attribute — clicar
+  // em qualquer um alterna incluído/fora).
+  root.querySelectorAll("[data-rota-novo-toggle]").forEach(btn => btn.addEventListener("click", () => {
+    pcpRotaNovaSnapshot(root);
+    const cid = btn.dataset.rotaNovoToggle;
+    const idx = pcpRotaNovaSel.indexOf(cid);
+    if(idx >= 0){
+      pcpRotaNovaSel.splice(idx,1);
+      pcpRotaNovaDados.delete(cid);
+    } else {
+      pcpRotaNovaSel.push(cid);
+      const ct = contratos.get(cid);
+      pcpRotaNovaDados.set(cid, { horario: ct?.horario_entrega || "", endereco: ct?.endereco_entrega || "" });
+    }
+    pcpRenderGerenciarRotas();
   }));
   document.getElementById("rot-novo-criar").addEventListener("click", async () => {
     const nome = document.getElementById("rot-novo-nome").value.trim();
     if(!nome){ showAlert("Informe o nome da rota."); return; }
-    await pcpSalvarRota(null, {
+    pcpRotaNovaSnapshot(root);
+    const novoId = await pcpSalvarRota(null, {
       nome,
       horario: document.getElementById("rot-novo-horario").value.trim() || null,
       motorista_nome: document.getElementById("rot-novo-motorista").value.trim() || null,
       veiculo: document.getElementById("rot-novo-veiculo").value.trim() || null,
       ativo: true
     });
+    if(!novoId) return; // pcpSalvarRota já mostrou o alerta de erro, se deu erro
+    for(let i=0;i<pcpRotaNovaSel.length;i++){
+      const cid = pcpRotaNovaSel[i];
+      const draft = pcpRotaNovaDados.get(cid) || {};
+      await pcpRomaneioSalvarContrato(cid, {
+        rota_id: novoId,
+        rota_ordem: i+1,
+        horario_entrega: (draft.horario||"").trim() || null,
+        endereco_entrega: (draft.endereco||"").trim() || null
+      });
+    }
     await loadRotas();
-    pcpAbrirGerenciarRotas();
+    pcpRotaNovaSel = [];
+    pcpRotaNovaDados = new Map();
+    root.innerHTML = "";
+    pcpRomaneioRotaSel = novoId;
+    renderPCP();
   });
 }
 
