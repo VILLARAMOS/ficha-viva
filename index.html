@@ -16685,24 +16685,24 @@ function pcpImprimirConferencia(blocosDia, semana, unidadeLabel){
           <div style="font-weight:700; font-size:13px;">${escapeHtml(cliente.nome)}</div>
           <div style="font-size:10px; color:#666;">${fmtNum(cliente.pessoas,0)} pessoas</div>
         </div>
-        ${itens.length ? `<table style="width:100%; border-collapse:collapse; font-size:10px;">
+        ${itens.length ? `<table style="width:100%; border-collapse:collapse; font-size:10px; table-layout:fixed;">
           <thead><tr>
-            <th style="text-align:left; border-bottom:1px solid #999; padding:2px 3px;">Item</th>
-            <th style="text-align:right; border-bottom:1px solid #999; padding:2px 3px;">Previsto</th>
-            <th style="text-align:right; border-bottom:1px solid #999; padding:2px 3px;">Cubas</th>
-            <th style="text-align:right; border-bottom:1px solid #999; padding:2px 3px;">Enviado</th>
-            <th style="text-align:center; border-bottom:1px solid #999; padding:2px 3px;">Cozinha</th>
-            <th style="text-align:center; border-bottom:1px solid #999; padding:2px 3px;">Exped.</th>
-            <th style="text-align:left; border-bottom:1px solid #999; padding:2px 3px;">Obs.</th>
+            <th style="width:18%; text-align:left; border-bottom:1px solid #999; padding:2px 3px;">Item</th>
+            <th style="width:9%; text-align:right; border-bottom:1px solid #999; padding:2px 3px;">Previsto</th>
+            <th style="width:9%; text-align:right; border-bottom:1px solid #999; padding:2px 3px;">Cubas</th>
+            <th style="width:9%; text-align:right; border-bottom:1px solid #999; padding:2px 3px;">Enviado</th>
+            <th style="width:8%; text-align:center; border-bottom:1px solid #999; padding:2px 3px;">Cozinha</th>
+            <th style="width:8%; text-align:center; border-bottom:1px solid #999; padding:2px 3px;">Exped.</th>
+            <th style="width:39%; text-align:left; border-bottom:1px solid #999; padding:2px 3px;">Obs.</th>
           </tr></thead>
           <tbody>${itens.map(it => `<tr>
-            <td style="padding:2px 3px; border-top:1px solid #ddd;">${escapeHtml(it.nome)}</td>
+            <td style="padding:2px 3px; border-top:1px solid #ddd; word-wrap:break-word;">${escapeHtml(it.nome)}</td>
             <td style="padding:2px 3px; border-top:1px solid #ddd; text-align:right;">${it.unidade ? `${fmtNum(it.qtdPrevista,2)} ${escapeHtml(it.unidade)}` : pcpFmtQtd(it.qtdPrevista)}</td>
             <td style="padding:2px 3px; border-top:1px solid #ddd; text-align:right;">${it.fichaId ? pcpCubaTxt(it.fichaId, it.qtdPrevista) : "—"}</td>
             <td style="padding:2px 3px; border-top:1px solid #ddd; text-align:right;">${it.qtdEnviada != null ? fmtNum(it.qtdEnviada,2) : "______"}</td>
             <td style="padding:2px 3px; border-top:1px solid #ddd; text-align:center;">${it.cozinhaOk ? "✓" : "☐"}</td>
             <td style="padding:2px 3px; border-top:1px solid #ddd; text-align:center;">${it.expedicaoOk ? "✓" : "☐"}</td>
-            <td style="padding:2px 3px; border-top:1px solid #ddd;">${escapeHtml(it.observacao||"")}</td>
+            <td style="padding:2px 3px; border-top:1px solid #ddd; word-wrap:break-word;">${escapeHtml(it.observacao||"")}</td>
           </tr>`).join("")}</tbody>
         </table>` : ""}
         ${substituicoes.length ? `<div style="margin-top:6px; padding-top:5px; border-top:1px dashed #999;">
