@@ -14876,12 +14876,15 @@ function pcpRomaneioGerenciarHtml(unidadeFiltro){
   const rotasPanel = `<div class="panel" style="margin-bottom:14px;">
     <div class="panel-head">
       <h3>Rotas</h3>
-      <span class="hint">${rotasLista.length} cadastrada${rotasLista.length===1?"":"s"}</span>
+      <div style="display:flex; align-items:center; gap:10px; margin-left:auto;">
+        <span class="hint">${rotasLista.length} cadastrada${rotasLista.length===1?"":"s"}</span>
+        <button class="btn small ghost" id="pcp-rotas-gerenciar">Gerenciar rotas</button>
+      </div>
     </div>
     <div class="panel-body">
-      <div class="footnote" style="margin:0 0 10px;">Escolha a rota pra editar motorista, horário, clientes e ordem de entrega. Pra cadastrar uma rota nova, use "Gerenciar rotas" no topo da tela.</div>
+      <div class="footnote" style="margin:0 0 10px;">Escolha a rota pra editar motorista, horário, clientes e ordem de entrega. Pra cadastrar uma rota nova, use "Gerenciar rotas" acima.</div>
       <div class="kk-dias-chips" style="flex-wrap:wrap;">
-        ${rotasLista.length ? rotasLista.map(([rid,r]) => `<button type="button" class="chip-dia pcp-romaneio-rota-chip ${rotaSel===rid?"on":""}" data-rota-id="${rid}">${escapeHtml(r.nome)}${r.motorista_nome?" · "+escapeHtml(r.motorista_nome):""}</button>`).join("") : `<div class="footnote">Nenhuma rota cadastrada ainda — use "Gerenciar rotas" no topo da tela.</div>`}
+        ${rotasLista.length ? rotasLista.map(([rid,r]) => `<button type="button" class="chip-dia pcp-romaneio-rota-chip ${rotaSel===rid?"on":""}" data-rota-id="${rid}">${escapeHtml(r.nome)}${r.motorista_nome?" · "+escapeHtml(r.motorista_nome):""}</button>`).join("") : `<div class="footnote">Nenhuma rota cadastrada ainda — use "Gerenciar rotas" acima.</div>`}
       </div>
     </div>
   </div>`;
@@ -18249,9 +18252,6 @@ async function renderPCP(){
   document.getElementById("topbar-actions").innerHTML = (ehAcougue || ehEstoque) ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-acg-config">Cortes e dias</button>
-    </div>` : (ehCafe || ehSubst || ehAjustes || ehSalSob || ehConferencia) ? "" : ehRomaneio ? `
-    <div style="display:flex; align-items:center; gap:8px;">
-      <button class="btn small ghost" id="pcp-rotas-gerenciar">Gerenciar rotas</button>
     </div>` : "";
   // 10/11/2026: "Volume total" (topbar) saiu — imprimia quase a mesma coisa que "Composição principal"
   // (que já ganhou a seção "Por cliente" nesta mesma sessão); "Imprimir etiquetas" não saiu, só mudou de
