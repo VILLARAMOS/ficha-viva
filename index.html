@@ -787,9 +787,9 @@ const ORIENTACOES_POR_VIEW = {
     <p><strong>Volume do dia:</strong> cada cozinha produz só pros seus próprios clientes — os números nunca somam entre Matriz e Filial. Pra imprimir a ordem de produção ou as receitas do dia, escolha uma cozinha só (Matriz ou Filial) acima. "Itens prontos" são lançados direto no cardápio e não passam pela cozinha (ex. kit talher, marmita avulsa); "Sub-receitas" são fichas usadas como ingrediente de outra receita do dia — preparar antes de montar o prato final.</p>
     <p><strong>Pontos a revisar antes de imprimir:</strong> marcar um ponto não bloqueia a impressão, é só pra organizar a conferência.</p>
     <p><strong>Requisição do estoque:</strong> mesma conta da lista de compra (peso bruto da ficha × produção). Suco e carnes do açougue não entram aqui (suco é feito na unidade do cliente; carnes saem pela ordem do açougue). O estoque não separa entre um dia e outro: a produção de sexta também cobre o fim de semana sem operação — cada dia tem seu próprio bloco e quantidade, não somada.</p>
-    <p><strong>Substituições:</strong> um pra um — cada pessoa trocada tira 1 porção da proteína do cardápio naquele serviço (e também de Base/Guarnição quando for composição completa — Prato Especial/Fit/Lanche) e soma 1 unidade do item escolhido. O lançamento salvo aparece na Conferência de expedição, na produção e nas etiquetas, e o custo entra no CMV real do mês (painel "Custo de substituição — fechamento da semana" já soma dentro do CMV real do mês, por contrato).</p>
+    <p><strong>Substituições:</strong> um pra um — cada pessoa trocada tira 1 porção da proteína do cardápio naquele serviço (e também de Base/Guarnição quando for composição completa — Prato Especial/Fit/Lanche) e soma 1 unidade do item escolhido. O lançamento salvo aparece na Conferência de expedição, na produção e nas etiquetas, e o custo entra no CMV real do mês (painel "Custo de substituição — fechamento da semana" já soma dentro do CMV real do mês, por contrato). Os chips Almoço/Jantar/Ceia ao lado da semana filtram só a TELA (quais colunas da grade aparecem) — não afetam o que já foi lançado nos outros serviços.</p>
     <p><strong>Ajustes do dia:</strong> ajuste manual do valor efetivo de uma receita pra um cliente, num serviço específico — ex.: cliente pediu mais, sobra da véspera. O valor digitado substitui o calculado só nesta produção deste dia (não muda custo nem compra) e some se você remover o ajuste. Motivo é obrigatório, observação é livre. Suco e sobremesa não entram aqui, nem em Peso por prato.</p>
-    <p><strong>Romaneio:</strong> atribuição cliente→rota é fixa (vale todo dia, não muda sozinha) — monte/ajuste direto na própria aba (motorista, horário, veículo, clientes da rota, ordem de entrega com ↑/↓ e endereço), sem precisar abrir o cadastro do contrato. "Ver no mapa" abre o Google Maps com o endereço já buscado (sem mapa embutido na tela — ainda não há chave de API de mapa configurada). "Preparo da semana" (corte/receita por dia de utilização, com custo) deixa escolher os dias e imprimir, cada um numa folha. "Mapa da semana" (açougue): peça grande congelada, use essa visão pra tirar do freezer com antecedência (48–72h antes do dia de preparo).</p>
+    <p><strong>Romaneio:</strong> atribuição cliente→rota é fixa (vale todo dia, não muda sozinha) — monte/ajuste direto na própria aba (motorista, horário, veículo, clientes da rota, ordem de entrega com ↑/↓ e endereço), sem precisar abrir o cadastro do contrato. O painel "Dias da semana" filtra só a listagem de entregas (embaixo da tela) — marque mais de 1 dia pra ver/imprimir vários de uma vez; não muda a atribuição cliente→rota. "Ver no mapa" abre o Google Maps com o endereço já buscado (sem mapa embutido na tela — ainda não há chave de API de mapa configurada). "Preparo da semana" (corte/receita por dia de utilização, com custo) deixa escolher os dias e imprimir, cada um numa folha. "Mapa da semana" (açougue): peça grande congelada, use essa visão pra tirar do freezer com antecedência (48–72h antes do dia de preparo).</p>
     <p><strong>Conferência de expedição:</strong> cozinha confirma que produziu/embalou, expedição confirma que carregou. Salva sozinho a cada campo alterado.</p>
     <p><strong>Etiquetas:</strong> validade, temperatura e peso (açougue) ou data e responsável (saladas/sobremesas) ficam em branco pra anotar na embalagem.</p>
     <p><strong>Volume por cliente:</strong> volume líquido por cliente, sem margem de produção — é o que vai pra etiqueta da cuba. "Cubas" é a sugestão (qtd× modelo) calculada do cadastro da ficha técnica; dá pra preencher/corrigir esse cadastro direto nos dois campos ao lado da sugestão, sem abrir a Ficha Técnica — vale pra todos os clientes/dias que usam a mesma receita, por isso o preenchimento muda em todas as tabelas de uma vez. Sai também na impressão da Ordem de produção (Composição principal) assim que a receita tiver os dois campos preenchidos.</p>
@@ -14034,6 +14034,11 @@ let pcpConfVerCardapio = false;
 // (pcpRomaneioGerenciarHtml) grava direto no contrato (rota_id), não é um filtro de tela. Só da sessão, não
 // grava no banco. Semeado com a 1ª rota ativa ao renderizar, se ainda não tiver nenhuma marcada.
 let pcpRomaneioRotaSel = null;
+// dias selecionados no Romaneio por rota (17/11/2026, pedido do Marcelo: "organize igual as demais" — mesmo
+// padrão multi-seleção de pcpSubstDiasSel/pcpAjustesDiasSel). FILTRA só a listagem de entregas por rota
+// (pcpRomaneioHtml, embaixo da tela) — a atribuição cliente→rota em si (pcpRomaneioGerenciarHtml) continua
+// fixa e nunca varia por dia. Só da sessão, semeada com pcpDiaSel na 1ª renderização.
+let pcpRomaneioDiasSel = new Set();
 // dias selecionados na "Produção da cozinha" (10/11/2026, pedido do Marcelo) — multi-seleção PLENA desde
 // 10/11/2026 (substitui o antigo toggle de 1 dia + checkbox de impressão em lote): cada dia marcado aqui
 // entra na tabela gerada em tela E na impressão. Só da sessão, não grava no banco. Começa vazio; ao
@@ -14858,7 +14863,12 @@ async function pcpRomaneioRemoverCliente(contratoId){ // botão "Remover" na tab
   await pcpRomaneioSalvarContrato(contratoId, { rota_id: null, rota_ordem: null, horario_entrega: null });
   renderPCP();
 }
-function pcpRomaneioGerenciarHtml(){
+// unidadeFiltro (17/11/2026, pedido do Marcelo: "organize igual as demais" — mesmo padrão Grupo inteiro/
+// Matriz/Filial do painel "Clientes" das outras sub-abas do PCP). Só ESCONDE/some a caixa da unidade fora do
+// filtro (grid2-box-dim, mesmo visual de Requisição/Açougue/Substituições) — não impede nada: é o mesmo
+// unidadeFiltro do topo da tela (pcp-uni-tabs), então os atalhos aqui só trocam a mesma fonte única de
+// verdade. A atribuição cliente→rota em si continua igual, clique no chip some/aparece junto com a dimagem.
+function pcpRomaneioGerenciarHtml(unidadeFiltro){
   const rotasLista = rotasAtivasOrdenadas();
   if(pcpRomaneioRotaSel && !rotasLista.some(([rid]) => rid === pcpRomaneioRotaSel)) pcpRomaneioRotaSel = null;
   if(!pcpRomaneioRotaSel && rotasLista.length) pcpRomaneioRotaSel = rotasLista[0][0];
@@ -14886,24 +14896,32 @@ function pcpRomaneioGerenciarHtml(){
     const outraRota = c.rota_id && !nestaRota ? rotas.get(c.rota_id) : null;
     return `<button type="button" class="chip-dia pcp-romaneio-cli-chip ${nestaRota?"on":""}" data-rota-id="${rotaSel}" data-id="${cid}" ${outraRota ? `title="Hoje em ${escapeHtml(outraRota.nome||"outra rota")} — clicar move pra esta rota"` : ""}>${escapeHtml(c.nome_cliente)}${outraRota ? `<span class="hint" style="margin-left:4px;">· ${escapeHtml(outraRota.nome||"outra rota")}</span>` : ""}</button>`;
   };
-  const grupoClientesHtml = (titulo, lista) => `<div class="grid2-box">
+  const grupoClientesHtml = (titulo, lista, unidadeKey) => {
+    const ativa = !unidadeKey || !unidadeFiltro || unidadeFiltro === "todos" || unidadeFiltro === unidadeKey;
+    return `<div class="grid2-box ${ativa?"":"grid2-box-dim"}">
     <div class="footnote" style="margin:0 0 8px; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
       <span>${escapeHtml(titulo)} (${lista.length})</span>
-      <span class="hint" style="margin:0;">${lista.filter(([,c]) => c.rota_id === rotaSel).length} nesta rota</span>
+      ${ativa ? `<span class="hint" style="margin:0;">${lista.filter(([,c]) => c.rota_id === rotaSel).length} nesta rota</span>` : `<span class="hint" style="margin:0;">não selecionada</span>`}
     </div>
-    ${lista.length ? `<div class="kk-dias-chips" style="flex-wrap:wrap;">${lista.map(clienteChipHtml).join("")}</div>` : `<div class="footnote">Nenhum contrato ativo.</div>`}
+    ${lista.length ? `<div class="kk-dias-chips" style="flex-wrap:wrap;">${lista.map(([cid,c]) => ativa ? clienteChipHtml([cid,c]) : `<span class="chip-dia" style="cursor:default; opacity:.5;">${escapeHtml(c.nome_cliente)}</span>`).join("")}</div>` : `<div class="footnote">Nenhum contrato ativo.</div>`}
   </div>`;
+  };
   const clientesPanel = `<div class="panel" style="margin-bottom:14px;">
     <div class="panel-head">
       <h3>Clientes — ${escapeHtml(rota?.nome||"")}</h3>
       <span class="hint">clique pra incluir/tirar da rota</span>
     </div>
     <div class="panel-body">
-      <div class="grid2">
-        ${grupoClientesHtml("Matriz", contratosMatriz)}
-        ${grupoClientesHtml("Filial", contratosFilial)}
+      <div class="kk-dias-chips" style="margin-bottom:10px; flex-wrap:wrap; align-items:center;">
+        <button type="button" class="chip-dia ${!unidadeFiltro||unidadeFiltro==="todos"?"on":""}" data-romaneio-atalho="todos">Grupo inteiro (${contratosMatriz.length + contratosFilial.length})</button>
+        <button type="button" class="chip-dia ${unidadeFiltro==="matriz"?"on":""}" data-romaneio-atalho="matriz">Matriz (${contratosMatriz.length})</button>
+        <button type="button" class="chip-dia ${unidadeFiltro==="filial"?"on":""}" data-romaneio-atalho="filial">Filial (${contratosFilial.length})</button>
       </div>
-      ${contratosSemUnidade.length ? `<div style="margin-top:10px;">${grupoClientesHtml("Sem unidade definida", contratosSemUnidade)}</div>` : ""}
+      <div class="grid2">
+        ${grupoClientesHtml("Matriz", contratosMatriz, "matriz")}
+        ${grupoClientesHtml("Filial", contratosFilial, "filial")}
+      </div>
+      ${contratosSemUnidade.length ? `<div style="margin-top:10px;">${grupoClientesHtml("Sem unidade definida", contratosSemUnidade, null)}</div>` : ""}
     </div>
   </div>`;
   const clientesRota = pcpRomaneioContratosDaRota(rotaSel);
@@ -14950,6 +14968,23 @@ function pcpRomaneioGerenciarHtml(){
   </div>` : "";
   return rotasPanel + clientesPanel + detalheTable + semRotaPanel;
 }
+// painel "Dias da semana" do Romaneio (17/11/2026, pedido do Marcelo: "organize igual as demais" — mesmo
+// visual/padrão de pcpReqFiltrosHtml/pcpAcgFiltrosHtml). Marque mais de 1 dia pra ver/imprimir a listagem de
+// entregas de vários dias de uma vez — não afeta a atribuição cliente→rota (fixa, ver pcpRomaneioGerenciarHtml).
+function pcpRomaneioDiasPanelHtml(diasSelState){
+  return `<div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head">
+      <h3>Dias da semana</h3>
+      <span class="hint">${diasSelState.size} de ${DIAS_ORDEM.length}</span>
+    </div>
+    <div class="panel-body">
+      <div class="footnote" style="margin:0 0 10px;">Marque os dias que entram na listagem de entregas abaixo — pode marcar mais de um, cada dia marcado vira um bloco separado (e imprime em folha própria).</div>
+      <div class="kk-dias-chips" id="pcp-dia-tabs" style="flex-wrap:wrap;">
+        ${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia pcp-romaneiodia-chip ${diasSelState.has(d)?"on":""}" data-dia="${d}">${DIA_LABEL[d]}</button>`).join("")}
+      </div>
+    </div>
+  </div>`;
+}
 // pequeno painel da área (pedido do Marcelo, 19/10/2026): rotas do dia, clientes sem rota (precisam de
 // atenção antes de imprimir) e total de entregas/pessoas — o mesmo resumo que já aparecia espalhado nos
 // cabeçalhos de cada rota, só que visível de cara ao abrir a aba.
@@ -14965,7 +15000,7 @@ function pcpRomaneioPainelHtml(grupos){
     <div class="vn-card${semRota ? "" : " ok"}"><div class="vn-label">Sem rota cadastrada</div><div class="vn-value">${semRota ? semRota.clientes.length : 0}</div></div>
   </div>`;
 }
-function pcpRomaneioHtml(grupos){
+function pcpRomaneioHtml(grupos, dia){
   if(!grupos.length) return `<div class="empty-state">Nenhum cliente com produção prevista para este dia.</div>`;
   return grupos.map(g => {
     const totPessoas = g.clientes.reduce((s,c) => s + c.pessoas, 0);
@@ -14974,7 +15009,7 @@ function pcpRomaneioHtml(grupos){
       <div class="panel-head">
         <h3>${semRota ? "Sem rota cadastrada" : escapeHtml(g.rota?.nome || "Rota")}</h3>
         <span class="hint">${g.rota?.motorista_nome ? escapeHtml(g.rota.motorista_nome)+(g.rota.veiculo?" · "+escapeHtml(g.rota.veiculo):"")+" · " : ""}${g.clientes.length} cliente${g.clientes.length===1?"":"s"} · ${fmtNum(totPessoas,0)} pessoas</span>
-        ${!semRota ? `<button class="btn small primary" data-romaneio-imprimir="${g.rotaId}" style="margin-left:auto;">Imprimir romaneio</button>` : ""}
+        ${!semRota ? `<button class="btn small primary" data-romaneio-imprimir="${g.rotaId}" data-dia="${dia}" style="margin-left:auto;">Imprimir romaneio</button>` : ""}
       </div>
       <div class="panel-body">
         ${semRota ? `<p class="footnote" style="margin:0 0 10px;">Esses clientes não têm rota de entrega cadastrada — atribua uma no painel "Clientes sem rota" acima.</p>` : ""}
@@ -17563,7 +17598,10 @@ function pcpSubstGerenciarItensHtml(){
   </details>`;
 }
 function pcpSubstGradeBlocoHtml(res, itens){
-  const servs = PCP_TURNOS.filter(t => t.id !== "todos");
+  // 17/11/2026 (pedido do Marcelo): colunas respeitam o chip Almoço/Jantar/Ceia do topo (pcpServicosSel,
+  // mesmo estado global de Produção/Açougue/etc.) — "Total" da linha/coluna/geral já é só a soma de `servs`,
+  // então filtra sozinho junto com as colunas, sem precisar de conta separada.
+  const servs = PCP_TURNOS.filter(t => t.id !== "todos" && pcpServicosSel.has(t.id));
   const clis = res.clientes.filter(c => servs.some(s => (c.porServico && c.porServico[s.id]) > 0));
   if(!clis.length) return `<div class="empty-state">Nenhum cliente atendido neste dia em ${escapeHtml(nomeUnidadeCompra(res.unidade))}.</div>`;
   const valor = (cliId, servId, fichaId) => { const s = pcpListaSubstituicoes(res.dia, cliId).find(x => x.servico === servId && x.fichaId === fichaId); return s ? s.pessoas : ""; };
@@ -18179,13 +18217,17 @@ async function renderPCP(){
   const unidadeFiltro = pcpUnidadeSel === "todos" ? null : pcpUnidadeSel;
   // serviços (Almoço/Jantar/Ceia, multi-seleção) se aplica em Produção, Volume por cliente, Açougue (desde
   // 17/10/2026) e, desde 18/10/2026 (pedido do Marcelo), também Requisição do estoque — antes ficava sempre
-  // nos 3 serviços somados. Substituições/Pesos/Romaneio continuam como sempre foram.
+  // nos 3 serviços somados. Pesos/Romaneio continuam como sempre foram (não têm noção de serviço).
   // 17/11/2026 (pedido do Marcelo): Conferência de expedição também passa a ter os botões — confBlocosDia
   // já chamava pcpCalcularDia(..., servicosFiltro, ...) desde a criação do multi-dia, só faltava exibir os
   // chips e entrar na conta; confModelosSemana (cardápio da semana) continua de propósito com servicosFiltro
   // null — ver comentário ali.
-  const servicosAplicavel = ehProducao || ehAcougue || ehEstoque || ehSalSob || ehAjustes || ehConferencia;
-  const servicosFiltro = servicosAplicavel ? pcpServicosSel : null;
+  // 17/11/2026 (pedido do Marcelo): Substituições também ganhou os chips — mas aqui é filtro só de TELA
+  // (ver pcpSubstGradeBlocoHtml, que lê pcpServicosSel direto pra decidir quais colunas Almoço/Jantar/Ceia
+  // mostrar), NÃO entra no cálculo de pcpCalcularDia da grade (resPorDiaSubst continua passando serviço=null
+  // pra sempre ter o porServico completo de cada cliente, mesmo com 1 serviço só marcado na tela).
+  const servicosAplicavel = ehProducao || ehAcougue || ehEstoque || ehSalSob || ehAjustes || ehConferencia || ehSubst;
+  const servicosFiltro = (servicosAplicavel && !ehSubst) ? pcpServicosSel : null;
   // precisa carregar a semana INTEIRA (não só o dia selecionado) porque a cobertura do açougue chama a
   // Requisição de outros dias internamente — ver comentário em pcpSubstituicoesCache.
   await pcpCarregarItensSubstitutos();
@@ -18286,6 +18328,11 @@ async function renderPCP(){
     if(pcpRomaneioRotaSel && !rotasAtivasAgora.some(([rid]) => rid === pcpRomaneioRotaSel)) pcpRomaneioRotaSel = null;
     if(!pcpRomaneioRotaSel && rotasAtivasAgora.length) pcpRomaneioRotaSel = rotasAtivasAgora[0][0];
   }
+  // dias selecionados no Romaneio (17/11/2026, "organize igual as demais") — mesma semeadura de
+  // pcpSubstDiasSel/pcpAjustesDiasSel: se a sessão ainda não tocou no seletor, abre só com o dia do toggle
+  // do topo (pcpDiaSel).
+  if(ehRomaneio && !pcpRomaneioDiasSel.size) pcpRomaneioDiasSel.add(pcpDiaSel);
+  const romaneioDiasAtivos = DIAS_ORDEM.filter(d => pcpRomaneioDiasSel.has(d));
   const acgContratosMatriz = ehAcougue ? [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === "matriz").sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente))) : [];
   const acgContratosFilial = ehAcougue ? [...contratos.entries()].filter(([, c]) => c.ativo !== false && c.unidade === "filial").sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente))) : [];
   const acgIdsMatriz = acgContratosMatriz.map(([id]) => id);
@@ -18383,7 +18430,13 @@ async function renderPCP(){
   const cafeIdsUnidade = !unidadeFiltro || unidadeFiltro === "todos" ? [...cafeIdsMatriz, ...cafeIdsFilial] : (unidadeFiltro === "matriz" ? cafeIdsMatriz : cafeIdsFilial);
   const cafeSelIds = pcpCafeClientesSel === null ? cafeIdsUnidade : cafeIdsUnidade.filter(id => pcpCafeClientesSel.has(id));
   const cafeClienteFiltro = new Set(cafeSelIds);
-  const romaneioGrupos = ehRomaneio ? pcpRomaneioPorRota(res) : null;
+  // 17/11/2026: 1 pcpCalcularDia + pcpRomaneioPorRota por dia marcado em pcpRomaneioDiasSel (mesmo padrão
+  // multi-dia de resPorDiaSubst) — unidadeFiltro=null ("Ambas") já soma Matriz+Filial dentro do próprio
+  // pcpCalcularDia (comportamento de sempre do Romaneio, diferente de Produção/listaRes).
+  const resPorDiaRomaneio = ehRomaneio ? romaneioDiasAtivos.map(d => ({
+    dia: d,
+    grupos: pcpRomaneioPorRota(pcpCalcularDia(pcpSemanaSel, d, unidadeFiltro, null))
+  })) : null;
   const content = document.getElementById("content");
   content.innerHTML = `
     <div class="seg-toggle" id="pcp-subview-tabs" style="margin-bottom:14px; width:fit-content;">
@@ -18398,9 +18451,9 @@ async function renderPCP(){
       <button type="button" data-pcpsub="romaneio" class="${pcpSubView==="romaneio"?"active":""}">Romaneio por rota</button>
     </div>
     <div class="menu-controls" style="margin-bottom:16px;">
-      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes || ehCafe || ehSalSob || ehAcougue || ehEstoque ? "" : `<div class="kk-dias-chips" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" class="chip-dia ${pcpUnidadeSel===u.id?"on":""}" data-pcpuni="${u.id}">${u.nome}${u.id !== "todos" ? ` · ${pcpContagemUnidade(u.id)}` : ""}</button>`).join("")}</div>`}
+      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes || ehCafe || ehSalSob || ehAcougue || ehEstoque || ehRomaneio ? "" : `<div class="kk-dias-chips" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" class="chip-dia ${pcpUnidadeSel===u.id?"on":""}" data-pcpuni="${u.id}">${u.nome}${u.id !== "todos" ? ` · ${pcpContagemUnidade(u.id)}` : ""}</button>`).join("")}</div>`}
       <select id="pcp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===pcpSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
-      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes || ehCafe || ehSalSob || ehAcougue || ehEstoque || ehConferencia ? "" : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
+      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes || ehCafe || ehSalSob || ehAcougue || ehEstoque || ehConferencia || ehRomaneio ? "" : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
       ${servicosAplicavel ? `<div class="kk-dias-chips" id="pcp-serv-tabs">${PCP_TURNOS.filter(t=>t.id!=="todos").map(t => `<button type="button" class="chip-dia ${pcpServicosSel.has(t.id)?"on":""}" data-pcp-serv="${t.id}">${t.nome}</button>`).join("")}</div>` : ""}
     </div>
     ${ehAcougue ? `
@@ -18446,7 +18499,13 @@ async function renderPCP(){
                ${pcpConferenciaHtml(b.linhas)}
              </div>`).join(`<div style="height:18px;"></div>`)}</div>`
     ) : ehRomaneio ? (
-      `${pcpRomaneioPainelHtml(romaneioGrupos)}${pcpRomaneioGerenciarHtml()}${pcpRomaneioHtml(romaneioGrupos)}`
+      `${pcpRomaneioDiasPanelHtml(pcpRomaneioDiasSel)}${pcpRomaneioGerenciarHtml(unidadeFiltro)}${
+        !resPorDiaRomaneio.length ? `<div class="empty-state">Marque pelo menos 1 dia da semana acima.</div>` :
+        resPorDiaRomaneio.map(({dia, grupos}) => `<div data-pcp-romaneio-dia-bloco="${dia}">
+          ${resPorDiaRomaneio.length > 1 ? `<div class="panel-head" style="margin:0 0 10px; border:none;"><h3 style="font-size:15px;">${DIA_LABEL[dia]}</h3></div>` : ""}
+          ${pcpRomaneioPainelHtml(grupos)}${pcpRomaneioHtml(grupos, dia)}
+        </div>`).join(`<div style="height:22px;"></div>`)
+      }`
     ) : ehCafe ? ((() => {
       // 11/11/2026, pedido do Marcelo ("mesmo padrão de caixas de Substituições"): painel "Dias da semana"
       // (visual de caixa/chip igual Ajustes/Substituições, mas SEM multi-seleção — ver comentário grande
@@ -19141,9 +19200,25 @@ async function renderPCP(){
     });
   } else if(ehRomaneio){
     document.getElementById("pcp-rotas-gerenciar").addEventListener("click", pcpAbrirGerenciarRotas);
+    // 17/11/2026 (multi-dia): cada bloco de rota carrega o próprio dia (data-dia, ver pcpRomaneioHtml) —
+    // busca o grupo dentro do resPorDiaRomaneio DESSE dia, não mais no pcpDiaSel global.
     content.querySelectorAll("[data-romaneio-imprimir]").forEach(btn => btn.addEventListener("click", () => {
-      const grupo = romaneioGrupos.find(g => g.rotaId === btn.dataset.romaneioImprimir);
-      if(grupo) pcpImprimirRomaneio(grupo, pcpSemanaSel, pcpDiaSel);
+      const dia = btn.dataset.dia;
+      const porDia = resPorDiaRomaneio.find(x => x.dia === dia);
+      const grupo = porDia && porDia.grupos.find(g => g.rotaId === btn.dataset.romaneioImprimir);
+      if(grupo) pcpImprimirRomaneio(grupo, pcpSemanaSel, dia);
+    }));
+    // painel "Dias da semana" (17/11/2026) — mesmo padrão de toggle de pcpSubstDiasSel/pcpAjustesDiasSel.
+    content.querySelectorAll(".pcp-romaneiodia-chip").forEach(btn => btn.addEventListener("click", () => {
+      const d = btn.dataset.dia;
+      if(pcpRomaneioDiasSel.has(d)) pcpRomaneioDiasSel.delete(d); else pcpRomaneioDiasSel.add(d);
+      renderPCP();
+    }));
+    // atalhos Grupo inteiro/Matriz/Filial do painel "Clientes" (17/11/2026) — trocam a unidade do topo,
+    // mesma fonte única de verdade que as outras sub-abas do PCP (ver pcpRomaneioGerenciarHtml).
+    content.querySelectorAll("[data-romaneio-atalho]").forEach(btn => btn.addEventListener("click", () => {
+      pcpUnidadeSel = btn.dataset.romaneioAtalho;
+      renderPCP();
     }));
     // ---------- Montagem da rota (17/11/2026, reescrito na mesma sessão) — binds da pcpRomaneioGerenciarHtml ----------
     content.querySelectorAll(".pcp-romaneio-rota-chip").forEach(btn => btn.addEventListener("click", () => {
