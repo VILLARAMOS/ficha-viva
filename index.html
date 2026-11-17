@@ -16668,10 +16668,10 @@ function pcpConferenciaHtml(linhas){
 // no protótipo antigo, v89). Espelha a tela de propósito (mesma função pcpConferenciaLinhas alimenta as
 // duas): o que a cozinha/expedição vê na tela é exatamente o que sai no papel, substituições incluídas —
 // nunca duas fontes de verdade. 1 bloco por cliente, evita quebrar no meio (break-inside:avoid).
-// 20/10/2026 (pedido do Marcelo): tabelas lado a lado em vez de empilhadas — é pra conferência da SAÍDA
-// dos itens na expedição (quem confere na doca), então ganhar clientes por folha (2 colunas, CSS
-// multi-coluna do navegador distribui sozinho e nunca corta um cliente no meio) importa mais que cada
-// tabela ocupar a largura toda da página.
+// 20/10/2026 (pedido do Marcelo): tabelas lado a lado em vez de empilhadas (2 colunas, CSS multi-coluna) —
+// decisão revertida em 17/11/2026 (pedido do Marcelo: "pra ter espaço pra descrever possíveis observações
+// vai ser melhor uma tabela abaixo da outra e não abaixo e do lado") — volta a ser 1 coluna só, cada
+// tabela ocupando a largura toda da folha, pra caber texto de observação sem apertar.
 // 17/11/2026 (multi-dia): passou a receber os BLOCOS por dia ([{dia, linhas}], ver confBlocosDia) em vez
 // de uma lista de linhas de 1 dia só — imprime 1 folha por dia marcado (quebra de página entre dias,
 // mesmo padrão de pcpImprimirReqDiasEscolhidos), cada folha com seu próprio título/data e sua própria
@@ -16720,7 +16720,7 @@ function pcpImprimirConferencia(blocosDia, semana, unidadeLabel){
   if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
   const tituloJanela = `Conferência da expedição · ${escapeHtml(unidadeLabel)}`;
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${tituloJanela}</title>
-    <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()} .pcp-conf-colunas{column-count:2; column-gap:16px;} .pcp-conf-folha{page-break-after:always;}</style></head><body>
+    <style>body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;} h1{font-size:16px; margin:0 0 4px;} ${printHeadStyle()} .pcp-conf-colunas{column-count:1;} .pcp-conf-folha{page-break-after:always;}</style></head><body>
     ${comItens.map((b,i) => `<div class="${i<comItens.length-1?"pcp-conf-folha":""}">${printHeadHtml()}${folhaHtml(b)}</div>`).join("")}
     <script>window.onload = () => window.print();<\/script>
     </body></html>`);
