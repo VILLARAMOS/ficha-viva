@@ -12674,16 +12674,36 @@ function pcpSetorDoGrupo(grupo){
   return "cozinha";
 }
 // ---------- Itens fora do PAPEL (20/10/2026, pedido do Marcelo) ----------
-// Suco, kit talher e embalagem de marmita continuam na TELA (cozinha/produção ainda precisa saber que
-// existem), mas saem da IMPRESSÃO — Ordem de produção, Receitas da produção e Volume por cliente. Suco sai
-// pelo grupo da receita (SUCO SIMPLES/SUCO NATURAL, mesmo prefixo de pcpSetorDoGrupo acima). Talher e
-// embalagem de marmita são itens diretos (sem ficha, grupo EXTRA — ex. "KIT TALHER", "MARMITA MÉDIA C/
-// TAMPA UNI", "MARMITA DIVISÓRIAS C/TAMPA UNI", confirmado no banco) e não têm um grupo próprio hoje pra
-// filtrar por grupo, então o filtro é pelo nome do item. Se amanhã entrar um insumo novo com "marmita" ou
-// "talher" no nome que NÃO seja embalagem/talher (pouco provável), vai sumir do papel também — ponto cego
-// aceito, mais simples que criar um campo novo só pra isso agora.
-function pcpReceitaEntraImpressao(r){ return !/^SUCO/.test(r.grupo || ""); }
+// Talher e embalagem de marmita continuam na TELA (cozinha/produção ainda precisa saber que existem), mas
+// saem da IMPRESSÃO — Ordem de produção e Receitas da produção. São itens diretos (sem ficha, grupo EXTRA —
+// ex. "KIT TALHER", "MARMITA MÉDIA C/TAMPA UNI", "MARMITA DIVISÓRIAS C/TAMPA UNI", confirmado no banco) e
+// não têm um grupo próprio hoje pra filtrar por grupo, então o filtro é pelo nome do item. Se amanhã entrar
+// um insumo novo com "marmita" ou "talher" no nome que NÃO seja embalagem/talher (pouco provável), vai
+// sumir do papel também — ponto cego aceito, mais simples que criar um campo novo só pra isso agora.
 function pcpDiretoEntraImpressao(d){ return !/TALHER|MARMITA/i.test(d.nome || ""); }
+// ---------- Suco na impressão (17/11/2026, pedido do Marcelo) ----------
+// Suco tinha ficado fora de TODA impressão desde 20/10/2026 (comentário acima, versão antiga). Marcelo
+// perguntou por que marmita não mostra salada/sobremesa/suco na Composição — salada/sobremesa já entravam
+// (têm aba própria, "Saladas/Sobremesas", soma certo pra marmita); suco é o que realmente faltava. Suco
+// continua "fora" de setor pra Requisição do estoque/Compras (pcpSetorDoGrupo, pcpAcumularInsumosDia) —
+// pedido explícito do Marcelo: só a visualização de impressão por enquanto, não entra em compra de insumo
+// ainda. Mas a quantidade de suco nunca pode ser `r.total`: a parte "transportado" da mesma receita é
+// fantasma (suco do transportado é feito na unidade do cliente, nunca produzido de verdade aqui — ver
+// pcpSetorDoGrupo "fora"), só a parte marmita é real. pcpQtdImpressaoReceita() e
+// pcpEntradasClientePorItem() isolam essa parte real em toda tela/impressão que soma por receita/cliente.
+function pcpQtdImpressaoReceita(r){
+  if(!/^SUCO/.test(r.grupo || "")) return r.total;
+  return [...r.porCliente.values()].reduce((s,x) => { const c = catalogoPorProduto(x.produtoId); return (c && (c.tipo_custo === "cardapio_marmita" || c.tipo_custo === "cardapio_marmita_especial")) ? s + x.qtd : s; }, 0);
+}
+// `item` é uma entrada de res.receitas ou res.diretos (os dois têm .grupo e .porCliente). Pra qualquer
+// receita/direto que NÃO seja suco, comportamento de sempre desde o fix de 17/11/2026 (soma todas as
+// entradas do cliente — caso real HOTEL). Pra suco, soma só as entradas marmita (a transportada é fantasma).
+function pcpEntradasClientePorItem(item, contratoId){
+  const todas = [...item.porCliente.values()].filter(x => x.contratoId === contratoId);
+  if(!/^SUCO/.test(item.grupo || "")) return todas;
+  return todas.filter(x => { const c = catalogoPorProduto(x.produtoId); return c && (c.tipo_custo === "cardapio_marmita" || c.tipo_custo === "cardapio_marmita_especial"); });
+}
+function pcpReceitaEntraImpressao(r){ return !/^SUCO/.test(r.grupo || "") || pcpQtdImpressaoReceita(r) > 0; }
 // CORREÇÃO (mesma sessão, antes de ir pra Fase 2): cheguei a tratar Salada/Sobremesa/Suco como "porção"
 // e ficha "servida por unidade" como "un.", copiando uma distinção que existia no protótipo antigo
 // (artifact). Não existe aqui — confirmei no código real: `gramagem_kg` é tratado como kg de verdade em
@@ -14450,7 +14470,7 @@ function pcpImprimirReceitasProducao(res, margemPct){
   const subs = res.subs || [];
   if(!comFicha.length && !subs.length){ showAlert("Nenhuma receita com ficha técnica nesta produção."); return; }
   const corpoSubs = subs.map(s => pcpReceitaBlocoHtml(s.fichaId, s.nome + " (sub-receita)", s.total * fator)).join("");
-  const corpo = corpoSubs + comFicha.map(r => pcpReceitaBlocoHtml(r.fichaId, r.nome, r.total * fator)).join("") + pcpSubstituicoesImpressaoHtml(res);
+  const corpo = corpoSubs + comFicha.map(r => pcpReceitaBlocoHtml(r.fichaId, r.nome, pcpQtdImpressaoReceita(r) * fator)).join("") + pcpSubstituicoesImpressaoHtml(res);
   pcpAbrirImpressaoReceitas("Receitas da produção", pcpContextoImpressao(res, margemPct), corpo);
 }
 // "Imprimir ordem de produção" — não é a ficha técnica (ingrediente a ingrediente), é a lista enxuta
@@ -14459,12 +14479,20 @@ function pcpImprimirReceitasProducao(res, margemPct){
 function pcpImprimirOrdemProducao(res, margemPct, setorFiltro){
   const fator = 1 + (margemPct || 0) / 100;
   const nomesSetor = {todos:"Todos os setores", cozinha:"Composição principal", saladas:"Saladas", sobremesas:"Sobremesas"};
-  const lista = res.receitas.filter(r => (setorFiltro === "todos" || pcpSetorDoGrupo(r.grupo) === setorFiltro) && pcpReceitaEntraImpressao(r));
+  // Suco (17/11/2026): setor "fora" de propósito pra Requisição do estoque (pcpSetorDoGrupo, inalterado —
+  // pedido do Marcelo foi só a impressão por enquanto), então nunca bate com "cozinha"/"saladas"/
+  // "sobremesas" no filtro de setor normal. Entra como excessão só dentro de "Composição principal"
+  // (cozinha) — não tem botão de impressão próprio pra ele, e é onde faz sentido junto da comida de
+  // verdade da marmita. pcpReceitaEntraImpressao já isola a quantidade real (só a parte marmita).
+  const lista = res.receitas.filter(r => {
+    if(/^SUCO/.test(r.grupo || "")) return setorFiltro === "cozinha" && pcpReceitaEntraImpressao(r);
+    return (setorFiltro === "todos" || pcpSetorDoGrupo(r.grupo) === setorFiltro) && pcpReceitaEntraImpressao(r);
+  });
   if(!lista.length){ showAlert(`Nenhuma receita no setor "${nomesSetor[setorFiltro]}" nesta produção.`); return; }
   let grupoAtual = null;
   const linhas = lista.map(r => {
     const novo = r.grupo !== grupoAtual; grupoAtual = r.grupo;
-    const kg = r.total * fator;
+    const kg = pcpQtdImpressaoReceita(r) * fator;
     return (novo ? `<tr><th colspan="3" style="background:#f0f0f0;">${escapeHtml(r.grupo)}</th></tr>` : "") +
       `<tr><td>${escapeHtml(r.nome)}</td><td class="peso destaque">${pcpFmtQtd(kg, r.fichaId)}</td><td class="peso">${pcpCubaTxt(r.fichaId, kg)}</td></tr>`;
   }).join("");
@@ -14475,8 +14503,9 @@ function pcpImprimirOrdemProducao(res, margemPct, setorFiltro){
   // cliente" (ver pcpVolumeHtml), a margem só entra na tabela agregada de quanto produzir.
   const blocosClientesHtml = setorFiltro === "cozinha" ? res.clientes.map(cli => {
     const linhasCli = [];
-    // 17/11/2026: soma todas as entradas do cliente — mesmo achado/motivo de pcpVolumeHtml (caso real HOTEL).
-    lista.forEach(r => { const entradas = [...r.porCliente.values()].filter(x => x.contratoId === cli.id); if(entradas.length) linhasCli.push({nome: r.nome, qtd: entradas.reduce((s,x)=>s+x.qtd,0), fichaId: r.fichaId}); });
+    // 17/11/2026: pcpEntradasClientePorItem soma todas as entradas do cliente (caso real HOTEL), exceto
+    // suco, que soma só a parte marmita (a transportada é fantasma — ver comentário em pcpQtdImpressaoReceita).
+    lista.forEach(r => { const entradas = pcpEntradasClientePorItem(r, cli.id); if(entradas.length) linhasCli.push({nome: r.nome, qtd: entradas.reduce((s,x)=>s+x.qtd,0), fichaId: r.fichaId}); });
     if(!linhasCli.length) return "";
     return `<div style="break-inside:avoid; page-break-inside:avoid; margin-bottom:14px;">
       <h2 style="margin-bottom:6px;">${escapeHtml(cli.nome)} <span style="font-weight:400; text-transform:none; letter-spacing:0; color:#777;">— ${fmtNum(cli.pessoas,0)} pessoas · ${escapeHtml(nomeUnidadeCompra(cli.unidade))}</span></h2>
@@ -14578,8 +14607,10 @@ function pcpVolumeHtml(res){
     // outro) tinha só a 1ª entrada contada aqui — a 2ª some do card do cliente (ex.: HOTEL mostrava 1 unidade
     // de um prato que tinha 1 transportado + 11 marmita de verdade). O total que a cozinha produz (R.total)
     // nunca teve esse problema — só a quebra por cliente aqui e na etiqueta (pcpEtiquetasProdutoImprimir).
-    res.receitas.forEach(r => { const entradas = [...r.porCliente.values()].filter(x => x.contratoId === cli.id); if(entradas.length) linhas.push({nome: r.nome, qtd: entradas.reduce((s,x)=>s+x.qtd,0), fichaId: r.fichaId}); });
-    res.diretos.forEach(d => { const entradas = [...d.porCliente.values()].filter(x => x.contratoId === cli.id); if(entradas.length) linhas.push({nome: d.nome, qtd: entradas.reduce((s,x)=>s+x.qtd,0), unidade: d.unidade}); });
+    // pcpEntradasClientePorItem soma todas as entradas, exceto suco (só a parte marmita é real — ver
+    // pcpQtdImpressaoReceita, 17/11/2026).
+    res.receitas.forEach(r => { const entradas = pcpEntradasClientePorItem(r, cli.id); if(entradas.length) linhas.push({nome: r.nome, qtd: entradas.reduce((s,x)=>s+x.qtd,0), fichaId: r.fichaId}); });
+    res.diretos.forEach(d => { const entradas = pcpEntradasClientePorItem(d, cli.id); if(entradas.length) linhas.push({nome: d.nome, qtd: entradas.reduce((s,x)=>s+x.qtd,0), unidade: d.unidade}); });
     if(!linhas.length) return "";
     return `<div class="panel" data-pcp-cliente-card="${cli.id}">
       <div class="panel-head"><h3>${escapeHtml(cli.nome)}</h3><span class="hint">${fmtNum(cli.pessoas,0)} pessoas · ${nomeUnidadeCompra(cli.unidade)}</span></div>
@@ -14635,12 +14666,14 @@ function pcpEtiquetasProdutoImprimir(res){
     // ela tem etiqueta própria logo abaixo, em QUANTIDADE (não peso).
     // 17/11/2026: soma TODAS as entradas do cliente (não só a 1ª) — mesmo motivo/achado de pcpVolumeHtml
     // (caso real HOTEL: transportado + marmita do mesmo prato são 2 entradas separadas em r.porCliente).
+    // Suco (17/11/2026): pcpEntradasClientePorItem já restringe à parte marmita (só ela é real); aqui
+    // ainda precisa excluir a linha injetada por substituição (produtoId !== null), que suco nunca tem.
     res.receitas.forEach(r => {
-      const entradas = [...r.porCliente.values()].filter(x => x.contratoId === cli.id && x.produtoId !== null);
+      const entradas = pcpEntradasClientePorItem(r, cli.id).filter(x => x.produtoId !== null);
       if(entradas.length) etiquetas.push({ cliente: cli.nome, produto: r.nome, pesoTxt: pcpFmtQtd(entradas.reduce((s,x)=>s+x.qtd,0), r.fichaId) });
     });
     res.diretos.forEach(d => {
-      const entradas = [...d.porCliente.values()].filter(x => x.contratoId === cli.id);
+      const entradas = pcpEntradasClientePorItem(d, cli.id);
       if(entradas.length) etiquetas.push({ cliente: cli.nome, produto: d.nome, pesoTxt: `${fmtNum(entradas.reduce((s,x)=>s+x.qtd,0),2)} ${d.unidade||""}` });
     });
     // Substituições (21/10/2026, pedido do Marcelo): etiqueta em QUANTIDADE (unidades a produzir — já com
@@ -14696,9 +14729,10 @@ function pcpRomaneioPorRota(res){
     let pesoTotal = 0;
     // grupo (PROTEÍNA/BASE/GUARNIÇÃO/SALADA/SOBREMESA/...) viaja junto com cada linha — é o que alimenta a
     // separação quente/frio do romaneio impresso (19/10/2026, ver pcpRomaneioCategoriaGrupo).
-    // 17/11/2026: soma todas as entradas do cliente — mesmo achado/motivo de pcpVolumeHtml (caso real HOTEL).
-    res.receitas.forEach(r => { const entradas = [...r.porCliente.values()].filter(x => x.contratoId === cli.id); if(entradas.length){ const qtd = entradas.reduce((s,x)=>s+x.qtd,0); linhas.push({nome: r.nome, qtd, fichaId: r.fichaId, grupo: r.grupo}); pesoTotal += qtd; } });
-    res.diretos.forEach(d => { const entradas = [...d.porCliente.values()].filter(x => x.contratoId === cli.id); if(entradas.length) linhas.push({nome: d.nome, qtd: entradas.reduce((s,x)=>s+x.qtd,0), unidade: d.unidade, grupo: d.grupo}); });
+    // pcpEntradasClientePorItem soma todas as entradas do cliente (caso real HOTEL), exceto suco, que soma
+    // só a parte marmita (17/11/2026 — a parte transportada é fantasma, nunca sai de verdade pra entrega).
+    res.receitas.forEach(r => { const entradas = pcpEntradasClientePorItem(r, cli.id); if(entradas.length){ const qtd = entradas.reduce((s,x)=>s+x.qtd,0); linhas.push({nome: r.nome, qtd, fichaId: r.fichaId, grupo: r.grupo}); pesoTotal += qtd; } });
+    res.diretos.forEach(d => { const entradas = pcpEntradasClientePorItem(d, cli.id); if(entradas.length) linhas.push({nome: d.nome, qtd: entradas.reduce((s,x)=>s+x.qtd,0), unidade: d.unidade, grupo: d.grupo}); });
     if(!linhas.length) return;
     const ct = contratos.get(cli.id);
     const rotaId = ct && ct.rota_id ? ct.rota_id : null;
