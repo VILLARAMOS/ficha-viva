@@ -789,7 +789,7 @@ const ORIENTACOES_POR_VIEW = {
     <p><strong>Requisição do estoque:</strong> mesma conta da lista de compra (peso bruto da ficha × produção). Suco e carnes do açougue não entram aqui (suco é feito na unidade do cliente; carnes saem pela ordem do açougue). O estoque não separa entre um dia e outro: a produção de sexta também cobre o fim de semana sem operação — cada dia tem seu próprio bloco e quantidade, não somada.</p>
     <p><strong>Substituições:</strong> um pra um — cada pessoa trocada tira 1 porção da proteína do cardápio naquele serviço (e também de Base/Guarnição quando for composição completa — Prato Especial/Fit/Lanche) e soma 1 unidade do item escolhido. O lançamento salvo aparece na Conferência de expedição, na produção e nas etiquetas, e o custo entra no CMV real do mês (painel "Custo de substituição — fechamento da semana" já soma dentro do CMV real do mês, por contrato).</p>
     <p><strong>Ajustes do dia:</strong> ajuste manual do valor efetivo de uma receita pra um cliente, num serviço específico — ex.: cliente pediu mais, sobra da véspera. O valor digitado substitui o calculado só nesta produção deste dia (não muda custo nem compra) e some se você remover o ajuste. Motivo é obrigatório, observação é livre. Suco e sobremesa não entram aqui, nem em Peso por prato.</p>
-    <p><strong>Romaneio:</strong> atribuição cliente→rota é fixa (cadastrada no contrato) — pra mudar, edite o contrato do cliente. Sem ordem de entrega dentro da rota nesta versão. "Preparo da semana" (corte/receita por dia de utilização, com custo) deixa escolher os dias e imprimir, cada um numa folha. "Mapa da semana" (açougue): peça grande congelada, use essa visão pra tirar do freezer com antecedência (48–72h antes do dia de preparo).</p>
+    <p><strong>Romaneio:</strong> atribuição cliente→rota é fixa (vale todo dia, não muda sozinha) — monte/ajuste direto na própria aba (motorista, horário, veículo, clientes da rota, ordem de entrega com ↑/↓ e endereço), sem precisar abrir o cadastro do contrato. "Ver no mapa" abre o Google Maps com o endereço já buscado (sem mapa embutido na tela — ainda não há chave de API de mapa configurada). "Preparo da semana" (corte/receita por dia de utilização, com custo) deixa escolher os dias e imprimir, cada um numa folha. "Mapa da semana" (açougue): peça grande congelada, use essa visão pra tirar do freezer com antecedência (48–72h antes do dia de preparo).</p>
     <p><strong>Conferência de expedição:</strong> cozinha confirma que produziu/embalou, expedição confirma que carregou. Salva sozinho a cada campo alterado.</p>
     <p><strong>Etiquetas:</strong> validade, temperatura e peso (açougue) ou data e responsável (saladas/sobremesas) ficam em branco pra anotar na embalagem.</p>
     <p><strong>Volume por cliente:</strong> volume líquido por cliente, sem margem de produção — é o que vai pra etiqueta da cuba. "Cubas" é a sugestão (qtd× modelo) calculada do cadastro da ficha técnica; dá pra preencher/corrigir esse cadastro direto nos dois campos ao lado da sugestão, sem abrir a Ficha Técnica — vale pra todos os clientes/dias que usam a mesma receita, por isso o preenchimento muda em todas as tabelas de uma vez. Sai também na impressão da Ordem de produção (Composição principal) assim que a receita tiver os dois campos preenchidos.</p>
@@ -5359,7 +5359,7 @@ function openContratoModal(id){
   const existing = id ? contratos.get(id) : null;
   const draft = existing ? JSON.parse(JSON.stringify(existing)) : {
     nome_cliente:"", ativo:true, modelo_faturamento:"itemizado", valor_fixo_mensal:null,
-    unidade:"matriz", rota_id:null, data_inicio:null, data_fim:null,
+    unidade:"matriz", rota_id:null, rota_ordem:null, endereco_entrega:null, data_inicio:null, data_fim:null,
     cardapio_refeicao_num: REFEICAO_NUMS[0], cardapio_marmita_num: MARMITA_NUMS[0], marmita_especial_ativo:false, cardapio_marmita_especial_num:null,
     cardapio_cafe_num: CAFE_NUMS[0], cafe_especial_ativo:false, cardapio_cafe_especial_num:null, cafe_terceirizado:false,
     observacoes:null,
@@ -5413,6 +5413,10 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
                 ${rotasAtivasOrdenadas().map(([rid,r]) => `<option value="${rid}" ${draft.rota_id===rid?"selected":""}>${escapeHtml(r.nome)}${r.motorista_nome?" · "+escapeHtml(r.motorista_nome):""}</option>`).join("")}
               </select>
             </div>
+            <!-- 17/11/2026, pedido do Marcelo (Romaneio): endereço de entrega do cliente — o fluxo principal
+            de edição é na própria aba Romaneio (montagem da rota), este campo aqui é só pra quem preferir
+            editar direto no cadastro do contrato; os dois escrevem no mesmo lugar (contratos.endereco_entrega). -->
+            <div class="field" style="flex:2;"><label>Endereço de entrega</label><input type="text" id="kk-endereco" value="${escapeHtml(draft.endereco_entrega||"")}" placeholder="Rua, número, bairro, cidade"></div>
           </div>
           <div class="field-row">
             <div class="field"><label>Modelo de faturamento</label>
@@ -5793,6 +5797,7 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
       valor_fixo_mensal: document.getElementById("kk-valorfixo").value === "" ? null : parseFloat(document.getElementById("kk-valorfixo").value),
       unidade: document.getElementById("kk-unidade").value || null,
       rota_id: document.getElementById("kk-rota").value || null,
+      endereco_entrega: document.getElementById("kk-endereco").value.trim() || null,
       data_inicio: document.getElementById("kk-inicio").value || null,
       data_fim: document.getElementById("kk-fim").value || null,
       cardapio_refeicao_num: Number(document.getElementById("kk-ref-num").value),
@@ -14738,7 +14743,10 @@ function pcpRomaneioPorRota(res){
     const rotaId = ct && ct.rota_id ? ct.rota_id : null;
     const chave = rotaId || "sem_rota";
     const grupo = porRota.get(chave) || { rotaId, rota: rotaId ? rotas.get(rotaId) : null, clientes: [] };
-    grupo.clientes.push({ ...cli, linhas, pesoTotal });
+    // endereco/rotaOrdem (17/11/2026, pedido do Marcelo — montagem da rota): vêm do cadastro do contrato
+    // (contratos.endereco_entrega/rota_ordem, editados agora direto na aba Romaneio — ver
+    // pcpRomaneioGerenciarHtml), não do cálculo de produção.
+    grupo.clientes.push({ ...cli, linhas, pesoTotal, endereco: ct ? ct.endereco_entrega : null, rotaOrdem: ct ? ct.rota_ordem : null });
     porRota.set(chave, grupo);
   });
   const lista = [...porRota.values()];
@@ -14747,7 +14755,14 @@ function pcpRomaneioPorRota(res){
     if(a.rotaId && !b.rotaId) return -1;
     return (a.rota?.nome || "").localeCompare(b.rota?.nome || "", 'pt-BR');
   });
-  lista.forEach(g => g.clientes.sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome))));
+  // Ordem de entrega (17/11/2026): antes era sempre alfabética; agora segue rota_ordem (definido na
+  // montagem da rota, com ↑/↓), null fica por último, e entre nulls cai pra alfabética como fallback.
+  lista.forEach(g => g.clientes.sort((a,b) => {
+    if(a.rotaOrdem == null && b.rotaOrdem == null) return normalizeText(a.nome).localeCompare(normalizeText(b.nome));
+    if(a.rotaOrdem == null) return 1;
+    if(b.rotaOrdem == null) return -1;
+    return a.rotaOrdem - b.rotaOrdem;
+  }));
   return lista;
 }
 
@@ -14762,6 +14777,156 @@ function pcpRomaneioCategoriaGrupo(grupo){
   if(/^(PROTEÍNA|BASE|GUARNIÇÃO)/.test(g)) return "quente";
   if(/^(SALADA|SOBREMESA)/.test(g)) return "frio";
   return "outros";
+}
+// ---------- Montagem da rota direto na aba Romaneio (17/11/2026, pedido do Marcelo) ----------
+// Até aqui a única forma de mudar cliente→rota era abrir o cadastro do contrato, 1 cliente por vez, sem
+// noção de "montar a rota toda". Marcelo pediu uma tela só pra isso, com o mesmo visual de painel/chips/
+// tabela que o Açougue já usa: escolhe/ajusta motorista+horário (reaproveita `rotas`/pcpSalvarRota, que já
+// existiam pro modal "Gerenciar rotas" antigo), adiciona/remove cliente da rota, define ORDEM de entrega
+// (rota_ordem, coluna nova) e o ENDEREÇO (endereco_entrega, coluna nova — sem mapa de verdade por enquanto,
+// o Marcelo confirmou que não tem chave de API de mapa ainda; "Ver no mapa" abre o Google Maps já com a
+// busca pronta, sem precisar de chave). A atribuição continua FIXA (vale todo dia, não varia por data —
+// confirmado com ele), só a FORMA de editar mudou: escreve direto em `contratos` (mesmo padrão do modal de
+// contrato, sem RPC) e atualiza o cache local pra não precisar recarregar tudo a cada clique.
+async function pcpRomaneioSalvarContrato(contratoId, campos){
+  const { error } = await sb.from('contratos').update({ ...campos, ...carimbo() }).eq('id', contratoId);
+  if(error){ showAlert("Erro ao salvar: " + error.message); return false; }
+  const ct = contratos.get(contratoId);
+  if(ct) Object.assign(ct, campos);
+  return true;
+}
+function pcpRomaneioContratosDaRota(rotaId){
+  return [...contratos.entries()]
+    .filter(([,c]) => c.ativo && c.rota_id === rotaId)
+    .sort((a,b) => {
+      const oa = a[1].rota_ordem, ob = b[1].rota_ordem;
+      if(oa == null && ob == null) return normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente));
+      if(oa == null) return 1;
+      if(ob == null) return -1;
+      return oa - ob;
+    });
+}
+function pcpRomaneioContratosSemRota(){
+  return [...contratos.entries()]
+    .filter(([,c]) => c.ativo && !c.rota_id)
+    .sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)));
+}
+function pcpRomaneioUrlMapa(endereco){ return "https://www.google.com/maps/search/?api=1&query=" + encodeURIComponent(endereco); }
+// Renumera 1..n toda vez (mover, adicionar, remover) em vez de só trocar 2 valores — mais chamada ao banco,
+// mas nunca deixa lacuna/empate de rota_ordem, então não precisa de lógica extra pra "o que fazer se os 2
+// tiverem o mesmo número".
+async function pcpRomaneioRenumerar(lista){
+  for(let i=0;i<lista.length;i++) await pcpRomaneioSalvarContrato(lista[i][0], { rota_ordem: i+1 });
+}
+async function pcpRomaneioMoverCliente(rotaId, contratoId, direcao){
+  const lista = pcpRomaneioContratosDaRota(rotaId);
+  const idx = lista.findIndex(([id]) => id === contratoId);
+  const novoIdx = idx + direcao;
+  if(idx < 0 || novoIdx < 0 || novoIdx >= lista.length) return;
+  [lista[idx], lista[novoIdx]] = [lista[novoIdx], lista[idx]];
+  await pcpRomaneioRenumerar(lista);
+  renderPCP();
+}
+async function pcpRomaneioAdicionarCliente(rotaId, contratoId){
+  if(!contratoId) return;
+  const lista = pcpRomaneioContratosDaRota(rotaId);
+  if(lista.some(([id]) => id === contratoId)) return;
+  await pcpRomaneioSalvarContrato(contratoId, { rota_id: rotaId, rota_ordem: lista.length + 1 });
+  renderPCP();
+}
+async function pcpRomaneioMoverParaOutraRota(contratoId, novaRotaId){
+  const lista = pcpRomaneioContratosDaRota(novaRotaId);
+  await pcpRomaneioSalvarContrato(contratoId, { rota_id: novaRotaId || null, rota_ordem: novaRotaId ? lista.length + 1 : null });
+  renderPCP();
+}
+async function pcpRomaneioRemoverCliente(contratoId){
+  await pcpRomaneioSalvarContrato(contratoId, { rota_id: null, rota_ordem: null });
+  renderPCP();
+}
+function pcpRomaneioGerenciarHtml(){
+  const rotasLista = rotasAtivasOrdenadas();
+  const semRota = pcpRomaneioContratosSemRota();
+  const clientesAtivosOrdenados = [...contratos.entries()].filter(([,c]) => c.ativo).sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)));
+  const rotaPanelHtml = ([rid, r]) => {
+    const clientesRota = pcpRomaneioContratosDaRota(rid);
+    return `<div class="panel" style="margin-bottom:14px;">
+      <div class="panel-head" style="flex-wrap:wrap; gap:8px;">
+        <h3>${escapeHtml(r.nome)}</h3>
+        <span class="hint">${clientesRota.length} cliente${clientesRota.length===1?"":"s"}</span>
+      </div>
+      <div class="panel-body">
+        <div class="field-row" style="align-items:flex-end; margin-bottom:12px;">
+          <div class="field" style="max-width:90px;"><label>Saída</label><input type="text" class="rom-rota-horario" data-rota-id="${rid}" value="${escapeHtml(r.horario||"")}" placeholder="8:00"></div>
+          <div class="field"><label>Motorista</label><input type="text" class="rom-rota-motorista" data-rota-id="${rid}" value="${escapeHtml(r.motorista_nome||"")}"></div>
+          <div class="field"><label>Veículo</label><input type="text" class="rom-rota-veiculo" data-rota-id="${rid}" value="${escapeHtml(r.veiculo||"")}"></div>
+          <button class="btn small ghost" data-romaneio-rota-salvar="${rid}">Salvar rota</button>
+        </div>
+        <div class="table-wrap"><table>
+          <thead><tr><th style="width:60px;">Ordem</th><th>Cliente</th><th>Endereço de entrega</th><th style="width:1%;"></th></tr></thead>
+          <tbody>
+            ${clientesRota.length ? clientesRota.map(([cid,c], i) => `<tr>
+              <td><div style="display:flex; gap:2px;">
+                <button class="btn small ghost" data-romaneio-subir="${cid}" data-rota-id="${rid}" ${i===0?"disabled":""} title="Subir">↑</button>
+                <button class="btn small ghost" data-romaneio-desce="${cid}" data-rota-id="${rid}" ${i===clientesRota.length-1?"disabled":""} title="Descer">↓</button>
+              </div></td>
+              <td class="name-cell">${escapeHtml(c.nome_cliente)}</td>
+              <td><div style="display:flex; gap:6px; align-items:center;">
+                <input type="text" class="rom-cli-endereco" data-contrato-id="${cid}" value="${escapeHtml(c.endereco_entrega||"")}" placeholder="Rua, número, bairro, cidade" style="flex:1; min-width:180px;">
+                <button class="btn small ghost" data-romaneio-end-salvar="${cid}">Salvar</button>
+                ${c.endereco_entrega ? `<a href="${pcpRomaneioUrlMapa(c.endereco_entrega)}" target="_blank" rel="noopener" class="btn small ghost">Ver no mapa</a>` : ""}
+              </div></td>
+              <td><div style="display:flex; gap:6px;">
+                <select class="rom-cli-mover" data-contrato-id="${cid}" style="width:160px;">
+                  <option value="">Mover pra outra rota...</option>
+                  ${rotasLista.filter(([orid]) => orid !== rid).map(([orid,orota]) => `<option value="${orid}">${escapeHtml(orota.nome)}</option>`).join("")}
+                </select>
+                <button class="btn small ghost" data-romaneio-remover="${cid}" title="Tirar da rota">Remover</button>
+              </div></td>
+            </tr>`).join("") : `<tr><td colspan="4" class="empty-state">Nenhum cliente nesta rota ainda.</td></tr>`}
+          </tbody>
+        </table></div>
+        <div class="field-row" style="align-items:flex-end; margin-top:10px;">
+          <div class="field" style="flex:2;"><label>Adicionar cliente à rota</label>
+            <select class="rom-add-cliente" data-rota-id="${rid}">
+              <option value="">— selecione —</option>
+              ${clientesAtivosOrdenados.map(([id,c]) => `<option value="${id}">${escapeHtml(c.nome_cliente)}${c.rota_id === rid ? " (já nesta rota)" : (c.rota_id ? ` (em ${escapeHtml(rotas.get(c.rota_id)?.nome||"outra rota")})` : "")}</option>`).join("")}
+            </select>
+          </div>
+          <button class="btn small primary" data-romaneio-add="${rid}">Adicionar</button>
+        </div>
+      </div>
+    </div>`;
+  };
+  const novaRotaPanel = `<div class="panel" style="margin-bottom:14px;">
+    <div class="panel-head"><h3>Nova rota</h3></div>
+    <div class="panel-body">
+      <div class="field-row" style="align-items:flex-end;">
+        <div class="field" style="flex:2;"><label>Nome</label><input type="text" id="rom-nova-nome" placeholder="Ex.: Rota 1"></div>
+        <div class="field" style="max-width:90px;"><label>Saída</label><input type="text" id="rom-nova-horario" placeholder="8:00"></div>
+        <div class="field"><label>Motorista</label><input type="text" id="rom-nova-motorista"></div>
+        <div class="field"><label>Veículo</label><input type="text" id="rom-nova-veiculo"></div>
+        <button class="btn small primary" id="rom-nova-criar">Criar rota</button>
+      </div>
+    </div>
+  </div>`;
+  const semRotaPanel = semRota.length ? `<div class="panel" style="margin-bottom:14px; border-color:var(--warn);">
+    <div class="panel-head"><h3>Clientes sem rota</h3><span class="hint">${semRota.length}</span></div>
+    <div class="panel-body">
+      <div class="footnote" style="margin:0 0 10px;">Esses clientes ainda não foram atribuídos a nenhuma rota.</div>
+      <div class="table-wrap"><table><tbody>
+        ${semRota.map(([cid,c]) => `<tr>
+          <td class="name-cell">${escapeHtml(c.nome_cliente)}</td>
+          <td style="text-align:right;">
+            <select class="rom-atribuir-direto" data-contrato-id="${cid}" style="width:220px;">
+              <option value="">Atribuir à rota...</option>
+              ${rotasLista.map(([rid,r]) => `<option value="${rid}">${escapeHtml(r.nome)}</option>`).join("")}
+            </select>
+          </td>
+        </tr>`).join("")}
+      </tbody></table></div>
+    </div>
+  </div>` : "";
+  return rotasLista.map(rotaPanelHtml).join("") + novaRotaPanel + semRotaPanel;
 }
 // pequeno painel da área (pedido do Marcelo, 19/10/2026): rotas do dia, clientes sem rota (precisam de
 // atenção antes de imprimir) e total de entregas/pessoas — o mesmo resumo que já aparecia espalhado nos
@@ -14790,9 +14955,10 @@ function pcpRomaneioHtml(grupos){
         ${!semRota ? `<button class="btn small primary" data-romaneio-imprimir="${g.rotaId}" style="margin-left:auto;">Imprimir romaneio</button>` : ""}
       </div>
       <div class="panel-body">
-        ${semRota ? `<p class="footnote" style="margin:0 0 10px;">Esses clientes não têm rota de entrega cadastrada — edite o contrato pra atribuir uma.</p>` : ""}
+        ${semRota ? `<p class="footnote" style="margin:0 0 10px;">Esses clientes não têm rota de entrega cadastrada — atribua uma no painel "Clientes sem rota" acima.</p>` : ""}
         ${g.clientes.map(cli => `<div style="margin-bottom:10px; padding-bottom:10px; border-bottom:1px solid var(--border);">
           <div style="display:flex; justify-content:space-between; font-weight:600; margin-bottom:4px;"><span>${escapeHtml(cli.nome)}</span><span class="hint">${fmtNum(cli.pessoas,0)} pessoas</span></div>
+          ${cli.endereco ? `<div class="footnote" style="margin-bottom:4px;">${escapeHtml(cli.endereco)}</div>` : ""}
           <table style="width:100%; font-size:13px;"><tbody>${cli.linhas.map(l => `<tr><td class="name-cell">${escapeHtml(l.nome)}</td><td class="num-cell">${l.unidade !== undefined ? `${fmtNum(l.qtd,2)} ${escapeHtml(l.unidade||"")}` : pcpFmtQtd(l.qtd, l.fichaId)}</td></tr>`).join("")}</tbody></table>
         </div>`).join("")}
       </div>
@@ -14821,6 +14987,7 @@ function pcpRomaneioViaHtml(cli, viaLabel, contextoRota){
       <div style="font-size:10px; color:#666; text-transform:uppercase; letter-spacing:.04em;">${escapeHtml(viaLabel)}</div>
     </div>
     <div style="font-size:10.5px; color:#666; margin-bottom:4px;">${contextoRota} · ${fmtNum(cli.pessoas,0)} pessoas</div>
+    ${cli.endereco ? `<div style="font-size:11px; color:#333; margin-bottom:6px;">📍 ${escapeHtml(cli.endereco)}</div>` : ""}
     ${pcpRomaneioSecaoHtml("Quente", quente)}
     ${pcpRomaneioSecaoHtml("Frio", frio)}
     ${pcpRomaneioSecaoHtml("Outros", outros)}
@@ -14835,7 +15002,7 @@ function pcpRomaneioViaHtml(cli, viaLabel, contextoRota){
 // fica com a outra), e cada via já separada em Quente/Frio (classificação em pcpRomaneioCategoriaGrupo).
 function pcpImprimirRomaneio(grupo, semana, dia){
   if(!grupo.clientes.length){ showAlert("Nada a entregar nesta rota."); return; }
-  const contextoRota = `${escapeHtml(grupo.rota?.nome || "Sem rota")}${grupo.rota?.motorista_nome ? " · " + escapeHtml(grupo.rota.motorista_nome) : ""}${grupo.rota?.veiculo ? " · " + escapeHtml(grupo.rota.veiculo) : ""} · ${escapeHtml(diaSemanaExtenso(dia))} ${escapeHtml(fmtDataCompleta(dataDoDia(semana, dia)))}`;
+  const contextoRota = `${escapeHtml(grupo.rota?.nome || "Sem rota")}${grupo.rota?.motorista_nome ? " · " + escapeHtml(grupo.rota.motorista_nome) : ""}${grupo.rota?.veiculo ? " · " + escapeHtml(grupo.rota.veiculo) : ""}${grupo.rota?.horario ? " · saída " + escapeHtml(grupo.rota.horario) : ""} · ${escapeHtml(diaSemanaExtenso(dia))} ${escapeHtml(fmtDataCompleta(dataDoDia(semana, dia)))}`;
   const folhas = grupo.clientes.map(cli => `<div class="rom-folha">
       ${pcpRomaneioViaHtml(cli, "Via motorista", contextoRota)}
       <div style="text-align:center; font-size:9px; color:#999; margin:10px 0; border-top:1px dashed #999; line-height:0;"><span style="background:#fff; padding:0 8px; position:relative; top:-6px;">✂ recorte aqui</span></div>
@@ -18249,7 +18416,7 @@ async function renderPCP(){
                ${pcpConferenciaHtml(b.linhas)}
              </div>`).join(`<div style="height:18px;"></div>`)}</div>`
     ) : ehRomaneio ? (
-      `${pcpRomaneioPainelHtml(romaneioGrupos)}${pcpRomaneioHtml(romaneioGrupos)}`
+      `${pcpRomaneioPainelHtml(romaneioGrupos)}${pcpRomaneioGerenciarHtml()}${pcpRomaneioHtml(romaneioGrupos)}`
     ) : ehCafe ? ((() => {
       // 11/11/2026, pedido do Marcelo ("mesmo padrão de caixas de Substituições"): painel "Dias da semana"
       // (visual de caixa/chip igual Ajustes/Substituições, mas SEM multi-seleção — ver comentário grande
@@ -18948,6 +19115,52 @@ async function renderPCP(){
       const grupo = romaneioGrupos.find(g => g.rotaId === btn.dataset.romaneioImprimir);
       if(grupo) pcpImprimirRomaneio(grupo, pcpSemanaSel, pcpDiaSel);
     }));
+    // ---------- Montagem da rota (17/11/2026) — binds da pcpRomaneioGerenciarHtml ----------
+    content.querySelectorAll("[data-romaneio-rota-salvar]").forEach(btn => btn.addEventListener("click", async () => {
+      const rid = btn.dataset.romaneioRotaSalvar;
+      const ok = await pcpSalvarRota(rid, {
+        horario: content.querySelector(`.rom-rota-horario[data-rota-id="${rid}"]`).value.trim() || null,
+        motorista_nome: content.querySelector(`.rom-rota-motorista[data-rota-id="${rid}"]`).value.trim() || null,
+        veiculo: content.querySelector(`.rom-rota-veiculo[data-rota-id="${rid}"]`).value.trim() || null
+      });
+      if(ok){ await loadRotas(); renderPCP(); }
+    }));
+    content.querySelectorAll("[data-romaneio-subir]").forEach(btn => btn.addEventListener("click", () => pcpRomaneioMoverCliente(btn.dataset.rotaId, btn.dataset.romaneioSubir, -1)));
+    content.querySelectorAll("[data-romaneio-desce]").forEach(btn => btn.addEventListener("click", () => pcpRomaneioMoverCliente(btn.dataset.rotaId, btn.dataset.romaneioDesce, 1)));
+    content.querySelectorAll("[data-romaneio-end-salvar]").forEach(btn => btn.addEventListener("click", async () => {
+      const cid = btn.dataset.romaneioEndSalvar;
+      const endereco = content.querySelector(`.rom-cli-endereco[data-contrato-id="${cid}"]`).value.trim() || null;
+      const ok = await pcpRomaneioSalvarContrato(cid, { endereco_entrega: endereco });
+      if(ok) renderPCP();
+    }));
+    content.querySelectorAll(".rom-cli-mover").forEach(sel => sel.addEventListener("change", () => {
+      if(sel.value) pcpRomaneioMoverParaOutraRota(sel.dataset.contratoId, sel.value);
+    }));
+    content.querySelectorAll("[data-romaneio-remover]").forEach(btn => btn.addEventListener("click", () => {
+      if(confirm("Tirar este cliente da rota?")) pcpRomaneioRemoverCliente(btn.dataset.romaneioRemover);
+    }));
+    content.querySelectorAll("[data-romaneio-add]").forEach(btn => btn.addEventListener("click", () => {
+      const rid = btn.dataset.romaneioAdd;
+      const sel = content.querySelector(`.rom-add-cliente[data-rota-id="${rid}"]`);
+      if(sel.value) pcpRomaneioAdicionarCliente(rid, sel.value);
+    }));
+    content.querySelectorAll(".rom-atribuir-direto").forEach(sel => sel.addEventListener("change", () => {
+      if(sel.value) pcpRomaneioMoverParaOutraRota(sel.dataset.contratoId, sel.value);
+    }));
+    const btnNovaRota = document.getElementById("rom-nova-criar");
+    if(btnNovaRota) btnNovaRota.addEventListener("click", async () => {
+      const nome = document.getElementById("rom-nova-nome").value.trim();
+      if(!nome){ showAlert("Informe o nome da rota."); return; }
+      await pcpSalvarRota(null, {
+        nome,
+        horario: document.getElementById("rom-nova-horario").value.trim() || null,
+        motorista_nome: document.getElementById("rom-nova-motorista").value.trim() || null,
+        veiculo: document.getElementById("rom-nova-veiculo").value.trim() || null,
+        ativo: true
+      });
+      await loadRotas();
+      renderPCP();
+    });
   } else if(ehCafe){
     // Clientes (11/11/2026, mesmo padrão de Ajustes/Produção): atalhos trocam a unidade do topo e sempre
     // voltam pcpCafeClientesSel pra null ("todos" da unidade nova); chip individual e "Limpar seleção"
