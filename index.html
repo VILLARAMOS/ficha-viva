@@ -13255,13 +13255,18 @@ function pcpCalcularDia(semana, dia, unidadeFiltro, servicosFiltro, clienteFiltr
         if(!(qtd > 0)) return;
         teveItem = true;
         teveItemPorTurno[turnoItem] = true;
-        const cli = clientes.get(contratoId) || { id: contratoId, nome: ct.nome_cliente, unidade: ct.unidade, pessoas: 0, produtos: new Set(), porServico: {almoco:0, jantar:0, ceia:0} };
+        const cli = clientes.get(contratoId) || { id: contratoId, nome: ct.nome_cliente, unidade: ct.unidade, pessoas: 0, marmitas: 0, produtos: new Set(), porServico: {almoco:0, jantar:0, ceia:0} };
         cli.pessoas += qtd; cli.produtos.add(cat.nome);
         // soma por serviço (16/10/2026, Tarefa 11 — grade de substituições): é o teto de quantas pessoas
         // desse cliente podem ser substituídas NAQUELE serviço, somando todos os itens/formatos que caem
         // no mesmo turno (ex. cuba + marmita do mesmo cliente no almoço contam juntos, igual já fazia o
         // protótipo antigo com "Alm 40 + 10 marm.").
         cli.porServico[turnoItem] = (cli.porServico[turnoItem] || 0) + qtd;
+        // `marmitas` (17/11/2026, pedido do Marcelo — Conferência): soma só a parte em formato marmita/
+        // marmita especial, separada de `pessoas` (que soma TODOS os formatos do cliente no dia — cuba/
+        // transportado + marmita juntos). Campo novo, só adiciona informação — nenhum código existente lê
+        // `cli.marmitas`, então nenhuma tela/cálculo que já usa `cli.pessoas` muda de comportamento.
+        if(cat.tipo_custo === "cardapio_marmita" || cat.tipo_custo === "cardapio_marmita_especial") cli.marmitas += qtd;
         clientes.set(contratoId, cli);
         pessoasTot += qtd;
         pcpProducaoUnidadeItem(almocoIdx, ci.produto_id, ct, contratoId, ct.nome_cliente, semana, dia, qtd, receitas, diretos, avisos, substPorTurno[turnoItem]);
@@ -16467,7 +16472,27 @@ function pcpConferenciaLinhas(res, dia){
   if(!res.clientes.length) return [];
   return res.clientes.map(cli => {
     const itens = [];
-    res.receitas.forEach(r => { const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id); if(p) itens.push({ chave: "ficha:"+r.fichaId, nome: r.nome, qtdPrevista: p.qtd, unidade: null, fichaId: r.fichaId }); });
+    res.receitas.forEach(r => {
+      // Suco (17/11/2026, pedido do Marcelo): só sai na conferência pra quem recebe em formato marmita —
+      // comida transportada faz o próprio suco na unidade do cliente (não entra na pesagem/impressão da
+      // cozinha — ver pcpSetorDoGrupo "fora"), então a cozinha central nunca embala suco pra esse formato.
+      // `r.porCliente` tem 1 entrada por combinação cliente×produto (chave = contratoId+"|"+produtoId —
+      // ver pcpAcumularDia), então um cliente misto (transportado + marmita, caso comum: a maioria dos
+      // contratos tem os dois cardápios cadastrados) pode ter 2 entradas pra essa mesma ficha. Pra suco,
+      // soma só as entradas cujo produto é marmita/marmita especial; se não tiver nenhuma (cliente só
+      // transportado), o item nem aparece — nada pra conferir/embalar.
+      const ehSuco = /^SUCO/.test(r.grupo || "");
+      const entradas = [...r.porCliente.values()].filter(x => x.contratoId === cli.id);
+      if(!entradas.length) return;
+      let p;
+      if(ehSuco){
+        const marmitas = entradas.filter(x => { const c = catalogoPorProduto(x.produtoId); return c && (c.tipo_custo === "cardapio_marmita" || c.tipo_custo === "cardapio_marmita_especial"); });
+        p = marmitas.length ? { qtd: marmitas.reduce((s,x) => s + x.qtd, 0) } : null;
+      } else {
+        p = entradas[0]; // demais itens: comportamento de sempre (1ª entrada), igual Volume por cliente/Etiquetas
+      }
+      if(p) itens.push({ chave: "ficha:"+r.fichaId, nome: r.nome, qtdPrevista: p.qtd, unidade: null, fichaId: r.fichaId });
+    });
     res.diretos.forEach(d => { const p = [...d.porCliente.values()].find(x => x.contratoId === cli.id); if(p) itens.push({ chave: "direto:"+d.insumoId, nome: d.nome, qtdPrevista: p.qtd, unidade: d.unidade||"" }); });
     itens.forEach(it => {
       const salvo = pcpConferenciaCache.get(dia + "|" + cli.id + "|" + it.chave);
@@ -16633,7 +16658,7 @@ function pcpConferenciaHtml(linhas){
   const fichasSubst = pcpFichasSubstituiveis();
   const opcoesFicha = fichasSubst.map(f => `<option value="${f.id}">${escapeHtml(f.nome)}</option>`).join("");
   return linhas.map(({cliente, itens, substituicoes}) => `<div class="panel" style="margin-bottom:14px;">
-    <div class="panel-head"><h3>${escapeHtml(cliente.nome)}</h3><span class="hint">${fmtNum(cliente.pessoas,0)} pessoas</span></div>
+    <div class="panel-head"><h3>${escapeHtml(cliente.nome)}</h3><span class="hint">${fmtNum(cliente.pessoas,0)} pessoas${cliente.marmitas ? ` · ${fmtNum(cliente.marmitas,0)} marmitas` : ""}</span></div>
     ${itens.length ? `<div class="panel-body"><div class="table-wrap"><table>
       <thead><tr><th>Item</th><th style="text-align:right;">Previsto</th><th style="text-align:right;">Cubas</th><th style="text-align:right;">Enviado</th><th style="text-align:center;">Cozinha</th><th style="text-align:center;">Expedição</th><th>Observação</th></tr></thead>
       <tbody>${itens.map(it => `
@@ -16683,7 +16708,7 @@ function pcpImprimirConferencia(blocosDia, semana, unidadeLabel){
     const corpo = linhas.map(({cliente, itens, substituicoes}) => `<div style="break-inside:avoid; page-break-inside:avoid; border:1px solid #333; border-radius:6px; padding:10px 12px; margin-bottom:12px;">
         <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px;">
           <div style="font-weight:700; font-size:13px;">${escapeHtml(cliente.nome)}</div>
-          <div style="font-size:10px; color:#666;">${fmtNum(cliente.pessoas,0)} pessoas</div>
+          <div style="font-size:10px; color:#666;">${fmtNum(cliente.pessoas,0)} pessoas${cliente.marmitas ? ` · ${fmtNum(cliente.marmitas,0)} marmitas` : ""}</div>
         </div>
         ${itens.length ? `<table style="width:100%; border-collapse:collapse; font-size:10px; table-layout:fixed;">
           <thead><tr>
