@@ -16518,18 +16518,27 @@ async function pcpCarregarConferencia(semana, dias, unidade){
 // QUANTIDADE DE MARMITAS (ver cliente.marmitas, somado em pcpCalcularDia), nunca o detalhe peso-a-peso de
 // cada prato. Por isso só entra na tabela de itens a entrada cujo produto é "cardapio_refeicao" (transportado
 // puro) — entradas de marmita/marmita especial da mesma receita (`r.porCliente` tem 1 entrada por produto,
-// chave contratoId+"|"+produtoId, ver pcpAcumularDia) nunca aparecem aqui. Suco nunca entra, nem pro
-// transportado: é feito na própria unidade do cliente (pcpSetorDoGrupo "fora"), a cozinha central não pesa.
+// chave contratoId+"|"+produtoId, ver pcpAcumularDia) nunca aparecem aqui.
+// EXCEÇÃO (17/11/2026, mesmo pedido, confirmado depois de implementar no resto do PCP): suco nunca entra
+// pro transportado puro (continua feito na própria unidade do cliente, pcpSetorDoGrupo "fora", a cozinha
+// central não pesa), mas ENTRA como item pra conferir quando tem demanda de marmita — é o suco que sai
+// embalado junto com as marmitas desse cliente, e isso sim precisa ser conferido na expedição. Quantidade é
+// só a parte marmita (ver pcpEntradasClientePorItem, mesma régua da Composição principal/Receitas da
+// produção) — nunca soma com a parte fantasma do transportado.
 // Repare que isso quebra de propósito a paridade com Volume por cliente/Etiquetas (que ainda mostram só a
 // 1ª entrada, sem distinguir formato) — são telas com objetivo diferente, Conferência não é "tudo que o
-// cliente recebe", é só "o que a cozinha pesa/confere pra mandar pro transportado".
+// cliente recebe", é só "o que precisa ser confirmado antes de sair pro transportado (+ suco da marmita)".
 function pcpConferenciaLinhas(res, dia){
   if(!res.clientes.length) return [];
   const ehTransportado = x => { const c = catalogoPorProduto(x.produtoId); return c && c.tipo_custo === "cardapio_refeicao"; };
   return res.clientes.map(cli => {
     const itens = [];
     res.receitas.forEach(r => {
-      if(/^SUCO/.test(r.grupo || "")) return;
+      if(/^SUCO/.test(r.grupo || "")){
+        const qtd = pcpEntradasClientePorItem(r, cli.id).reduce((s,x)=>s+x.qtd,0);
+        if(qtd > 0) itens.push({ chave: "ficha:"+r.fichaId, nome: r.nome, qtdPrevista: qtd, unidade: null, fichaId: r.fichaId });
+        return;
+      }
       const p = [...r.porCliente.values()].find(x => x.contratoId === cli.id && ehTransportado(x));
       if(p) itens.push({ chave: "ficha:"+r.fichaId, nome: r.nome, qtdPrevista: p.qtd, unidade: null, fichaId: r.fichaId });
     });
