@@ -13993,6 +13993,8 @@ let pcpAcgGerado = false;
 // sentido abrir já com os 7 dias marcados.
 let pcpConfDiasSel = new Set();
 let pcpConfClientesSel = null;
+// "Visualizar cardápio da semana" (17/11/2026) — só liga/desliga o bloco inline na tela; não grava nada.
+let pcpConfVerCardapio = false;
 // dias selecionados na "Produção da cozinha" (10/11/2026, pedido do Marcelo) — multi-seleção PLENA desde
 // 10/11/2026 (substitui o antigo toggle de 1 dia + checkbox de impressão em lote): cada dia marcado aqui
 // entra na tabela gerada em tela E na impressão. Só da sessão, não grava no banco. Começa vazio; ao
@@ -16598,23 +16600,31 @@ function pcpPainelAreaHtml(itens){
 // de uma lista de linhas só — soma os cartões pelos dias marcados e "Clientes" conta clientes distintos
 // (não soma duplicado quando o mesmo cliente aparece em mais de um dia marcado). Revisão pendente vira
 // alerta se QUALQUER um dos dias marcados estiver pendente.
+// 17/11/2026 (pedido do Marcelo): "Cozinha confirmou"/"Expedição confirmou" ganharam "(preparos)" no
+// rótulo — o número é de PREPAROS (linhas de item×cliente), não de clientes, pra não confundir com o
+// cartão "Clientes" do lado. "Substituições lançadas" passou a listar QUAL substituição e a quantidade de
+// cada uma (antes só mostrava o total) — "{pessoas}× {ficha} — {cliente} ({turno})", uma por linha.
 function pcpConferenciaPainelHtml(blocosDia, unidadeFiltro){
-  let totalItens = 0, confCozinha = 0, confExped = 0, totalSubst = 0, pendente = false;
+  let totalItens = 0, confCozinha = 0, confExped = 0, pendente = false;
   const clientesSet = new Set();
+  const substDetalhes = [];
   (blocosDia||[]).forEach(({dia, linhas}) => {
     linhas.forEach(l => {
       clientesSet.add(l.cliente.id);
       totalItens += l.itens.length;
       l.itens.forEach(it => { if(it.cozinhaOk) confCozinha++; if(it.expedicaoOk) confExped++; });
-      totalSubst += l.substituicoes.length;
+      l.substituicoes.forEach(s => substDetalhes.push(`${fmtNum(s.pessoas,0)}× ${escapeHtml(s.fichaNome)} — ${escapeHtml(l.cliente.nome)} (${escapeHtml(pcpServicoAbrev(s.servico))})`));
     });
     if(pcpSubstituicoesPendentes(dia, unidadeFiltro).length) pendente = true;
   });
   return `<div class="es-kpis" style="margin-bottom:14px;">
     <div class="vn-card"><div class="vn-label">Clientes</div><div class="vn-value">${clientesSet.size}</div></div>
-    <div class="vn-card${totalItens && confCozinha === totalItens ? " ok" : ""}"><div class="vn-label">Cozinha confirmou</div><div class="vn-value">${confCozinha}/${totalItens}</div></div>
-    <div class="vn-card${totalItens && confExped === totalItens ? " ok" : ""}"><div class="vn-label">Expedição confirmou</div><div class="vn-value">${confExped}/${totalItens}</div></div>
-    <div class="vn-card"><div class="vn-label">Substituições lançadas</div><div class="vn-value">${totalSubst}</div>${pendente ? `<div class="vn-sub" style="color:var(--warn);">revisão pendente</div>` : ""}</div>
+    <div class="vn-card${totalItens && confCozinha === totalItens ? " ok" : ""}"><div class="vn-label">Cozinha confirmou (preparos)</div><div class="vn-value">${confCozinha}/${totalItens}</div></div>
+    <div class="vn-card${totalItens && confExped === totalItens ? " ok" : ""}"><div class="vn-label">Expedição confirmou (preparos)</div><div class="vn-value">${confExped}/${totalItens}</div></div>
+    <div class="vn-card"><div class="vn-label">Substituições lançadas</div><div class="vn-value">${substDetalhes.length}</div>
+      ${substDetalhes.length ? `<div class="vn-sub">${substDetalhes.join("<br>")}</div>` : ""}
+      ${pendente ? `<div class="vn-sub" style="color:var(--warn);">revisão pendente</div>` : ""}
+    </div>
   </div>`;
 }
 function pcpConferenciaHtml(linhas){
@@ -16678,6 +16688,7 @@ function pcpImprimirConferencia(blocosDia, semana, unidadeLabel){
           <thead><tr>
             <th style="text-align:left; border-bottom:1px solid #999; padding:2px 3px;">Item</th>
             <th style="text-align:right; border-bottom:1px solid #999; padding:2px 3px;">Previsto</th>
+            <th style="text-align:right; border-bottom:1px solid #999; padding:2px 3px;">Cubas</th>
             <th style="text-align:right; border-bottom:1px solid #999; padding:2px 3px;">Enviado</th>
             <th style="text-align:center; border-bottom:1px solid #999; padding:2px 3px;">Cozinha</th>
             <th style="text-align:center; border-bottom:1px solid #999; padding:2px 3px;">Exped.</th>
@@ -16686,6 +16697,7 @@ function pcpImprimirConferencia(blocosDia, semana, unidadeLabel){
           <tbody>${itens.map(it => `<tr>
             <td style="padding:2px 3px; border-top:1px solid #ddd;">${escapeHtml(it.nome)}</td>
             <td style="padding:2px 3px; border-top:1px solid #ddd; text-align:right;">${it.unidade ? `${fmtNum(it.qtdPrevista,2)} ${escapeHtml(it.unidade)}` : pcpFmtQtd(it.qtdPrevista)}</td>
+            <td style="padding:2px 3px; border-top:1px solid #ddd; text-align:right;">${it.fichaId ? pcpCubaTxt(it.fichaId, it.qtdPrevista) : "—"}</td>
             <td style="padding:2px 3px; border-top:1px solid #ddd; text-align:right;">${it.qtdEnviada != null ? fmtNum(it.qtdEnviada,2) : "______"}</td>
             <td style="padding:2px 3px; border-top:1px solid #ddd; text-align:center;">${it.cozinhaOk ? "✓" : "☐"}</td>
             <td style="padding:2px 3px; border-top:1px solid #ddd; text-align:center;">${it.expedicaoOk ? "✓" : "☐"}</td>
@@ -17885,10 +17897,7 @@ async function renderPCP(){
   document.getElementById("topbar-actions").innerHTML = (ehAcougue || ehEstoque) ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-acg-config">Cortes e dias</button>
-    </div>` : ehConferencia ? (pcpUnidadeSel !== "todos" ? `
-    <div style="display:flex; align-items:center; gap:8px;">
-      <button class="btn small primary" id="pcp-conf-imprimir">Imprimir conferência (dias marcados)</button>
-    </div>` : "") : (ehCafe || ehSubst || ehAjustes || ehSalSob) ? "" : ehRomaneio ? `
+    </div>` : (ehCafe || ehSubst || ehAjustes || ehSalSob || ehConferencia) ? "" : ehRomaneio ? `
     <div style="display:flex; align-items:center; gap:8px;">
       <button class="btn small ghost" id="pcp-rotas-gerenciar">Gerenciar rotas</button>
     </div>` : "";
@@ -18058,9 +18067,23 @@ async function renderPCP(){
     await pcpCarregarConferencia(pcpSemanaSel, confDiasAtivos, unidadeFiltro);
     confBlocosDia = confDiasAtivos.map(d => {
       const resDia = pcpCalcularDia(pcpSemanaSel, d, unidadeFiltro, servicosFiltro, confClienteFiltro);
-      return { dia: d, linhas: pcpConferenciaLinhas(resDia, d) };
+      return { dia: d, res: resDia, linhas: pcpConferenciaLinhas(resDia, d) };
     });
   }
+  // "Visualizar cardápio da semana" (17/11/2026, pedido do Marcelo) — modelos de cardápio (grupo+número)
+  // usados pelos clientes marcados na unidade, na SEMANA INTEIRA (os 7 dias, independente de quais dias
+  // estão marcados no painel "Dias da semana" acima — esse painel decide quais dias viram bloco de
+  // conferência, não o cardápio exibido aqui). Passa servicosFiltro=null (todos os turnos) pra não perder
+  // nenhum modelo por causa do filtro de turno de outra aba. Mesmo motor de pcpCardapiosDoDia/
+  // pcpImprimirCardapiosDoDia (Produção da cozinha) — nunca diverge do que realmente entra na produção.
+  const confModelosSemana = (ehConferencia && unidadeFiltro && unidadeFiltro !== "todos") ? (() => {
+    const modelos = new Map();
+    DIAS_ORDEM.forEach(d => {
+      const r = pcpCalcularDia(pcpSemanaSel, d, unidadeFiltro, null, confClienteFiltro);
+      pcpCardapiosDoDia(r).forEach(m => modelos.set(`${m.grupo}|${m.num}`, m));
+    });
+    return [...modelos.values()].sort((a,b) => a.grupo.localeCompare(b.grupo) || a.num - b.num);
+  })() : [];
   if(ehCafe) await pcpCarregarCafePadaria(pcpDataSel);
   // Café/Padaria (11/11/2026, pedido do Marcelo "mesmo padrão de caixas de Substituições"): painel "Clientes"
   // igual Ajustes do dia — grid2-box de Matriz/Filial com atalhos, filtro FUNCIONAL sobre os cards do dia
@@ -18123,6 +18146,18 @@ async function renderPCP(){
         ? `<div class="empty-state">Selecione Matriz ou Filial acima — a conferência é por unidade real (é o que sai na doca de verdade), "Ambas" não se aplica aqui.</div>`
         : `${pcpConfFiltrosHtml(pcpConfDiasSel, confContratosMatriz, confContratosFilial, confIdsMatriz, confIdsFilial, confClienteFiltro, confIdsUnidade, pcpConfClientesSel, unidadeFiltro)}
            ${pcpConferenciaPainelHtml(confBlocosDia, unidadeFiltro)}
+           <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:14px;">
+             <button class="btn small primary" id="pcp-conf-imprimir">Imprimir conferência (dias marcados)</button>
+             <button class="btn small ghost" id="pcp-conf-ver-cardapio">${pcpConfVerCardapio ? "Ocultar" : "Ver"} cardápio da semana</button>
+             <button class="btn small primary" id="pcp-conf-imprimir-cardapio" ${confModelosSemana.length ? "" : "disabled"}>Imprimir cardápio da semana</button>
+           </div>
+           ${pcpConfVerCardapio ? `<div class="panel" style="margin-bottom:14px;">
+             <div class="panel-head"><h3>Cardápio da semana</h3><span class="hint">${escapeHtml(rotuloSemana(pcpSemanaSel))} · ${escapeHtml(nomeUnidadeCompra(unidadeFiltro))}</span></div>
+             <div class="panel-body">
+               <style>${cardapioBlocoStyle()} .cps-bloco{page-break-before:auto;}</style>
+               ${confModelosSemana.length ? confModelosSemana.map(m => cardapioBlocoHtml(m.grupo, m.num, pcpSemanaSel, false, true)).join(`<div style="height:16px;"></div>`) : `<div class="empty-state">Nenhum cardápio identificado para os clientes/unidade marcados.</div>`}
+             </div>
+           </div>` : ""}
            <div id="pcp-conf-wrap">${!confDiasAtivos.length ? `<div class="empty-state">Marque pelo menos 1 dia da semana acima.</div>` : confBlocosDia.map(b => `
              <div data-conf-dia-bloco="${b.dia}">
                ${confDiasAtivos.length > 1 ? `<h3 style="font-size:15px; margin:4px 0 10px;">${escapeHtml(DIA_LABEL[b.dia])} · ${escapeHtml(fmtDataCompleta(dataDoDia(pcpSemanaSel,b.dia)))}</h3>` : ""}
@@ -18768,6 +18803,16 @@ async function renderPCP(){
     if(btnConfCliLimpar) btnConfCliLimpar.addEventListener("click", () => { pcpConfClientesSel = null; renderPCP(); });
     const btnConfImprimir = document.getElementById("pcp-conf-imprimir");
     if(btnConfImprimir) btnConfImprimir.addEventListener("click", () => pcpImprimirConferencia(confBlocosDia, pcpSemanaSel, nomeUnidadeCompra(unidadeFiltro)));
+    // "Visualizar cardápio da semana" (17/11/2026) — só alterna um bloco inline (pcpConfVerCardapio, não
+    // grava nada); "Imprimir" abre 1 janela de impressão por modelo de cardápio encontrado, mesmo motor
+    // de pcpImprimirCardapiosDoDia (Produção da cozinha).
+    const btnConfVerCardapio = document.getElementById("pcp-conf-ver-cardapio");
+    if(btnConfVerCardapio) btnConfVerCardapio.addEventListener("click", () => { pcpConfVerCardapio = !pcpConfVerCardapio; renderPCP(); });
+    const btnConfImprimirCardapio = document.getElementById("pcp-conf-imprimir-cardapio");
+    if(btnConfImprimirCardapio) btnConfImprimirCardapio.addEventListener("click", () => {
+      if(!confModelosSemana.length){ showAlert("Nenhum cardápio identificado para os clientes/unidade marcados."); return; }
+      confModelosSemana.forEach(m => imprimirCardapioCompleto(m.grupo, m.num, pcpSemanaSel));
+    });
     const wrap = document.getElementById("pcp-conf-wrap");
     // 17/11/2026 (multi-dia): salvar/adicionar substituição precisam saber de QUAL dia é a linha — antes
     // era sempre pcpDiaSel (1 dia só na tela); agora acham o dia certo pelo wrapper [data-conf-dia-bloco]
