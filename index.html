@@ -2225,6 +2225,7 @@ function itensDoContrato(contratoId){
 /* ===================================================================== INSUMOS (portado do Ficha Viva) */
 let insumoFilter = "";
 let insumoGrupoFilter = "";
+let insumoMostrarInativos = false; // 18/11/2026: insumos base fundidos numa fusão ficam com ativo=false, nome com sufixo "[fundido em ...]"
 let insumoSort = {field:"nome", dir:"asc"};
 let insumoTabSel = "cadastro"; // "cadastro" (rótulo: Insumos Base) | "compra" (Insumos de Compra) | "estoque"
 let estoqueSubTab = "contagem"; // "contagem" | "entradas" | "movimentar" | "baixa"
@@ -2344,6 +2345,7 @@ function renderTabInsumoCadastro(){
     <div class="search-bar">
       <input type="text" id="insumo-search" placeholder="Buscar insumo…" value="${escapeHtml(insumoFilter)}">
       <select id="insumo-grupo"><option value="">Todos os grupos de compra</option>${grupos.map(g=>`<option value="${escapeHtml(g)}" ${insumoGrupoFilter===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}</select>
+      <label class="footnote" style="align-self:center; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="insumo-inativos" style="width:auto;" ${insumoMostrarInativos?"checked":""}> mostrar inativos (fundidos)</label>
       <span class="footnote" id="insumo-count" style="align-self:center;"></span>
     </div>
     <div class="panel">
@@ -2367,6 +2369,7 @@ function renderTabInsumoCadastro(){
 
   function updateInsumoTable(){
     let rows = [...insumos.entries()].map(([id,d]) => ({id, ...d}));
+    if(!insumoMostrarInativos) rows = rows.filter(r => r.ativo !== false);
     if(insumoGrupoFilter) rows = rows.filter(r => r.grupo_compra === insumoGrupoFilter);
     if(insumoFilter){
       const nf = normalizeText(insumoFilter);
@@ -2384,8 +2387,8 @@ function renderTabInsumoCadastro(){
     document.getElementById("insumo-count").textContent = `${rows.length} de ${insumos.size} insumos`;
     const tbody = document.getElementById("insumo-tbody");
     tbody.innerHTML = rows.map(r => `
-              <tr>
-                <td class="name-cell">${escapeHtml(r.nome)}${r.disponivel_como_receita?' <span class="chip neutral" title="Disponível como receita no Cardápio/Café da manhã">receita</span>':''}</td>
+              <tr${r.ativo===false?' style="opacity:.55;"':''}>
+                <td class="name-cell">${escapeHtml(r.nome)}${r.disponivel_como_receita?' <span class="chip neutral" title="Disponível como receita no Cardápio/Café da manhã">receita</span>':''}${r.ativo===false?' <span class="chip neutral" title="Fundido com outro insumo base">fundido</span>':''}</td>
                 <td class="tag-sheet">${escapeHtml(r.grupo_compra||"—")}</td>
                 <td class="num-cell">${escapeHtml(r.unidade_medida||"—")} ${r.unidade_convertida?("· "+fmtNum(r.unidade_convertida,3)):""}</td>
                 <td class="num-cell">${fmtMoney(r.custo_unitario)}${r.custo_atualizado_em ? `<div class="footnote" style="margin:2px 0 0; text-align:right;" title="${r.custo_anterior != null ? "preço anterior: " + fmtMoney(r.custo_anterior) : ""}">pedido de ${fmtDataYMD(r.custo_atualizado_em)}</div>` : ""}</td>
@@ -2407,6 +2410,7 @@ function renderTabInsumoCadastro(){
   updateInsumoTable();
   document.getElementById("insumo-search").addEventListener("input", e => { insumoFilter = e.target.value; updateInsumoTable(); });
   document.getElementById("insumo-grupo").addEventListener("change", e => { insumoGrupoFilter = e.target.value; updateInsumoTable(); });
+  document.getElementById("insumo-inativos").addEventListener("change", e => { insumoMostrarInativos = e.target.checked; updateInsumoTable(); });
   content.querySelectorAll("#insumo-thead-row th.sortable").forEach(th => th.addEventListener("click", () => {
     const f = th.dataset.field;
     if(insumoSort.field === f) insumoSort.dir = insumoSort.dir === "asc" ? "desc" : "asc";
@@ -2976,7 +2980,7 @@ function openInsumoCompraModal(id, opts){
   const existing = id ? insumosCompra.get(id) : null;
   const baseAtual = existing ? insumos.get(existing.insumo_base_id) : (opts.baseSugeridaId ? insumos.get(opts.baseSugeridaId) : null);
   const root = document.getElementById("modal-root");
-  const insumosOrdenadosModal = [...insumos.entries()].sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+  const insumosOrdenadosModal = [...insumos.entries()].filter(([,ins]) => ins.ativo !== false).sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
   root.innerHTML = `
     <div class="modal-overlay" id="ov">
       <div class="modal" style="max-width:460px;">
@@ -7186,7 +7190,7 @@ function imprimirFichaCompleta(draft, id){
 function abrirBuscaInsumoModal(excludeId, onEscolher, modo){
   const root = document.getElementById("picker-root");
   const ehReceita = modo === "receita";
-  const insumoList = (ehReceita ? insumosComoReceitaOptions(excludeId) : [...insumos.entries()])
+  const insumoList = (ehReceita ? insumosComoReceitaOptions(excludeId) : [...insumos.entries()].filter(([,d]) => d.ativo !== false))
     .sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
   const fichaList = (ehReceita ? [...fichas.entries()] : fichasComoInsumoOptions(excludeId))
     .sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
@@ -7224,7 +7228,7 @@ function abrirBuscaInsumoModal(excludeId, onEscolher, modo){
 
 function renderFichaModal(id, draft){
   const root = document.getElementById("modal-root");
-  const insumoOptions = [...insumos.entries()].sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+  const insumoOptions = [...insumos.entries()].filter(([,d]) => d.ativo !== false).sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
   const fichaIngOptions = fichasComoInsumoOptions(id).sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
 
   root.innerHTML = `
@@ -9726,7 +9730,7 @@ function renderComprasTotais(area, semana, selecionados){
 function abrirBuscarInsumoSimples(onEscolher){
   const root = document.getElementById("picker-root");
   if(!root) return;
-  const insumoList = [...insumos.entries()].sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+  const insumoList = [...insumos.entries()].filter(([,d]) => d.ativo !== false).sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
   function render(busca){
     const nb = normalizeText(busca||"");
     const insF = insumoList.filter(([,d]) => !nb || normalizeText(d.nome).includes(nb));
