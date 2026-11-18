@@ -11082,7 +11082,11 @@ async function openPedidoModal(id, opts){
   });
 
   document.getElementById("pd-imprimir-m").addEventListener("click", () => {
-    if(existing){ imprimirPedido(id); return; }
+    // 18/11/2026, correção (relato da compradora): antes, num pedido já existente, "Imprimir pedido"
+    // chamava imprimirPedido(id) e imprimia o que estava SALVO no banco — se ela tivesse digitado uma
+    // observação (geral ou ao lado do produto) e clicado em Imprimir sem salvar antes, a observação não
+    // saía. Agora sempre monta o impresso a partir do que está na tela (igual ao que "Salvar pedido"
+    // gravaria), pedido novo ou existente, incluindo a observação de cada item.
     const itensValidos = draft.itens.filter(l => l.insumo_id && l.quantidade > 0);
     if(!itensValidos.length){ showAlert("Adicione ao menos um item com insumo e quantidade antes de imprimir."); return; }
     const destIdx = +document.getElementById("pd-destino").value;
@@ -11096,7 +11100,7 @@ async function openPedidoModal(id, opts){
       cnpj_faturamento: document.getElementById("pd-cnpj-fat").value.trim() || null,
       observacoes: document.getElementById("pd-obs").value.trim() || null,
       valor_total: valorTotalItensPedido(itensValidos),
-      itens: itensValidos.map(l => ({ nome:l.nome, quantidade:l.quantidade, unidade: rotuloEmbalagemItem(l, insumos.get(l.insumo_id)) || l.unidade })),
+      itens: itensValidos.map(l => ({ nome:l.nome, quantidade:l.quantidade, unidade: rotuloEmbalagemItem(l, insumos.get(l.insumo_id)) || l.unidade, observacao: (l.observacao||"").trim() || null })),
     });
   });
 
