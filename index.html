@@ -2355,7 +2355,7 @@ function renderTabInsumoCadastro(){
             <th class="sortable" data-field="nome" style="cursor:pointer;">Ingrediente</th>
             <th class="sortable" data-field="grupo_compra" style="cursor:pointer;">Grupo de compra</th>
             <th style="text-align:right;">Unid. compra</th>
-            <th class="sortable" data-field="custo_unitario" style="cursor:pointer; text-align:right;">Custo de compra</th>
+            <th class="sortable" data-field="custo_unitario" style="cursor:pointer; text-align:right;">Custo médio da compra</th>
             <th class="sortable" data-field="custo_kg_l_und" style="cursor:pointer; text-align:right;">Custo kg/L/un (usado nas fichas)</th>
             <th style="text-align:right;">Usado em</th>
             <th></th>
@@ -2391,7 +2391,7 @@ function renderTabInsumoCadastro(){
                 <td class="name-cell">${escapeHtml(r.nome)}${r.disponivel_como_receita?' <span class="chip neutral" title="Disponível como receita no Cardápio/Café da manhã">receita</span>':''}${r.ativo===false?' <span class="chip neutral" title="Fundido com outro insumo base">fundido</span>':''}</td>
                 <td class="tag-sheet">${escapeHtml(r.grupo_compra||"—")}</td>
                 <td class="num-cell">${escapeHtml(r.unidade_medida||"—")} ${r.unidade_convertida?("· "+fmtNum(r.unidade_convertida,3)):""}</td>
-                <td class="num-cell">${fmtMoney(r.custo_unitario)}${r.custo_atualizado_em ? `<div class="footnote" style="margin:2px 0 0; text-align:right;" title="${r.custo_anterior != null ? "preço anterior: " + fmtMoney(r.custo_anterior) : ""}">pedido de ${fmtDataYMD(r.custo_atualizado_em)}</div>` : ""}</td>
+                <td class="num-cell">${fmtMoney(r.custo_unitario)}</td>
                 <td class="num-cell">${fmtMoney(r.custo_kg_l_und)}</td>
                 <td class="num-cell">${usage.get(r.id)||0} ficha(s)</td>
                 <td style="text-align:right; white-space:nowrap;">
