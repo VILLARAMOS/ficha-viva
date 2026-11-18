@@ -5172,6 +5172,40 @@ function fmtDataBr(d){
   return `${dd}/${m}/${y}`;
 }
 
+/* 18/11/2026, pedido do Marcelo (aba Contratos): aviso de vencimento/renovação por cliente — o sistema
+   nunca trava nada no fim do contrato, só avisa quando está próximo do vencimento ou já passou pela
+   renovação automática. "Próximo" = dentro de 60 dias. Datas no formato "YYYY-MM-DD" comparam como texto
+   sem problema (mesmo formato, mesmo tamanho). */
+function contratoAvisoVigencia(c){
+  const hojeISO = new Date().toISOString().slice(0,10);
+  const em60diasISO = new Date(Date.now() + 60*86400000).toISOString().slice(0,10);
+  const tipo = c.tipo_renovacao || null;
+
+  if(tipo === "pendente_assinatura") return { nivel: "alerta", texto: "⏳ minuta pendente de assinatura" };
+
+  if(tipo === "automatica_indeterminado" && !c.data_fim && c.data_fim_prazo_original){
+    return { nivel: "ok", texto: `✅ renovado automaticamente (prazo original venceu ${fmtDataBr(c.data_fim_prazo_original)})` };
+  }
+  if(tipo === "prazo_indeterminado_origem" && !c.data_fim) return { nivel: "ok", texto: "✅ prazo indeterminado" };
+
+  if(c.data_fim){
+    if(c.data_fim < hojeISO){
+      // já passou da data de fim e NÃO foi marcado como renovado automaticamente (senão data_fim estaria em branco) —
+      // ou é termo_aditivo (precisa de assinatura) ou não_renova (precisa de ação), ou simplesmente não foi classificado.
+      if(tipo === "nao_renova") return { nivel: "critico", texto: "⚠ vencido — contrato NÃO renova automaticamente, precisa de ação" };
+      if(tipo === "termo_aditivo") return { nivel: "critico", texto: "⚠ vencido — aguardando termo aditivo assinado" };
+      return { nivel: "critico", texto: "⚠ vencido — verificar renovação" };
+    }
+    if(c.data_fim <= em60diasISO){
+      if(tipo === "nao_renova") return { nivel: "alerta", texto: `⚠ vence em ${fmtDataBr(c.data_fim)} — não renova automaticamente` };
+      if(tipo === "termo_aditivo") return { nivel: "alerta", texto: `⚠ vence em ${fmtDataBr(c.data_fim)} — precisa de termo aditivo` };
+      if(tipo === "automatica_indeterminado") return { nivel: "alerta", texto: `⚠ vence em ${fmtDataBr(c.data_fim)} — se ninguém se manifestar, renova automático` };
+      return { nivel: "alerta", texto: `⚠ vence em ${fmtDataBr(c.data_fim)}` };
+    }
+  }
+  return null;
+}
+
 /* ---- v131: painel Grupo/Matriz/Filial da aba Contratos (contratos ativos/inativos, faturamento,
    orçamento) com alternância Mês/Total — pedido do Marcelo (08/10/2026). Mesma convenção de escopo
    já usada no Painel (apurarResumoMes/visaoNegocioBloco): "matriz"/"filial" batem só com
@@ -5313,6 +5347,9 @@ function renderContratos(){
     const apMes = contratoPainelMesSel ? apurarContrato(id, c, contratoPainelMesSel, almocoIdx, cafeIdx) : null;
     const plMes = contratoPainelMesSel ? apurarPlanejadoContrato(id, c, contratoPainelMesSel, almocoIdx, cafeIdx) : null;
     const vigTxt = (c.data_inicio || c.data_fim) ? `${fmtDataBr(c.data_inicio)} – ${fmtDataBr(c.data_fim)}` : '<span style="color:var(--text-faint);">—</span>';
+    const aviso = contratoAvisoVigencia(c);
+    const avisoCor = aviso ? (aviso.nivel === "critico" ? "var(--danger, #c0392b)" : aviso.nivel === "alerta" ? "var(--warning, #b58105)" : "var(--text-faint)") : null;
+    const avisoHtml = aviso ? `<div style="font-size:11.5px; color:${avisoCor}; margin-top:2px;">${escapeHtml(aviso.texto)}</div>` : "";
     return `
             <tr>
               <td class="name-cell">${escapeHtml(c.nome_cliente)}${!c.ativo ? ' <span class="chip neutral">inativo</span>' : ''}</td>
@@ -5320,7 +5357,7 @@ function renderContratos(){
               <td class="num-cell">${apMes ? fmtMoney(apMes.receita) : "—"}</td>
               <td class="num-cell">${plMes ? fmtMoney(plMes.custo) : "—"}</td>
               <td class="num-cell">${vig.cmv!==null ? fmtPct(vig.cmv) : "—"}</td>
-              <td style="font-size:12.5px; white-space:nowrap;">${vigTxt}</td>
+              <td style="font-size:12.5px; white-space:nowrap;">${vigTxt}${avisoHtml}</td>
               <td style="text-align:right; white-space:nowrap;"><button class="btn small ghost" data-open="${id}">abrir</button></td>
             </tr>`;
   }
@@ -5360,6 +5397,7 @@ function openContratoModal(id){
   const draft = existing ? JSON.parse(JSON.stringify(existing)) : {
     nome_cliente:"", ativo:true, modelo_faturamento:"itemizado", valor_fixo_mensal:null,
     unidade:"matriz", rota_id:null, rota_ordem:null, endereco_entrega:null, horario_entrega:null, data_inicio:null, data_fim:null,
+    cnpj:null, tipo_renovacao:null, data_fim_prazo_original:null,
     cardapio_refeicao_num: REFEICAO_NUMS[0], cardapio_marmita_num: MARMITA_NUMS[0], marmita_especial_ativo:false, cardapio_marmita_especial_num:null,
     cardapio_cafe_num: CAFE_NUMS[0], cafe_especial_ativo:false, cardapio_cafe_especial_num:null, cafe_terceirizado:false,
     observacoes:null,
@@ -5397,6 +5435,7 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
         <div class="modal-body">
           <div class="field-row">
             <div class="field" style="flex:2;"><label>Cliente</label><input type="text" id="kk-nome" value="${escapeHtml(draft.nome_cliente)}"></div>
+            <div class="field"><label>CNPJ</label><input type="text" id="kk-cnpj" value="${escapeHtml(draft.cnpj||"")}" placeholder="00.000.000/0001-00"></div>
             <div class="field"><label>Unidade</label>
               <select id="kk-unidade">
                 <option value="" ${!draft.unidade?"selected":""}>— não definida —</option>
@@ -5427,6 +5466,23 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
             <div class="field"><label>Início do contrato</label><input type="date" id="kk-inicio" value="${draft.data_inicio||""}"></div>
             <div class="field"><label>Fim do contrato</label><input type="date" id="kk-fim" value="${draft.data_fim||""}"></div>
           </div>
+          <div class="field-row">
+            <div class="field"><label>Renovação ao fim do prazo</label>
+              <select id="kk-tipo-renovacao">
+                <option value="" ${!draft.tipo_renovacao?"selected":""}>— não definida —</option>
+                <option value="automatica_indeterminado" ${draft.tipo_renovacao==="automatica_indeterminado"?"selected":""}>Automática, por tempo indeterminado (se ninguém se manifestar)</option>
+                <option value="termo_aditivo" ${draft.tipo_renovacao==="termo_aditivo"?"selected":""}>Só com termo aditivo assinado (NÃO é automática)</option>
+                <option value="prazo_indeterminado_origem" ${draft.tipo_renovacao==="prazo_indeterminado_origem"?"selected":""}>Já é por prazo indeterminado desde o início (sem data de fim)</option>
+                <option value="nao_renova" ${draft.tipo_renovacao==="nao_renova"?"selected":""}>Não se renova automaticamente (cláusula expressa)</option>
+                <option value="pendente_assinatura" ${draft.tipo_renovacao==="pendente_assinatura"?"selected":""}>Minuta — ainda não assinado</option>
+              </select>
+            </div>
+            <div class="field" id="kk-prazo-orig-wrap" style="display:${draft.tipo_renovacao==="automatica_indeterminado"?"block":"none"};">
+              <label>Fim do prazo original (antes da renovação automática)</label>
+              <input type="date" id="kk-prazo-orig" value="${draft.data_fim_prazo_original||""}">
+            </div>
+          </div>
+          <div class="footnote" style="margin:-4px 0 14px;">Quando a renovação é automática e o contrato já passou do prazo original, deixe "Fim do contrato" em branco (senão o faturamento para de somar depois dessa data) e registre o fim do prazo original aqui, só para referência/alerta.</div>
           <div class="field-row">
             <div class="field"><label>Perfil de incidência</label>
               <select id="kk-perfil-inc">
@@ -5759,6 +5815,9 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
   document.getElementById("kk-cafe-esp-on").addEventListener("change", e => {
     document.getElementById("kk-cafe-esp-num").style.display = e.target.checked ? "block" : "none";
   });
+  document.getElementById("kk-tipo-renovacao").addEventListener("change", e => {
+    document.getElementById("kk-prazo-orig-wrap").style.display = e.target.value === "automatica_indeterminado" ? "block" : "none";
+  });
 
   document.getElementById("close-m").onclick = () => root.innerHTML = "";
   document.getElementById("cancel-m").onclick = () => root.innerHTML = "";
@@ -5800,8 +5859,11 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
       rota_id: document.getElementById("kk-rota").value || null,
       endereco_entrega: document.getElementById("kk-endereco").value.trim() || null,
       horario_entrega: document.getElementById("kk-horario-entrega").value.trim() || null,
+      cnpj: document.getElementById("kk-cnpj").value.trim() || null,
       data_inicio: document.getElementById("kk-inicio").value || null,
       data_fim: document.getElementById("kk-fim").value || null,
+      tipo_renovacao: document.getElementById("kk-tipo-renovacao").value || null,
+      data_fim_prazo_original: document.getElementById("kk-tipo-renovacao").value === "automatica_indeterminado" ? (document.getElementById("kk-prazo-orig").value || null) : null,
       cardapio_refeicao_num: Number(document.getElementById("kk-ref-num").value),
       cardapio_marmita_num: Number(document.getElementById("kk-marmita-num").value),
       marmita_especial_ativo: document.getElementById("kk-marmita-esp-on").checked,
