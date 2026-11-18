@@ -5187,6 +5187,7 @@ function contratoAvisoVigencia(c){
     return { nivel: "ok", texto: `✅ renovado automaticamente (prazo original venceu ${fmtDataBr(c.data_fim_prazo_original)})` };
   }
   if(tipo === "prazo_indeterminado_origem" && !c.data_fim) return { nivel: "ok", texto: "✅ prazo indeterminado" };
+  if(tipo === "sem_contrato_fixo" && !c.data_fim) return { nivel: "ok", texto: "ℹ sem contrato fixo — fornecimento por demanda" };
 
   if(c.data_fim){
     if(c.data_fim < hojeISO){
@@ -5475,6 +5476,7 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
                 <option value="prazo_indeterminado_origem" ${draft.tipo_renovacao==="prazo_indeterminado_origem"?"selected":""}>Já é por prazo indeterminado desde o início (sem data de fim)</option>
                 <option value="nao_renova" ${draft.tipo_renovacao==="nao_renova"?"selected":""}>Não se renova automaticamente (cláusula expressa)</option>
                 <option value="pendente_assinatura" ${draft.tipo_renovacao==="pendente_assinatura"?"selected":""}>Minuta — ainda não assinado</option>
+                <option value="sem_contrato_fixo" ${draft.tipo_renovacao==="sem_contrato_fixo"?"selected":""}>Sem contrato fixo (fornecimento por demanda)</option>
               </select>
             </div>
             <div class="field" id="kk-prazo-orig-wrap" style="display:${draft.tipo_renovacao==="automatica_indeterminado"?"block":"none"};">
