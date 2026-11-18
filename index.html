@@ -906,7 +906,7 @@ async function showApp(user){
   await carregarMeusAcessos();
   aplicarMenuPorPerfil();
   if(!possoVerView(currentView)) currentView = primeiraViewPermitida() || currentView;
-  await Promise.all([loadInsumos(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadOrcamentosCardapio(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadRotas(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadFornecedores(), loadConjuntosCompra(), loadAjusteSeguranca(), loadRefeicoesFuncionarios(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas(), loadPcpConfig(), loadPcpSubstituicoesTudo(), loadComposicoesTipos(), loadComposicoesSemana(), loadAjudaConteudo(), loadAjudaDuvidas()]);
+  await Promise.all([loadInsumos(), loadInsumosCompra(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadOrcamentosCardapio(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadRotas(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadFornecedores(), loadConjuntosCompra(), loadAjusteSeguranca(), loadRefeicoesFuncionarios(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas(), loadPcpConfig(), loadPcpSubstituicoesTudo(), loadComposicoesTipos(), loadComposicoesSemana(), loadAjudaConteudo(), loadAjudaDuvidas()]);
   renderBotaoDuvidaFlutuante();
   goToView(currentView);
 }
@@ -1152,6 +1152,87 @@ async function loadInsumos(){
     const { id, ...rest } = row;
     insumos.set(id, rest);
   });
+}
+
+// 18/11/2026, pedido do Marcelo: separação insumo base (usado nas receitas, controla custo/estoque — é a
+// tabela `insumos` de sempre) vs insumo de compra (marca/embalagem específica que a compradora lança no
+// pedido, sempre vinculada a um insumo base — tabela nova `insumos_compra`). Motivo: hoje, se a compradora
+// cadastra um insumo pra uma marca nova sem vincular a nada, a ficha técnica que usava a marca antiga não
+// reconhece a nova — custo/estoque ficam quebrados em silêncio. Com o vínculo obrigatório, isso não acontece
+// mais: o pedido só lança produtos de compra, e todos eles sempre resolvem pro mesmo insumo base.
+let insumosCompra = new Map(); // id -> {insumo_base_id, nome, ativo, criado_em, alterado_em, alterado_por}
+async function loadInsumosCompra(){
+  const { data, error } = await sb.from('insumos_compra').select('*').order('nome');
+  insumosCompra = new Map();
+  if (error){ showAlert('Erro ao carregar insumos de compra: ' + error.message); return; }
+  (data || []).forEach(row => {
+    const { id, ...rest } = row;
+    insumosCompra.set(id, rest);
+  });
+}
+function insumoBasePorNome(nome){
+  const n = normalizeText((nome||"").trim());
+  if(!n) return null;
+  for(const [id,ins] of insumos.entries()){ if(normalizeText(ins.nome) === n) return {id, ...ins}; }
+  return null;
+}
+// produto de compra "padrão" de um insumo base — usado pra preencher insumo_compra_id em linhas antigas
+// (rascunho recuperado, pedido duplicado, sugestão da Lista de compra) que só têm insumo_id. Se só existe 1
+// produto de compra vinculado, usa ele; se vários, prefere o que tem o mesmo nome do insumo base (o
+// "padrão" criado na migração de 18/11/2026); sem isso, usa o primeiro ativo encontrado.
+function insumoCompraPadraoDaBase(baseId){
+  if(!baseId) return null;
+  const vinculados = [...insumosCompra.entries()].filter(([,c]) => c.insumo_base_id === baseId && c.ativo !== false);
+  if(!vinculados.length) return null;
+  if(vinculados.length === 1) return vinculados[0][0];
+  const base = insumos.get(baseId);
+  const exato = base && vinculados.find(([,c]) => normalizeText(c.nome) === normalizeText(base.nome));
+  return exato ? exato[0] : vinculados[0][0];
+}
+// fornecedor que mais recentemente vendeu esse PRODUTO DE COMPRA específico (marca/embalagem) — ver
+// fornecedorSugeridoParaInsumo (pro insumo base) acima; aqui a sugestão de "último preço pago" é por marca,
+// porque marcas diferentes custam diferente.
+function fornecedorSugeridoParaInsumoCompra(insumoCompraId){
+  let melhor = null;
+  pedidos.forEach(p => {
+    if(!p.fornecedor_id || !p.data_pedido) return;
+    (p.itens||[]).forEach(it => {
+      if(it.insumo_compra_id !== insumoCompraId) return;
+      if(!melhor || p.data_pedido > melhor.data_pedido) melhor = {fornecedor_id: p.fornecedor_id, fornecedor: p.fornecedor, data_pedido: p.data_pedido, preco_unitario: it.preco_unitario, fator_embalagem: fatorEmbalagemItem(it), preco_base: precoBaseItem(it), embalagem_tipo: it.embalagem_tipo||null, embalagem_outra: it.embalagem_outra||null};
+    });
+  });
+  return melhor;
+}
+// 18/11/2026, decisão do Marcelo: custo do insumo base (usado nas fichas técnicas/CMV) passa a ser a média
+// ponderada por quantidade das compras dos últimos 30 dias de TODOS os produtos de compra vinculados a ele
+// — não mais "só a última compra" (regra antiga, ainda usada se não há nenhuma compra nos últimos 30 dias:
+// aí cai pro valor já cadastrado, sem mudar). Ponderar por quantidade evita que uma compra pequena pese
+// igual a uma grande. `opts.itensExtras` entra na média (usado pra prever o impacto do pedido ainda não
+// salvo); `opts.excluirPedidoId` tira um pedido da conta (usado ao editar um pedido existente, pra não
+// contar a versão antiga dele junto com os itens novos ainda não salvos).
+function custoMedioPonderadoInsumoBase(insumoBaseId, dataRefYMD, opts){
+  opts = opts || {};
+  const dataRef = dataRefYMD ? new Date(dataRefYMD+"T00:00:00") : new Date();
+  if(isNaN(dataRef)) return null;
+  const limite = new Date(dataRef); limite.setDate(limite.getDate()-30);
+  const compraIds = new Set([...insumosCompra.entries()].filter(([,c]) => c.insumo_base_id === insumoBaseId).map(([cid]) => cid));
+  let somaValor = 0, somaQtd = 0;
+  const acumula = (it) => {
+    const mesmoBase = it.insumo_compra_id ? compraIds.has(it.insumo_compra_id) : it.insumo_id === insumoBaseId;
+    if(!mesmoBase) return;
+    const qtd = qtdBaseItem(it);
+    const precoBase = precoBaseItem(it);
+    if(qtd > 0 && precoBase != null){ somaValor += qtd*precoBase; somaQtd += qtd; }
+  };
+  pedidos.forEach((p, pid) => {
+    if(opts.excluirPedidoId && pid === opts.excluirPedidoId) return;
+    if(!p.data_pedido) return;
+    const d = new Date(p.data_pedido+"T00:00:00");
+    if(isNaN(d) || d < limite || d > dataRef) return;
+    (p.itens||[]).forEach(acumula);
+  });
+  (opts.itensExtras||[]).forEach(acumula);
+  return somaQtd > 0 ? somaValor/somaQtd : null;
 }
 
 async function loadFichas(){
@@ -1866,7 +1947,7 @@ function statusChip(st){ return `<span class="chip ${st.cls}"><span class="dot">
 function pedidoValorRecebido(p){
   return (p.itens||[]).reduce((s,it) => s + (it.quantidade_recebida != null ? it.quantidade_recebida : 0) * (it.preco_unitario||0), 0);
 }
-function novaLinhaPedido(){ return {insumo_id:null, nome:"", unidade:"", fator_embalagem:null, quantidade:null, preco_unitario:null, embalagem_tipo:null, embalagem_outra:null, observacao:null}; }
+function novaLinhaPedido(){ return {insumo_id:null, insumo_compra_id:null, nome:"", unidade:"", fator_embalagem:null, quantidade:null, preco_unitario:null, embalagem_tipo:null, embalagem_outra:null, observacao:null}; }
 function valorTotalItensPedido(itens){ return (itens||[]).reduce((s,l) => s + (l.quantidade||0)*(l.preco_unitario||0), 0); }
 // 10/11/2026, pedido do Marcelo: rótulo da embalagem (usado em "unidade" pra impressão/texto ao fornecedor,
 // que já existiam e liam esse campo) agora é montado a partir do tipo fixo escolhido + peso/qtd da embalagem
@@ -2758,6 +2839,63 @@ function openInsumoModal(id, opts){
       await loadInsumos();
       if(opts.onSaved){ opts.onSaved(novoId); }
       else { root.innerHTML = ""; renderInsumos(); }
+    }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao salvar: "); }
+  };
+}
+
+// 18/11/2026: cadastro do produto de compra (marca/embalagem específica, ex. "FEIJÃO CARIOCA DÉ 5KG") —
+// sempre vinculado a um insumo base já existente (ex. "FEIJÃO CARIOCA", o que a receita usa). O vínculo é
+// obrigatório: não salva sem escolher um insumo base da lista. Layout igual ao cadastro de insumo base,
+// só troca custo/unidade (que aqui não existem — isso é lançado por embalagem, no próprio pedido) pelo
+// campo de vínculo.
+function openInsumoCompraModal(id, opts){
+  opts = opts || {};
+  const existing = id ? insumosCompra.get(id) : null;
+  const baseAtual = existing ? insumos.get(existing.insumo_base_id) : (opts.baseSugeridaId ? insumos.get(opts.baseSugeridaId) : null);
+  const root = document.getElementById("modal-root");
+  const insumosOrdenadosModal = [...insumos.entries()].sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+  root.innerHTML = `
+    <div class="modal-overlay" id="ov">
+      <div class="modal" style="max-width:460px;">
+        <div class="modal-head"><h2>${existing?"Editar produto de compra":"Novo produto de compra"}</h2><button class="close-x" id="close-m">&times;</button></div>
+        <div class="modal-body">
+          <div class="field"><label>Nome do produto (marca/embalagem)</label><input type="text" id="fc-nome" value="${escapeHtml(existing?existing.nome:"")}" placeholder="Ex.: FEIJÃO CARIOCA DÉ 5KG"></div>
+          <div class="field"><label>Insumo base (o que a receita usa)</label><input type="text" id="fc-base" list="fc-base-list" autocomplete="off" value="${escapeHtml(baseAtual?baseAtual.nome:"")}" placeholder="Buscar insumo base…"><datalist id="fc-base-list">${insumosOrdenadosModal.map(([iid,ins]) => `<option value="${escapeHtml(ins.nome)}"></option>`).join("")}</datalist>
+            <div class="footnote" style="margin-top:3px;">Obrigatório — não existe produto de compra sem insumo base. Se o insumo base ainda não existe, cadastre-o primeiro em Insumos.</div>
+          </div>
+          <div class="field"><label><input type="checkbox" id="fc-ativo" style="width:auto; display:inline-block; margin-right:6px;" ${!existing || existing.ativo!==false?"checked":""}> Ativo (aparece pra escolher num pedido novo)</label></div>
+          ${existing ? `<div class="footnote" id="f-autor" style="margin-top:6px;">${ultimaAlteracaoTxt(existing)}</div>` : ""}
+          <div class="footnote" id="err-msg" style="color:var(--critical); margin-top:10px;"></div>
+        </div>
+        <div class="modal-foot">
+          <span class="footnote">O nome precisa ser único entre os produtos de compra.</span>
+          <button class="btn primary" id="save-m">Salvar</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById("close-m").onclick = () => root.innerHTML = "";
+  document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
+  document.getElementById("save-m").onclick = async () => {
+    const nome = document.getElementById("fc-nome").value.trim();
+    const baseNomeDigitado = document.getElementById("fc-base").value.trim();
+    const ativo = document.getElementById("fc-ativo").checked;
+    const errEl = document.getElementById("err-msg");
+    if(!nome){ errEl.textContent = "Informe um nome."; return; }
+    const base = insumoBasePorNome(baseNomeDigitado);
+    if(!base){ errEl.textContent = "Escolha um insumo base já cadastrado, da lista — o vínculo é obrigatório e não pode ser um nome novo."; return; }
+    const dupe = [...insumosCompra.entries()].find(([iid,d]) => iid !== id && normalizeText(d.nome) === normalizeText(nome));
+    if(dupe){ errEl.textContent = `Já existe um produto de compra com esse nome: "${dupe[1].nome}".`; return; }
+    const data = { nome, insumo_base_id: base.id, ativo };
+    Object.assign(data, carimbo());
+    errEl.textContent = "Salvando…";
+    try{
+      let error, novoId = id;
+      if(id){ ({error} = await sb.from('insumos_compra').update(data).eq('id', id)); }
+      else{ const r = await sb.from('insumos_compra').insert(data).select('id').single(); error = r.error; novoId = r.data && r.data.id; }
+      if(error) throw error;
+      await loadInsumosCompra();
+      if(opts.onSaved){ opts.onSaved(novoId); }
+      else { root.innerHTML = ""; }
     }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao salvar: "); }
   };
 }
@@ -10408,7 +10546,7 @@ function renderTabPedidos(){
 
 /* ---- modal: registrar/editar pedido ---- */
 function linhaDePedidoAnterior(it){
-  return { insumo_id: it.insumo_id||null, nome: it.nome||"", unidade: it.unidade||"", fator_embalagem: it.fator_embalagem||null, quantidade: it.quantidade!=null?it.quantidade:null, preco_unitario: it.preco_unitario!=null?it.preco_unitario:null,
+  return { insumo_id: it.insumo_id||null, insumo_compra_id: it.insumo_compra_id||null, nome: it.nome||"", unidade: it.unidade||"", fator_embalagem: it.fator_embalagem||null, quantidade: it.quantidade!=null?it.quantidade:null, preco_unitario: it.preco_unitario!=null?it.preco_unitario:null,
     embalagem_tipo: it.embalagem_tipo||null, embalagem_outra: it.embalagem_outra||null };
 }
 function destinoOpcoes(){
@@ -10475,19 +10613,29 @@ function confirmarPrecosPedido(itens){
     document.getElementById("cfp-ov").addEventListener("click", e => { if(e.target.id==="cfp-ov") cleanup(false); });
   });
 }
-// calcula, pra uma lista de itens de pedido já validados (preco_unitario = custo normalizado por kg/L/un),
-// quais insumos teriam o custo do cadastro atualizado e quais deles variam mais de 15% frente ao custo atual —
-// usado ao salvar o pedido (Registrar/Editar), que é o gatilho da atualização de custo nesta versão.
-function itensComVariacaoDeCusto(itensValidos, limiar){
+// calcula, pra uma lista de itens de pedido já validados (preco_unitario = custo da embalagem como lançado),
+// quais insumos BASE teriam o custo do cadastro atualizado e quais deles variam mais de 15% frente ao custo
+// atual — usado ao salvar o pedido (Registrar/Editar), que é o gatilho da atualização de custo nesta versão.
+// 18/11/2026: novoKg deixou de ser "só o preço deste item" e passou a ser a média ponderada dos últimos 30
+// dias de todos os produtos de compra vinculados ao mesmo insumo base (custoMedioPonderadoInsumoBase) — ver
+// comentário dessa função. opts.dataPedido/opts.excluirPedidoId repassam o contexto do pedido sendo salvo.
+function itensComVariacaoDeCusto(itensValidos, limiar, opts){
+  opts = opts || {};
   limiar = limiar == null ? ALERTA_PRECO_LIMIAR : limiar;
-  const porInsumo = new Map(); // insumo_id -> {insumo, insumoId, novoKg, antigoKg} — último item do pedido pra esse insumo
+  const porInsumo = new Map(); // insumo_id (base) -> {insumo, insumoId}
   itensValidos.forEach(l => {
     if(!l.insumo_id || !(l.preco_unitario > 0)) return;
     const ins = insumos.get(l.insumo_id);
     if(!ins) return;
-    porInsumo.set(l.insumo_id, { insumo: ins, insumoId: l.insumo_id, novoKg: precoBaseItem(l), antigoKg: ins.custo_kg_l_und });
+    porInsumo.set(l.insumo_id, { insumo: ins, insumoId: l.insumo_id });
   });
-  const todas = [...porInsumo.values()].filter(v => v.antigoKg == null || Math.abs(v.novoKg - v.antigoKg) > 0.0001);
+  const todas = [];
+  porInsumo.forEach(v => {
+    const novoKg = custoMedioPonderadoInsumoBase(v.insumoId, opts.dataPedido, { excluirPedidoId: opts.excluirPedidoId, itensExtras: itensValidos });
+    if(novoKg == null) return; // sem nenhuma compra nos últimos 30 dias (nem a atual) — mantém o custo cadastrado
+    const antigoKg = v.insumo.custo_kg_l_und;
+    if(antigoKg == null || Math.abs(novoKg - antigoKg) > 0.0001) todas.push({ insumo: v.insumo, insumoId: v.insumoId, novoKg, antigoKg });
+  });
   const grandes = todas.filter(v => v.antigoKg > 0 && Math.abs(v.novoKg - v.antigoKg)/v.antigoKg > limiar);
   return { todas, grandes };
 }
@@ -10514,14 +10662,14 @@ function confirmarAtualizacaoCustos(grandes, totalItens){
         <div class="modal" style="max-width:600px;">
           <div class="modal-head"><h2>Atualizar custo dos insumos?</h2></div>
           <div class="modal-body">
-            <p style="margin:0 0 10px; font-size:14px; line-height:1.5;">Esse pedido vai atualizar o custo de ${totalItens} insumo(s) usado nas fichas técnicas. ${grandes.length} ${grandes.length===1?"deles está":"deles estão"} com variação grande (acima de ${(ALERTA_PRECO_LIMIAR*100).toFixed(0)}%) frente ao custo atual — confira antes de confirmar:</p>
+            <p style="margin:0 0 10px; font-size:14px; line-height:1.5;">Esse pedido vai atualizar o custo de ${totalItens} insumo(s) base usado nas fichas técnicas — a nova média ponderada dos últimos 30 dias (todas as marcas/produtos de compra vinculados). ${grandes.length} ${grandes.length===1?"deles está":"deles estão"} com variação grande (acima de ${(ALERTA_PRECO_LIMIAR*100).toFixed(0)}%) frente ao custo atual — confira antes de confirmar:</p>
             <div class="table-wrap">
               <table style="width:100%; border-collapse:collapse; font-size:13px;">
-                <thead><tr><th style="text-align:left;">Insumo</th><th style="text-align:right;">Custo atual (kg/L/un)</th><th style="text-align:right;">Novo custo</th><th style="text-align:right;">Variação</th></tr></thead>
+                <thead><tr><th style="text-align:left;">Insumo base</th><th style="text-align:right;">Custo atual (kg/L/un)</th><th style="text-align:right;">Nova média (30 dias)</th><th style="text-align:right;">Variação</th></tr></thead>
                 <tbody>${linhas}</tbody>
               </table>
             </div>
-            <p style="margin:10px 0 0; font-size:12.5px; color:var(--text-faint);">Isso muda o custo usado em todas as fichas técnicas que levam esse insumo. O pedido é salvo de qualquer forma — essa escolha é só sobre atualizar ou não o custo no cadastro de Insumos.</p>
+            <p style="margin:10px 0 0; font-size:12.5px; color:var(--text-faint);">Isso muda o custo usado em todas as fichas técnicas que levam esse insumo base, qualquer marca. O pedido é salvo de qualquer forma — essa escolha é só sobre atualizar ou não o custo no cadastro de Insumos.</p>
           </div>
           <div class="modal-foot">
             <button class="btn ghost" id="cfc-nao">Manter custos atuais</button>
@@ -10535,9 +10683,11 @@ function confirmarAtualizacaoCustos(grandes, totalItens){
     document.getElementById("cfc-ov").addEventListener("click", e => { if(e.target.id==="cfc-ov") cleanup(false); });
   });
 }
-// aplica o custo normalizado (por kg/L/un) de cada item do pedido ao cadastro de Insumos — mesmo rastro de
-// histórico/"pedido de DD/MM" que uma edição manual em Insumos já gera (custo_anterior, custo_atualizado_em,
-// custo_origem, historico_precos). Fichas técnicas leem o custo do insumo na hora, então o impacto é imediato.
+// aplica o novo custo (v.novoKg — já calculado como média ponderada dos últimos 30 dias por
+// itensComVariacaoDeCusto/custoMedioPonderadoInsumoBase, ver 18/11/2026) ao cadastro de Insumos — mesmo
+// rastro de histórico/"pedido de DD/MM" que uma edição manual em Insumos já gera (custo_anterior,
+// custo_atualizado_em, custo_origem, historico_precos). Fichas técnicas leem o custo do insumo na hora,
+// então o impacto é imediato.
 async function atualizarCustosInsumosDoPedido(itensComCusto, dataPedido){
   for(const v of itensComCusto){
     const ins = insumos.get(v.insumoId);
@@ -10745,9 +10895,17 @@ async function openPedidoModal(id, opts){
     }
   }
 
+  // 18/11/2026: toda linha passa a ter insumo_compra_id (produto de compra escolhido), não só insumo_id
+  // (insumo base resolvido por trás). Linha antiga (rascunho recuperado, pedido duplicado, sugestão vinda
+  // da Lista de compra) só tem insumo_id — preenche aqui com o produto de compra "padrão" daquele insumo
+  // base, pra não cair sem vínculo de marca na hora de salvar.
+  draft.itens.forEach(l => { if(l.insumo_id && !l.insumo_compra_id) l.insumo_compra_id = insumoCompraPadraoDaBase(l.insumo_id); });
+
   const root = document.getElementById("modal-root");
   const destinos = destinoOpcoes();
-  const insumosOrdenados = [...insumos.entries()].sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
+  // produtos de compra ativos, ordenados — é o que o campo "Produto" do pedido busca agora (não mais o
+  // insumo base direto). Cada um resolve pro seu insumo base (c.insumo_base_id) pra grupo/unidade/custo.
+  const insumosCompraOrdenados = [...insumosCompra.entries()].filter(([,c]) => c.ativo !== false).sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
 
   root.innerHTML = `
     <div class="modal-overlay" id="ov">
@@ -10775,11 +10933,11 @@ async function openPedidoModal(id, opts){
             </div>
           </div>
           <h3 style="font-size:14px; margin:14px 0 6px;">Itens</h3>
-          <datalist id="pd-insumo-list">${insumosOrdenados.map(([iid,ins]) => `<option value="${escapeHtml(ins.nome)}" data-id="${iid}"></option>`).join("")}</datalist>
+          <datalist id="pd-insumo-list">${insumosCompraOrdenados.map(([cid,c]) => `<option value="${escapeHtml(c.nome)}" data-id="${cid}"></option>`).join("")}</datalist>
           <div id="pd-lines"></div>
           <div style="display:flex; gap:8px; margin-top:6px;">
             <button type="button" class="btn small" id="pd-add-line">+ adicionar item</button>
-            <button type="button" class="btn small ghost" id="pd-add-insumo">+ cadastrar insumo novo</button>
+            <button type="button" class="btn small ghost" id="pd-add-insumo" title="Cadastra uma marca/embalagem nova, vinculada a um insumo já existente">+ cadastrar produto novo</button>
           </div>
           <div class="panel" style="margin-top:16px; background:var(--surface-alt);">
             <div class="panel-body" style="display:flex; justify-content:flex-end;">
@@ -10890,7 +11048,7 @@ async function openPedidoModal(id, opts){
     const outraVisivel = l.embalagem_tipo === "Outra";
     const grupoFiltro = l._grupoFiltro || "";
     const datalistId = grupoFiltro ? `pd-insumo-list-${i}` : "pd-insumo-list";
-    const datalistFiltradaHtml = grupoFiltro ? `<datalist id="${datalistId}">${insumosOrdenados.filter(([,ins2]) => (ins2.grupo_compra||"SEM GRUPO") === grupoFiltro).map(([iid,ins2]) => `<option value="${escapeHtml(ins2.nome)}" data-id="${iid}"></option>`).join("")}</datalist>` : "";
+    const datalistFiltradaHtml = grupoFiltro ? `<datalist id="${datalistId}">${insumosCompraOrdenados.filter(([,c2]) => ((insumos.get(c2.insumo_base_id)||{}).grupo_compra||"SEM GRUPO") === grupoFiltro).map(([cid,c2]) => `<option value="${escapeHtml(c2.nome)}" data-id="${cid}"></option>`).join("")}</datalist>` : "";
     return `
       <div class="pd-line" data-i="${i}" style="border:1px solid var(--border); border-radius:10px; padding:12px 12px 8px; margin-bottom:10px;">
         <div class="footnote" style="font-weight:600; margin-bottom:4px; opacity:.7;">O que comprou</div>
@@ -10901,7 +11059,7 @@ async function openPedidoModal(id, opts){
               ${blocosCadastro().map(g => `<option value="${escapeHtml(g)}" ${grupoFiltro===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}
             </select>
           </div>
-          <div class="field" style="grid-column:span 2;"><label>Produto</label><input type="text" class="pd-nome" list="${datalistId}" autocomplete="off" value="${escapeHtml(l.nome||"")}" placeholder="Buscar insumo…">${datalistFiltradaHtml}<div class="footnote" style="margin-top:2px;">${l.insumo_id ? escapeHtml(blocoDoInsumo(l.insumo_id)) : (l.nome ? '<span style="color:var(--critical);">insumo não encontrado — escolha da lista</span>' : "")}</div><div class="footnote pd-ultimo" style="margin-top:2px;"></div></div>
+          <div class="field" style="grid-column:span 2;"><label>Produto</label><input type="text" class="pd-nome" list="${datalistId}" autocomplete="off" value="${escapeHtml(l.nome||"")}" placeholder="Buscar produto de compra…">${datalistFiltradaHtml}<div class="footnote" style="margin-top:2px;">${l.insumo_id ? escapeHtml(blocoDoInsumo(l.insumo_id)) : (l.nome ? '<span style="color:var(--critical);">produto não encontrado — escolha da lista</span>' : "")}</div><div class="footnote pd-ultimo" style="margin-top:2px;"></div></div>
           <div class="field"><label>Qtd. de embalagens</label><input type="number" step="0.001" min="0" class="pd-qtd" value="${l.quantidade!=null?l.quantidade:""}"></div>
           <div class="field"><label>Embalagem</label>
             <select class="pd-embtipo">
@@ -10923,12 +11081,13 @@ async function openPedidoModal(id, opts){
         </div>
       </div>`;
   }
-  // mostra o último preço de embalagem pago por esse insumo (qualquer fornecedor) assim que ele é escolhido —
-  // só na tela, nunca entra em impressão/PDF.
+  // mostra o último preço de embalagem pago desse PRODUTO DE COMPRA específico (marca/embalagem, qualquer
+  // fornecedor) assim que ele é escolhido — 18/11/2026, pedido do Marcelo: a sugestão é por marca, não pelo
+  // insumo base (marcas diferentes custam diferente) — só na tela, nunca entra em impressão/PDF.
   function ultimoPrecoHtml(l){
-    if(!l.insumo_id) return "";
-    const ult = fornecedorSugeridoParaInsumo(l.insumo_id);
-    if(!ult || ult.preco_unitario == null) return `<span style="opacity:.6;">sem compra anterior desse insumo</span>`;
+    if(!l.insumo_compra_id) return "";
+    const ult = fornecedorSugeridoParaInsumoCompra(l.insumo_compra_id);
+    if(!ult || ult.preco_unitario == null) return `<span style="opacity:.6;">sem compra anterior desse produto</span>`;
     return `<span style="opacity:.75;">Último pago: <strong>${fmtMoney(ult.preco_unitario)}</strong>${ult.fator_embalagem>1?` (embalagem de ${fmtNum(ult.fator_embalagem,3)})`:""} em ${escapeHtml(fmtDataYMD(ult.data_pedido))}${ult.fornecedor ? " · "+escapeHtml(ult.fornecedor) : ""}</span>`;
   }
   // compara o preço lançado — já convertido pra unidade base — com a média paga (qualquer fornecedor) no mês
@@ -10974,31 +11133,36 @@ async function openPedidoModal(id, opts){
       if(grupoEl) grupoEl.addEventListener("change", e => { l._grupoFiltro = e.target.value || null; renderLines(); });
       row.querySelector(".pd-nome").addEventListener("change", e => {
         const texto = e.target.value;
-        const match = insumosOrdenados.find(([,ins]) => normalizeText(ins.nome) === normalizeText(texto));
-        const insumoIdAntes = l.insumo_id;
+        // 18/11/2026: "Produto" busca entre os produtos de compra (marca/embalagem), não mais o insumo
+        // base direto — cada produto de compra resolve pro seu insumo base (match[1].insumo_base_id), que
+        // é quem controla custo/estoque/ficha técnica, exatamente como l.insumo_id já funcionava antes.
+        const match = insumosCompraOrdenados.find(([,c]) => normalizeText(c.nome) === normalizeText(texto));
+        const compraIdAntes = l.insumo_compra_id;
         l.nome = texto;
         if(match){
           // 17/11/2026, correção pedida pelo Marcelo: antes só preenchia preco_unitario quando a linha
           // estava vazia (l.preco_unitario == null) — então, numa linha JÁ existente (pedido salvo, com
           // preço do produto anterior lançado), trocar o produto não atualizava o valor pago nem o custo
           // por kg/L/un: ficava com o preço do produto antigo, só mudando o nome/insumo_id. Agora, sempre
-          // que o insumo da linha realmente muda (troca de produto), o preço é recalculado a partir do
-          // novo produto — só preserva o preço já digitado quando o insumo escolhido é o mesmo de antes.
-          const trocouProduto = match[0] !== insumoIdAntes;
-          l.insumo_id = match[0];
-          const ins = match[1];
-          const sug = fornecedorSugeridoParaInsumo(match[0]); // última compra desse insumo (qualquer fornecedor) — pré-preenche tudo
-          const fator = (sug && sug.fator_embalagem > 0) ? sug.fator_embalagem : (ins.unidade_convertida > 0 ? ins.unidade_convertida : 1);
+          // que o produto de compra da linha realmente muda, o preço é recalculado a partir do novo produto
+          // — só preserva o preço já digitado quando o produto escolhido é o mesmo de antes.
+          const trocouProduto = match[0] !== compraIdAntes;
+          l.insumo_compra_id = match[0];
+          const compra = match[1];
+          l.insumo_id = compra.insumo_base_id;
+          const ins = insumos.get(compra.insumo_base_id);
+          const sug = fornecedorSugeridoParaInsumoCompra(match[0]); // última compra DESSE produto (qualquer fornecedor) — pré-preenche tudo
+          const fator = (sug && sug.fator_embalagem > 0) ? sug.fator_embalagem : (ins && ins.unidade_convertida > 0 ? ins.unidade_convertida : 1);
           l.fator_embalagem = fator;
           if(sug){
             l.embalagem_tipo = sug.embalagem_tipo || null;
             l.embalagem_outra = sug.embalagem_outra || null;
             if(trocouProduto || l.preco_unitario == null) l.preco_unitario = sug.preco_unitario;
-          } else if(trocouProduto || (l.preco_unitario == null && ins.custo_unitario != null)){
-            l.preco_unitario = ins.custo_unitario != null ? ins.custo_unitario : null; // custo_unitario do cadastro já é o preço da embalagem (fator aplicado)
+          } else if(trocouProduto || (l.preco_unitario == null && ins && ins.custo_unitario != null)){
+            l.preco_unitario = ins.custo_unitario != null ? ins.custo_unitario : null; // sem histórico desse produto — cai pro custo do insumo base (preço da embalagem padrão)
           }
           l.unidade = rotuloEmbalagemItem(l, ins);
-        } else { l.insumo_id = null; l.unidade = ""; l.fator_embalagem = null; l.embalagem_tipo = null; l.embalagem_outra = null; }
+        } else { l.insumo_id = null; l.insumo_compra_id = null; l.unidade = ""; l.fator_embalagem = null; l.embalagem_tipo = null; l.embalagem_outra = null; }
         renderLines(); refreshTotal();
       });
       row.querySelector(".pd-qtd").addEventListener("input", e => { l.quantidade = e.target.value===""?null:parseFloat(e.target.value); refreshValor(); refreshTotal(); });
@@ -11047,20 +11211,24 @@ async function openPedidoModal(id, opts){
     draft.semana_referencia = semrefVal === "" ? null : parseInt(semrefVal, 10);
     draft.cnpj_faturamento = document.getElementById("pd-cnpj-fat").value;
     draft.observacoes = document.getElementById("pd-obs").value;
-    openInsumoModal(null, { onSaved: (novoId) => {
-      const novo = insumos.get(novoId);
+    // 18/11/2026, pedido do Marcelo: esse botão agora cadastra o PRODUTO DE COMPRA (marca/embalagem),
+    // não o insumo base — o insumo base precisa já existir (cadastrado em Insumos) pra poder vincular.
+    openInsumoCompraModal(null, { onSaved: (novoId) => {
+      const novo = insumosCompra.get(novoId);
       const linhaVazia = draft.itens.find(l => !l.insumo_id && !l.nome);
       const linha = linhaVazia || novaLinhaPedido();
       if(novo){
-        linha.insumo_id = novoId;
+        const base = insumos.get(novo.insumo_base_id);
+        linha.insumo_compra_id = novoId;
+        linha.insumo_id = novo.insumo_base_id;
         linha.nome = novo.nome;
-        const fator = novo.unidade_convertida > 0 ? novo.unidade_convertida : 1;
+        const fator = base && base.unidade_convertida > 0 ? base.unidade_convertida : 1;
         linha.fator_embalagem = fator;
-        if(linha.preco_unitario == null && novo.custo_unitario != null) linha.preco_unitario = novo.custo_unitario;
-        // insumo recém-criado não tem histórico de compra — fica sem tipo de embalagem definido (em branco,
-        // de propósito) até o operador escolher na linha; sem isso, "unidade" ficaria só com o peso, sem dizer
-        // o que é a embalagem.
-        linha.unidade = rotuloEmbalagemItem(linha, novo);
+        if(linha.preco_unitario == null && base && base.custo_unitario != null) linha.preco_unitario = base.custo_unitario;
+        // produto recém-criado não tem histórico de compra — fica sem tipo de embalagem definido (em
+        // branco, de propósito) até o operador escolher na linha; sem isso, "unidade" ficaria só com o
+        // peso, sem dizer o que é a embalagem.
+        linha.unidade = rotuloEmbalagemItem(linha, base);
       }
       if(!linhaVazia) draft.itens.push(linha);
       openPedidoModal(id, { ...opts, draftOverride: draft });
@@ -11136,7 +11304,7 @@ async function openPedidoModal(id, opts){
     }
     // custo dos insumos é atualizado ao salvar o pedido (impacta todas as fichas técnicas na hora) — se algum item
     // variar mais de 15% frente ao custo atual, confirma antes; abaixo disso, atualiza direto sem perguntar.
-    const { todas: itensCusto, grandes: itensGrandeVariacao } = itensComVariacaoDeCusto(itensValidos);
+    const { todas: itensCusto, grandes: itensGrandeVariacao } = itensComVariacaoDeCusto(itensValidos, null, { dataPedido: data_pedido, excluirPedidoId: existing ? id : null });
     let atualizarCustos = itensCusto.length > 0;
     if(itensGrandeVariacao.length){
       atualizarCustos = await confirmarAtualizacaoCustos(itensGrandeVariacao, itensCusto.length);
@@ -11157,9 +11325,9 @@ async function openPedidoModal(id, opts){
       semana: semanaDaData(data_pedido),
       semana_referencia: semrefVal === "" ? null : parseInt(semrefVal,10),
       cnpj_faturamento: document.getElementById("pd-cnpj-fat").value.trim() || null,
-      itens: itensValidos.map(l => ({ insumo_id:l.insumo_id, nome:l.nome, unidade: rotuloEmbalagemItem(l, insumos.get(l.insumo_id)) || l.unidade, fator_embalagem:fatorEmbalagemItem(l), quantidade:l.quantidade, preco_unitario:l.preco_unitario||0,
+      itens: itensValidos.map(l => ({ insumo_id:l.insumo_id, insumo_compra_id:l.insumo_compra_id||null, nome:l.nome, unidade: rotuloEmbalagemItem(l, insumos.get(l.insumo_id)) || l.unidade, fator_embalagem:fatorEmbalagemItem(l), quantidade:l.quantidade, preco_unitario:l.preco_unitario||0,
         embalagem_tipo:l.embalagem_tipo||null, embalagem_outra: l.embalagem_tipo==="Outra" ? (l.embalagem_outra||null) : null, observacao: (l.observacao||"").trim() || null,
-        ...(existing ? (() => { const orig=(existing.itens||[]).find(o=>o.insumo_id===l.insumo_id); return orig && orig.quantidade_recebida!=null ? {quantidade_recebida:orig.quantidade_recebida} : {}; })() : {}) })),
+        ...(existing ? (() => { const orig=(existing.itens||[]).find(o=> l.insumo_compra_id ? o.insumo_compra_id===l.insumo_compra_id : o.insumo_id===l.insumo_id); return orig && orig.quantidade_recebida!=null ? {quantidade_recebida:orig.quantidade_recebida} : {}; })() : {}) })),
       valor_total: valorTotalItensPedido(itensValidos),
       observacoes: document.getElementById("pd-obs").value.trim() || null,
       ...carimbo(),
