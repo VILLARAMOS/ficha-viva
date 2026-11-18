@@ -2226,8 +2226,14 @@ function itensDoContrato(contratoId){
 let insumoFilter = "";
 let insumoGrupoFilter = "";
 let insumoSort = {field:"nome", dir:"asc"};
-let insumoTabSel = "cadastro"; // "cadastro" | "estoque"
+let insumoTabSel = "cadastro"; // "cadastro" (rótulo: Insumos Base) | "compra" (Insumos de Compra) | "estoque"
 let estoqueSubTab = "contagem"; // "contagem" | "entradas" | "movimentar" | "baixa"
+// 18/11/2026: sub-aba "Insumos de Compra" dentro de Insumos (pedido do Marcelo) — lista de marcas/embalagens
+// vinculadas ao insumo base, separada do cadastro do insumo base em si.
+let insumoCompraFilter = "";
+let insumoCompraGrupoFilter = "";
+let insumoCompraMostrarInativos = false;
+let insumoCompraSort = {field:"nome", dir:"asc"};
 
 // v135: injeta automaticamente uma barra de rolagem espelhada no TOPO de toda .table-wrap do sistema
 // (a de baixo já existe, nativa do próprio wrap) — sem precisar ligar tela por tela. Um MutationObserver
@@ -2298,13 +2304,20 @@ let estoqueSubTab = "contagem"; // "contagem" | "entradas" | "movimentar" | "bai
 function renderInsumos(){
   document.getElementById("page-title").textContent = "Insumos";
   document.getElementById("page-desc").textContent = "";
-  document.getElementById("topbar-actions").innerHTML = insumoTabSel === "cadastro" ? `<button class="btn primary" id="btn-novo-insumo">+ Novo insumo</button>` : "";
+  // 18/11/2026, pedido do Marcelo: a aba Insumos ganha uma 3ª sub-aba, "Insumos de Compra" — a sub-aba
+  // "Cadastro" passa a se chamar "Insumos Base" na tela (a chave interna "cadastro" continua igual, pra não
+  // precisar tocar em quem já pula direto pra ela, como o link de Estoque).
+  document.getElementById("topbar-actions").innerHTML =
+    insumoTabSel === "cadastro" ? `<button class="btn primary" id="btn-novo-insumo">+ Novo insumo base</button>` :
+    insumoTabSel === "compra" ? `<button class="btn primary" id="btn-novo-insumo">+ Novo produto de compra</button>` : "";
   if(insumoTabSel === "cadastro") document.getElementById("btn-novo-insumo").addEventListener("click", () => openInsumoModal(null));
+  if(insumoTabSel === "compra") document.getElementById("btn-novo-insumo").addEventListener("click", () => openInsumoCompraModal(null, { onSaved: () => { document.getElementById("modal-root").innerHTML = ""; renderInsumos(); } }));
 
   const content = document.getElementById("content");
   content.innerHTML = `
     <div class="seg-toggle" id="ins-tabs" style="margin-bottom:14px; width:fit-content;">
-      <button type="button" data-tab="cadastro" class="${insumoTabSel==="cadastro"?"active":""}">Cadastro</button>
+      <button type="button" data-tab="cadastro" class="${insumoTabSel==="cadastro"?"active":""}">Insumos Base</button>
+      <button type="button" data-tab="compra" class="${insumoTabSel==="compra"?"active":""}">Insumos de Compra</button>
       <button type="button" data-tab="estoque" class="${insumoTabSel==="estoque"?"active":""}">Estoque</button>
     </div>
     <div id="ins-body"></div>
@@ -2316,6 +2329,7 @@ function renderInsumos(){
   });
 
   if(insumoTabSel === "estoque"){ renderTabInsumoEstoque(); return; }
+  if(insumoTabSel === "compra"){ renderTabInsumoCompra(); return; }
   renderTabInsumoCadastro();
 }
 
@@ -2398,6 +2412,115 @@ function renderTabInsumoCadastro(){
     if(insumoSort.field === f) insumoSort.dir = insumoSort.dir === "asc" ? "desc" : "asc";
     else insumoSort = {field:f, dir:"asc"};
     updateInsumoTable();
+  }));
+}
+
+/* ================= Insumos de Compra (dentro de Insumos) — 18/11/2026, pedido do Marcelo ================= */
+// não tem "excluir" de propósito: um produto de compra já usado em pedido fica referenciado por id dentro do
+// histórico (custoMedioPonderadoInsumoBase soma por insumo_compra_id) — apagar o cadastro faria o cálculo de
+// custo do insumo base parar de contar essas compras antigas, silenciosamente. "Desativar" só tira da lista
+// de escolha de pedidos novos; o histórico continua valendo.
+async function desativarInsumoCompra(id, ativar){
+  const c = insumosCompra.get(id);
+  if(!c) return;
+  const acao = ativar ? "reativar" : "desativar";
+  if(!(await confirmDialog(`${ativar?"Reativar":"Desativar"} "${c.nome}"? ${ativar?"Volta a aparecer":"Deixa de aparecer"} pra escolher num pedido novo.`))) return;
+  try{
+    const { error } = await sb.from('insumos_compra').update({ ativo: ativar, ...carimbo() }).eq('id', id);
+    if(error) throw error;
+    await loadInsumosCompra();
+    renderInsumos();
+  }catch(e){ showAlert(mensagemErro(e, `Erro ao ${acao}: `)); }
+}
+
+function renderTabInsumoCompra(){
+  const usoPorCompra = new Map(); // insumo_compra_id -> quantas vezes aparece em pedidos (histórico)
+  pedidos.forEach(p => (p.itens||[]).forEach(it => { if(it.insumo_compra_id) usoPorCompra.set(it.insumo_compra_id, (usoPorCompra.get(it.insumo_compra_id)||0)+1); }));
+
+  const grupos = [...new Set([...insumos.values()].map(d=>d.grupo_compra).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
+
+  const body = document.getElementById("ins-body");
+  body.innerHTML = `
+    <div class="search-bar">
+      <input type="text" id="insumocompra-search" placeholder="Buscar produto de compra…" value="${escapeHtml(insumoCompraFilter)}">
+      <select id="insumocompra-grupo"><option value="">Todos os grupos de compra</option>${grupos.map(g=>`<option value="${escapeHtml(g)}" ${insumoCompraGrupoFilter===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}</select>
+      <label class="footnote" style="align-self:center; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="insumocompra-inativos" style="width:auto;" ${insumoCompraMostrarInativos?"checked":""}> mostrar inativos</label>
+      <span class="footnote" id="insumocompra-count" style="align-self:center;"></span>
+    </div>
+    <div class="panel">
+      <div class="table-wrap insumo-table-wrap" id="insumocompra-table-wrap">
+        <table>
+          <thead><tr id="insumocompra-thead-row">
+            <th class="sortable" data-field="nome" style="cursor:pointer;">Produto (marca/embalagem)</th>
+            <th class="sortable" data-field="_baseNome" style="cursor:pointer;">Insumo base</th>
+            <th style="text-align:right;">Grupo de compra</th>
+            <th style="text-align:right;">Último preço pago</th>
+            <th style="text-align:right;">Usado em</th>
+            <th style="text-align:right;">Status</th>
+            <th></th>
+          </tr></thead>
+          <tbody id="insumocompra-tbody"></tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  const content = body;
+
+  function updateInsumoCompraTable(){
+    let rows = [...insumosCompra.entries()].map(([id,d]) => {
+      const base = insumos.get(d.insumo_base_id);
+      return { id, ...d, _baseNome: base ? base.nome : "—", _grupo: base ? (base.grupo_compra||"SEM GRUPO") : "—" };
+    });
+    if(!insumoCompraMostrarInativos) rows = rows.filter(r => r.ativo !== false);
+    if(insumoCompraGrupoFilter) rows = rows.filter(r => r._grupo === insumoCompraGrupoFilter);
+    if(insumoCompraFilter){
+      const nf = normalizeText(insumoCompraFilter);
+      rows = rows.filter(r => normalizeText(r.nome).includes(nf) || normalizeText(r._baseNome).includes(nf));
+    }
+    rows.sort((a,b) => {
+      let av = a[insumoCompraSort.field], bv = b[insumoCompraSort.field];
+      if(typeof av === "string") { av = normalizeText(av); bv = normalizeText(bv); }
+      if(av === null || av === undefined) av = "";
+      if(bv === null || bv === undefined) bv = "";
+      let cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      return insumoCompraSort.dir === "asc" ? cmp : -cmp;
+    });
+
+    document.getElementById("insumocompra-count").textContent = `${rows.length} de ${insumosCompra.size} produtos de compra`;
+    const tbody = document.getElementById("insumocompra-tbody");
+    tbody.innerHTML = rows.map(r => {
+      const ult = fornecedorSugeridoParaInsumoCompra(r.id);
+      return `
+              <tr${r.ativo===false?' style="opacity:.55;"':''}>
+                <td class="name-cell">${escapeHtml(r.nome)}</td>
+                <td class="tag-sheet">${escapeHtml(r._baseNome)}</td>
+                <td class="num-cell">${escapeHtml(r._grupo)}</td>
+                <td class="num-cell">${ult && ult.preco_unitario!=null ? fmtMoney(ult.preco_unitario)+(ult.fator_embalagem>1?` (${fmtNum(ult.fator_embalagem,3)})`:"") : "—"}</td>
+                <td class="num-cell">${usoPorCompra.get(r.id)||0} pedido(s)</td>
+                <td class="num-cell">${r.ativo===false?'<span class="chip neutral">inativo</span>':'<span class="chip ok">ativo</span>'}</td>
+                <td style="text-align:right; white-space:nowrap;">
+                  <button class="btn small ghost" data-edit="${r.id}">editar</button>
+                  <button class="btn small ghost" data-toggle="${r.id}" data-ativar="${r.ativo===false}">${r.ativo===false?"reativar":"desativar"}</button>
+                </td>
+              </tr>`;
+    }).join("") || `<tr><td colspan="7" class="empty-state">Nenhum produto de compra encontrado.</td></tr>`;
+    tbody.querySelectorAll("[data-edit]").forEach(b => b.addEventListener("click", () => openInsumoCompraModal(b.dataset.edit, { onSaved: () => { document.getElementById("modal-root").innerHTML = ""; renderInsumos(); } })));
+    tbody.querySelectorAll("[data-toggle]").forEach(b => b.addEventListener("click", () => desativarInsumoCompra(b.dataset.toggle, b.dataset.ativar === "true")));
+
+    content.querySelectorAll("#insumocompra-thead-row th.sortable").forEach(th => {
+      th.textContent = th.textContent.replace(/ [↑↓]$/, "") + (insumoCompraSort.field===th.dataset.field ? (insumoCompraSort.dir==="asc"?" ↑":" ↓") : "");
+    });
+  }
+
+  updateInsumoCompraTable();
+  document.getElementById("insumocompra-search").addEventListener("input", e => { insumoCompraFilter = e.target.value; updateInsumoCompraTable(); });
+  document.getElementById("insumocompra-grupo").addEventListener("change", e => { insumoCompraGrupoFilter = e.target.value; updateInsumoCompraTable(); });
+  document.getElementById("insumocompra-inativos").addEventListener("change", e => { insumoCompraMostrarInativos = e.target.checked; updateInsumoCompraTable(); });
+  content.querySelectorAll("#insumocompra-thead-row th.sortable").forEach(th => th.addEventListener("click", () => {
+    const f = th.dataset.field;
+    if(insumoCompraSort.field === f) insumoCompraSort.dir = insumoCompraSort.dir === "asc" ? "desc" : "asc";
+    else insumoCompraSort = {field:f, dir:"asc"};
+    updateInsumoCompraTable();
   }));
 }
 
