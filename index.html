@@ -10839,7 +10839,12 @@ async function openPedidoModal(id, opts){
   }
   root.addEventListener("input", scheduleAutosave);
   root.addEventListener("change", scheduleAutosave);
-  scheduleAutosave(); // guarda já de cara (ex.: rascunho recuperado, ou item padrão da linha nova)
+  // 18/11/2026, correção (relato da compradora): ao reabrir recém-salvo (opts.savedAt), não há nada
+  // digitado para proteger — gravar aqui criava um rascunho "fantasma" sob a chave do pedido já salvo,
+  // que depois aparecia como "lançamento não salvo" na próxima vez que o pedido fosse aberto, mesmo
+  // estando tudo certo no banco. Só agenda o autosave inicial fora desse caso (rascunho recuperado, ou
+  // item padrão da linha nova).
+  if(!opts.savedAt) scheduleAutosave();
 
   const fornEl = document.getElementById("pd-fornecedor");
   function refreshFornInfo(){
