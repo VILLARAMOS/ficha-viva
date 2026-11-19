@@ -714,7 +714,8 @@ function renderEmConstrucao(titulo, icone){
   if(window.lucide) lucide.createIcons();
 }
 
-/* ================= Suprimento (19/11/2026) — mínimos, pedido/separação e orçamento (R$) ================= */
+/* ================= Suprimento (19/11/2026, ajustado 19/11/2026) — mínimos, pedido/separação por
+   SEMANA, orçamento (R$) e itens das 2 listas ================= */
 const SUPRIMENTO_MES_NOMES = ["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"];
 function suprimentoFmtMes(ymd){
   const [y,m] = ymd.split("-").map(n=>parseInt(n,10));
@@ -726,9 +727,20 @@ function suprimentoDestinoSelectHtml(id){
   const clientes = destinos.filter(d=>d.tipo==="contrato");
   const opt = d => `<option value="${suprimentoDestinoChave(d.tipo,d.id)}" ${suprimentoDestinoChave(d.tipo,d.id)===suprimentoDestinoSel?"selected":""}>${escapeHtml(d.nome)}</option>`;
   return `<select id="${id}">
-    <optgroup label="Unidades próprias">${proprias.map(opt).join("")}</optgroup>
+    <optgroup label="Unidades próprias (produção)">${proprias.map(opt).join("")}</optgroup>
     <optgroup label="Unidades transportadas (clientes)">${clientes.map(opt).join("")}</optgroup>
   </select>`;
+}
+// seg-toggle pras 2 listas de Suprimento — reaproveitado em Mínimos, Pedido e Itens.
+function suprimentoListaToggleHtml(id){
+  return `<div class="seg-toggle" id="${id}">${SUPRIMENTO_LISTAS.map(l => `<button type="button" data-lista="${l.id}" class="${suprimentoListaSel===l.id?"active":""}" title="${escapeHtml(l.nome)}">${escapeHtml(l.curto)}</button>`).join("")}</div>`;
+}
+// semanas disponíveis pro seletor — base das semanas já usadas em Vendas + a atual + 2 futuras.
+function suprimentoSemanasOpcoes(){
+  const base = semanasDisponiveisVendas();
+  const atual = (semanaDiaDaData(hojeYMD())||{}).semana || 1;
+  const maxBase = Math.max(...base, atual);
+  return [...new Set([...base, atual, maxBase+1, maxBase+2])].sort((a,b)=>a-b);
 }
 
 async function renderSuprimento(){
@@ -736,13 +748,14 @@ async function renderSuprimento(){
   document.getElementById("page-desc").textContent = "";
   document.getElementById("topbar-actions").innerHTML = "";
   if(!suprimentoDestinos().some(d => suprimentoDestinoChave(d.tipo,d.id)===suprimentoDestinoSel)) suprimentoDestinoSel = "matriz|";
-  if(!suprimentoDataSel) suprimentoDataSel = hojeYMD();
+  if(!suprimentoSemanaSel) suprimentoSemanaSel = (semanaDiaDaData(hojeYMD())||{}).semana || 1;
   if(!suprimentoMesSel) suprimentoMesSel = hojeYMD().slice(0,7)+"-01";
 
   const subtabs = [
     {id:"minimos", nome:"Mínimos", ico:"list-checks"},
     {id:"pedido", nome:"Pedido / separação", ico:"clipboard-list"},
     {id:"orcamento", nome:"Orçamento (R$)", ico:"wallet"},
+    {id:"itens", nome:"Itens das listas", ico:"tags"},
   ];
   document.getElementById("content").innerHTML = `
     <div class="es-wrap">
@@ -761,7 +774,8 @@ async function renderSuprimento(){
   });
   if(suprimentoSubView === "minimos") renderSuprimentoMinimosTab();
   else if(suprimentoSubView === "pedido") renderSuprimentoPedidoTab();
-  else renderSuprimentoOrcamentoTab();
+  else if(suprimentoSubView === "orcamento") renderSuprimentoOrcamentoTab();
+  else renderSuprimentoItensTab();
   if(window.lucide) lucide.createIcons();
 }
 
@@ -769,7 +783,6 @@ function renderSuprimentoMinimosTab(){
   const sub = document.getElementById("sup-sub-body");
   const destino = suprimentoDestinoAtual();
   const minimosMapa = suprimentoMinimoPorDestino(destino.tipo, destino.id);
-  const grupos = [...new Set([...insumos.values()].map(i=>i.grupo_compra).filter(Boolean))].sort();
   sub.innerHTML = `
     <div class="panel">
       <div class="panel-head"><h3><i class="ico" data-lucide="list-checks"></i>Mínimo por destino — ${escapeHtml(destino.nome)}</h3></div>
@@ -777,25 +790,24 @@ function renderSuprimentoMinimosTab(){
         <div class="menu-controls" style="margin-bottom:14px;">
           ${suprimentoDestinoSelectHtml("sup-min-destino")}
         </div>
-        <div class="search-bar" style="margin-bottom:0;">
+        ${suprimentoListaToggleHtml("sup-min-lista")}
+        <div class="search-bar" style="margin:14px 0 0;">
           <input type="text" id="sup-min-search" placeholder="Buscar insumo…" value="${escapeHtml(suprimentoFilter)}">
-          <select id="sup-min-grupo">
-            <option value="" ${suprimentoGrupoFilter===""?"selected":""}>Grupos de suprimento (padrão)</option>
-            <option value="__todos" ${suprimentoGrupoFilter==="__todos"?"selected":""}>Todos os grupos</option>
-            ${grupos.map(g=>`<option value="${escapeHtml(g)}" ${suprimentoGrupoFilter===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}
-          </select>
           <span class="pend-count" id="sup-min-count"></span>
         </div>
       </div>
       <div class="table-wrap es-table"><table>
-        <thead><tr><th>Insumo</th><th>Grupo</th><th>Unidade</th><th style="text-align:right;">Mínimo (qtd.)</th><th>Regra (texto, só exibição)</th></tr></thead>
+        <thead><tr><th>Insumo</th><th>Unidade</th><th style="text-align:right;">Mínimo (qtd.)</th><th>Regra (texto, só exibição)</th></tr></thead>
         <tbody id="sup-min-tbody"></tbody>
       </table></div>
     </div>
   `;
   document.getElementById("sup-min-destino").addEventListener("change", e => { suprimentoDestinoSel = e.target.value; renderSuprimentoMinimosTab(); });
+  document.getElementById("sup-min-lista").addEventListener("click", e => {
+    const b = e.target.closest("button[data-lista]"); if(!b) return;
+    suprimentoListaSel = b.dataset.lista; renderSuprimentoMinimosTab();
+  });
   document.getElementById("sup-min-search").addEventListener("input", e => { suprimentoFilter = e.target.value; updateTable(); });
-  document.getElementById("sup-min-grupo").addEventListener("change", e => { suprimentoGrupoFilter = e.target.value; updateTable(); });
 
   function updateTable(){
     const rows = suprimentoInsumosFiltrados();
@@ -804,12 +816,11 @@ function renderSuprimentoMinimosTab(){
       const row = minimosMapa.get(r.id);
       return `<tr>
         <td class="name-cell">${escapeHtml(r.nome)}</td>
-        <td style="font-size:12.5px;">${escapeHtml(r.grupo_compra||"—")}</td>
         <td>${escapeHtml(r.unidade_medida||"—")}</td>
         <td class="num-cell"><input type="number" min="0" step="0.001" class="sup-min-qtd" data-id="${r.id}" value="${row&&row.minimo_qtd!==null&&row.minimo_qtd!==undefined?row.minimo_qtd:""}" placeholder="—"></td>
         <td><input type="text" class="sup-min-regra" data-id="${r.id}" value="${row&&row.minimo_regra_texto?escapeHtml(row.minimo_regra_texto):""}" placeholder="ex.: 2 por semana"></td>
       </tr>`;
-    }).join("") || `<tr><td colspan="5" class="empty-state">Nenhum insumo encontrado com este filtro.</td></tr>`;
+    }).join("") || `<tr><td colspan="4" class="empty-state">Nenhum insumo nesta lista ainda — adicione na aba "Itens das listas".</td></tr>`;
     const salvar = async (id) => {
       const qtdInp = document.querySelector(`.sup-min-qtd[data-id="${id}"]`);
       const regraInp = document.querySelector(`.sup-min-regra[data-id="${id}"]`);
@@ -825,14 +836,18 @@ function renderSuprimentoMinimosTab(){
 function renderSuprimentoPedidoTab(){
   const sub = document.getElementById("sup-sub-body");
   const destino = suprimentoDestinoAtual();
-  const pedido = suprimentoPedidoAtual(destino.tipo, destino.id, suprimentoDataSel);
+  const pedido = suprimentoPedidoAtual(destino.tipo, destino.id, suprimentoSemanaSel);
   const status = pedido ? pedido.status : "rascunho";
   const minimosMapa = suprimentoMinimoPorDestino(destino.tipo, destino.id);
   const itensDoPedido = new Map(((pedido && pedido.itens) || []).map(it => [it.insumo_id, it]));
   const travado = status !== "rascunho";
-  // só entram na lista os insumos com mínimo cadastrado pra este destino — igual à planilha hoje.
-  const insumosComMinimo = [...minimosMapa.keys()].map(id => insumos.get(id) ? {id, ...insumos.get(id)} : null).filter(Boolean)
+  // só entram na lista os insumos com mínimo cadastrado pra este destino, DA LISTA selecionada —
+  // igual à planilha hoje (2 listas semanais separadas por cliente: limpeza/temperos e café/suco).
+  const insumosComMinimo = [...minimosMapa.keys()]
+    .map(id => insumos.get(id) ? {id, ...insumos.get(id)} : null)
+    .filter(r => r && r.suprimento_lista === suprimentoListaSel)
     .sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
+  // valor do pedido mostrado é o TOTAL (as 2 listas somadas), não só a lista em tela.
   const valorTotal = pedido ? (pedido.valor_total||0) : 0;
   const statusChip = {
     rascunho: `<span class="chip">Rascunho</span>`,
@@ -853,13 +868,14 @@ function renderSuprimentoPedidoTab(){
       <div class="panel-body">
         <div class="menu-controls" style="margin-bottom:14px;">
           ${suprimentoDestinoSelectHtml("sup-ped-destino")}
-          <input type="date" id="sup-ped-data" value="${suprimentoDataSel}">
+          <select id="sup-ped-semana">${suprimentoSemanasOpcoes().map(s=>`<option value="${s}" ${s===suprimentoSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
         </div>
-        <div class="es-kpis inner">
-          ${estoqueKpiCard({label:"Valor do pedido", value: fmtMoney(valorTotal)})}
-          ${estoqueKpiCard({label:"Itens com mínimo cadastrado", value: String(insumosComMinimo.length)})}
+        ${suprimentoListaToggleHtml("sup-ped-lista")}
+        <div class="es-kpis inner" style="margin-top:14px;">
+          ${estoqueKpiCard({label:"Valor do pedido (as 2 listas)", value: fmtMoney(valorTotal)})}
+          ${estoqueKpiCard({label:`Itens nesta lista com mínimo`, value: String(insumosComMinimo.length)})}
         </div>
-        ${!insumosComMinimo.length ? `<div class="insight-list" style="margin:0 0 14px;"><div class="insight-item warn"><span class="dot"></span><span>Nenhum mínimo cadastrado pra este destino ainda — cadastre na aba "Mínimos" antes de pedir.</span></div></div>` : ""}
+        ${!insumosComMinimo.length ? `<div class="insight-list" style="margin:0 0 14px;"><div class="insight-item warn"><span class="dot"></span><span>Nenhum mínimo cadastrado pra este destino nesta lista ainda — cadastre na aba "Mínimos" antes de pedir.</span></div></div>` : ""}
       </div>
       <div class="table-wrap es-table"><table>
         <thead><tr><th>Insumo</th><th style="text-align:right;">Mínimo</th><th style="text-align:right;">Estoque local</th><th style="text-align:right;">Ajuste (+/-)</th><th style="text-align:right;">Sugerido</th><th style="text-align:right;">Pedido final</th><th style="text-align:right;">Subtotal</th></tr></thead>
@@ -880,16 +896,20 @@ function renderSuprimentoPedidoTab(){
             <td class="num-cell"><input type="number" min="0" step="0.001" class="sup-ped-final" data-id="${r.id}" value="${final!==null&&final!==undefined?final:""}" ${travado?"disabled":""} placeholder="—"></td>
             <td class="num-cell">${fmtMoney(subtotal)}</td>
           </tr>`;
-        }).join("") || `<tr><td colspan="7" class="empty-state">Nenhum insumo com mínimo cadastrado pra este destino.</td></tr>`}</tbody>
+        }).join("") || `<tr><td colspan="7" class="empty-state">Nenhum insumo com mínimo cadastrado pra este destino nesta lista.</td></tr>`}</tbody>
       </table></div>
     </div>
   `;
   document.getElementById("sup-ped-destino").addEventListener("change", e => { suprimentoDestinoSel = e.target.value; renderSuprimentoPedidoTab(); });
-  document.getElementById("sup-ped-data").addEventListener("change", e => { suprimentoDataSel = e.target.value; renderSuprimentoPedidoTab(); });
+  document.getElementById("sup-ped-semana").addEventListener("change", e => { suprimentoSemanaSel = parseInt(e.target.value,10); renderSuprimentoPedidoTab(); });
+  document.getElementById("sup-ped-lista").addEventListener("click", e => {
+    const b = e.target.closest("button[data-lista]"); if(!b) return;
+    suprimentoListaSel = b.dataset.lista; renderSuprimentoPedidoTab();
+  });
   if(status==="rascunho"){
     document.getElementById("sup-ped-fechar").addEventListener("click", async () => {
       if(!pedido){ showAlert("Informe ao menos um item antes de fechar a separação."); return; }
-      if(!confirm("Fechar a separação deste pedido? Isso vai dar baixa real no estoque.")) return;
+      if(!confirm("Fechar a separação deste pedido? Isso vai dar baixa real no estoque (das 2 listas, não só da que está em tela).")) return;
       const ok = await fecharSuprimentoPedido(pedido.id);
       if(ok) renderSuprimentoPedidoTab();
     });
@@ -913,7 +933,7 @@ function renderSuprimentoPedidoTab(){
         const existente = itensDoPedido.get(id);
         if(existente && Math.abs((existente.pedido_final||0) - (existente.pedido_sugerido||0)) > 0.0005) finalParaEnviar = existente.pedido_final;
       }
-      await salvarItemSuprimentoPedido(destino.tipo, destino.id, suprimentoDataSel, id, estEl.value, ajEl.value, finalParaEnviar);
+      await salvarItemSuprimentoPedido(destino.tipo, destino.id, suprimentoSemanaSel, id, estEl.value, ajEl.value, finalParaEnviar);
       renderSuprimentoPedidoTab();
     };
     document.getElementById("sup-ped-tbody").querySelectorAll(".sup-ped-estoque, .sup-ped-ajuste").forEach(inp => {
@@ -923,6 +943,58 @@ function renderSuprimentoPedidoTab(){
       inp.addEventListener("change", () => salvarLinha(inp.dataset.id, "final"));
     });
   }
+}
+
+function renderSuprimentoItensTab(){
+  const sub = document.getElementById("sup-sub-body");
+  sub.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h3><i class="ico" data-lucide="tags"></i>Itens das listas de Suprimento</h3></div>
+      <div class="panel-body">
+        <div class="footnote" style="margin:0 0 10px;">Marca quais insumos (já cadastrados, de qualquer grupo) entram em cada lista de Suprimento — não muda o grupo de compra nem o CMV do item, é só uma marcação à parte.</div>
+        ${suprimentoListaToggleHtml("sup-itens-lista")}
+        <div class="search-bar" style="margin:14px 0 0;">
+          <input type="text" id="sup-itens-search" placeholder="Buscar em todos os insumos…" value="${escapeHtml(suprimentoFilter)}">
+          <label style="display:flex; align-items:center; gap:6px; font-size:13px; white-space:nowrap;"><input type="checkbox" id="sup-itens-so-marcados"> só os já marcados nesta lista</label>
+          <span class="pend-count" id="sup-itens-count"></span>
+        </div>
+      </div>
+      <div class="table-wrap es-table"><table>
+        <thead><tr><th style="width:36px;"></th><th>Insumo</th><th>Grupo de compra</th><th>Unidade</th></tr></thead>
+        <tbody id="sup-itens-tbody"></tbody>
+      </table></div>
+    </div>
+  `;
+  document.getElementById("sup-itens-lista").addEventListener("click", e => {
+    const b = e.target.closest("button[data-lista]"); if(!b) return;
+    suprimentoListaSel = b.dataset.lista; updateTable();
+  });
+  document.getElementById("sup-itens-search").addEventListener("input", e => { suprimentoFilter = e.target.value; updateTable(); });
+  document.getElementById("sup-itens-so-marcados").addEventListener("change", updateTable);
+
+  function updateTable(){
+    // atualiza os botões da lista (o seg-toggle não é reconstruído pra não perder o foco do campo de busca)
+    document.getElementById("sup-itens-lista").querySelectorAll("button[data-lista]").forEach(b => b.classList.toggle("active", b.dataset.lista===suprimentoListaSel));
+    const soMarcados = document.getElementById("sup-itens-so-marcados").checked;
+    let rows = [...insumos.entries()].map(([id,d]) => ({id, ...d}));
+    if(soMarcados) rows = rows.filter(r => r.suprimento_lista === suprimentoListaSel);
+    if(suprimentoFilter.trim()) rows = rows.filter(r => normalizeText(r.nome||"").includes(normalizeText(suprimentoFilter.trim())));
+    rows.sort((a,b) => normalizeText(a.nome||"").localeCompare(normalizeText(b.nome||"")));
+    document.getElementById("sup-itens-count").textContent = `${rows.length} insumo${rows.length===1?"":"s"}`;
+    document.getElementById("sup-itens-tbody").innerHTML = rows.map(r => `<tr>
+      <td><input type="checkbox" class="sup-itens-check" data-id="${r.id}" ${r.suprimento_lista===suprimentoListaSel?"checked":""}></td>
+      <td class="name-cell">${escapeHtml(r.nome)}${r.suprimento_lista && r.suprimento_lista!==suprimentoListaSel ? ` <span class="chip neutral">já na outra lista</span>` : ""}</td>
+      <td style="font-size:12.5px;">${escapeHtml(r.grupo_compra||"—")}</td>
+      <td>${escapeHtml(r.unidade_medida||"—")}</td>
+    </tr>`).join("") || `<tr><td colspan="4" class="empty-state">Nenhum insumo encontrado com este filtro.</td></tr>`;
+    document.getElementById("sup-itens-tbody").querySelectorAll(".sup-itens-check").forEach(chk => {
+      chk.addEventListener("change", async () => {
+        await salvarSuprimentoListaDoInsumo(chk.dataset.id, chk.checked ? suprimentoListaSel : null);
+        updateTable();
+      });
+    });
+  }
+  updateTable();
 }
 
 function renderSuprimentoOrcamentoTab(){
@@ -2423,14 +2495,18 @@ async function registrarBaixaLote(unidade, tipo, itens, observacao, dataYMD){
     return linhas.length;
   }catch(e){ showAlert(mensagemErro(e, "Erro ao registrar baixa em lote: ")); return -1; }
 }
-/* ===== Suprimentos (19/11/2026) — camada de dados =====
+/* ===== Suprimentos (19/11/2026, ajustado 19/11/2026) — camada de dados =====
    destino = {tipo:'matriz'|'filial'|'contrato', id:null|contrato_id}. Itens de suprimento ficam
-   no MESMO cadastro de Insumos (decisão de 12/10/2026), só filtrados pelos grupos abaixo — não
-   existe um cadastro de item paralelo aqui. */
-const SUPRIMENTO_GRUPOS_PADRAO = ["LIMPEZA E DESCARTÁVEIS", "PADARIA"];
+   no MESMO cadastro de Insumos (decisão de 12/10/2026), só marcados por `suprimento_lista`
+   ('limpeza_temperos'|'cafe_suco') — campo ORTOGONAL ao grupo_compra/CMV: um insumo de comida
+   (açúcar, tempero) pode estar marcado pra Suprimento sem sair do grupo_compra que usa pro CMV. */
+const SUPRIMENTO_LISTAS = [
+  {id:"limpeza_temperos", nome:"Limpeza / embalagens / descartáveis / temperos", curto:"Limpeza / temperos"},
+  {id:"cafe_suco", nome:"Café / suco", curto:"Café / suco"},
+];
 
 let suprimentoMinimos = new Map(); // id -> {destino_tipo, destino_id, insumo_id, minimo_qtd, minimo_regra_texto, ativo}
-let suprimentoPedidos = new Map(); // id -> {destino_tipo, destino_id, data, itens:[{insumo_id,estoque_local,ajuste,pedido_sugerido,pedido_final,custo_unitario,subtotal}], status, valor_total, observacoes, grupo_movimentacao}
+let suprimentoPedidos = new Map(); // id -> {destino_tipo, destino_id, semana, data, itens:[{insumo_id,estoque_local,ajuste,pedido_sugerido,pedido_final,custo_unitario,subtotal}], status, valor_total, observacoes, grupo_movimentacao}
 let suprimentoOrcamentoFixo = new Map(); // id -> {unidade, competencia, valor_mensal}
 
 async function loadSuprimentoMinimos(){
@@ -2440,7 +2516,7 @@ async function loadSuprimentoMinimos(){
   (data || []).forEach(row => suprimentoMinimos.set(row.id, row));
 }
 async function loadSuprimentoPedidos(){
-  const { data, error } = await sb.from('suprimento_pedidos').select('*').order('data', {ascending:false});
+  const { data, error } = await sb.from('suprimento_pedidos').select('*').order('semana', {ascending:false});
   suprimentoPedidos = new Map();
   if(error){ showAlert('Erro ao carregar pedidos de suprimento: ' + error.message); return; }
   (data || []).forEach(row => suprimentoPedidos.set(row.id, row));
@@ -2453,12 +2529,20 @@ async function loadSuprimentoOrcamentoFixo(){
 }
 
 function suprimentoDestinoChave(tipo, id){ return `${tipo}|${id||""}`; }
+// destinos de cliente — exclui CNS (é o mesmo lugar que "Filial") e junta MLASER+M2L num só
+// (ver SUPRIMENTO_CONTRATO_NOME_EXCLUIR/OCULTAR_DO_GRUPO/GRUPO_LABEL, declarados junto do estado).
 function suprimentoDestinos(){
   const lista = [
     {tipo:"matriz", id:null, nome:"Matriz"},
     {tipo:"filial", id:null, nome:"Filial"},
   ];
-  [...contratos.entries()].filter(([,c]) => c.ativo).forEach(([id,c]) => lista.push({tipo:"contrato", id, nome:c.nome_cliente || "(sem nome)"}));
+  [...contratos.entries()].filter(([,c]) => c.ativo).forEach(([id,c]) => {
+    const nome = (c.nome_cliente || "").trim().toUpperCase();
+    if(SUPRIMENTO_CONTRATO_NOME_EXCLUIR.includes(nome)) return;
+    if(SUPRIMENTO_CONTRATO_NOME_OCULTAR_DO_GRUPO.includes(nome)) return;
+    const label = SUPRIMENTO_CONTRATO_NOME_GRUPO_LABEL[nome] || (c.nome_cliente || "(sem nome)");
+    lista.push({tipo:"contrato", id, nome: label});
+  });
   lista.sort((a,b) => {
     if(a.tipo!=="contrato" && b.tipo==="contrato") return -1;
     if(a.tipo==="contrato" && b.tipo!=="contrato") return 1;
@@ -2469,11 +2553,10 @@ function suprimentoDestinos(){
 function suprimentoDestinoAtual(){
   return suprimentoDestinos().find(d => suprimentoDestinoChave(d.tipo, d.id) === suprimentoDestinoSel) || suprimentoDestinos()[0];
 }
+// insumos já marcados numa das 2 listas de Suprimento (usado em Mínimos/Pedido) — a aba "Itens"
+// usa seu próprio filtro (vê o catálogo inteiro, pra permitir adicionar itens novos à lista).
 function suprimentoInsumosFiltrados(){
-  let rows = [...insumos.entries()].map(([id,d]) => ({id, ...d}));
-  if(suprimentoGrupoFilter === "__todos"){ /* sem filtro de grupo */ }
-  else if(suprimentoGrupoFilter){ rows = rows.filter(r => r.grupo_compra === suprimentoGrupoFilter); }
-  else { rows = rows.filter(r => SUPRIMENTO_GRUPOS_PADRAO.includes(r.grupo_compra)); }
+  let rows = [...insumos.entries()].map(([id,d]) => ({id, ...d})).filter(r => r.suprimento_lista === suprimentoListaSel);
   if(suprimentoFilter.trim()) rows = rows.filter(r => normalizeText(r.nome||"").includes(normalizeText(suprimentoFilter.trim())));
   rows.sort((a,b) => normalizeText(a.nome||"").localeCompare(normalizeText(b.nome||"")));
   return rows;
@@ -2500,17 +2583,24 @@ async function salvarSuprimentoMinimo(destinoTipo, destinoId, insumoId, minimoQt
     await loadSuprimentoMinimos();
   }catch(e){ showAlert(mensagemErro(e, "Erro ao salvar mínimo: ")); }
 }
+async function salvarSuprimentoListaDoInsumo(insumoId, listaOuNull){
+  try{
+    const { error } = await sb.from('insumos').update({ suprimento_lista: listaOuNull||null, ...carimbo() }).eq('id', insumoId);
+    if(error) throw error;
+    await loadInsumos();
+  }catch(e){ showAlert(mensagemErro(e, "Erro ao salvar lista de suprimento do insumo: ")); }
+}
 
-/* ---- pedido / separação ---- */
-function suprimentoPedidoAtual(destinoTipo, destinoId, data){
-  return [...suprimentoPedidos.values()].find(r => r.destino_tipo===destinoTipo && (r.destino_id||null)===(destinoId||null) && r.data===data) || null;
+/* ---- pedido / separação (por SEMANA — fornecimento às unidades transportadas é semanal) ---- */
+function suprimentoPedidoAtual(destinoTipo, destinoId, semana){
+  return [...suprimentoPedidos.values()].find(r => r.destino_tipo===destinoTipo && (r.destino_id||null)===(destinoId||null) && r.semana===semana) || null;
 }
 function suprimentoCalcularSugerido(estoqueLocal, ajuste, minimoQtd){
   return Math.max(0, (minimoQtd||0) - (estoqueLocal||0) + (ajuste||0));
 }
-// grava (upsert) um item do pedido do dia — cria o pedido (status rascunho) se ainda não existir.
+// grava (upsert) um item do pedido da semana — cria o pedido (status rascunho) se ainda não existir.
 // pedidoFinalStrOuNull null/"" => usa o sugerido calculado (comportamento padrão, igual à planilha).
-async function salvarItemSuprimentoPedido(destinoTipo, destinoId, data, insumoId, estoqueLocalStr, ajusteStr, pedidoFinalStrOuNull){
+async function salvarItemSuprimentoPedido(destinoTipo, destinoId, semana, insumoId, estoqueLocalStr, ajusteStr, pedidoFinalStrOuNull){
   const minimoRow = suprimentoMinimoPorDestino(destinoTipo, destinoId).get(insumoId);
   const estoqueLocal = (estoqueLocalStr===""||estoqueLocalStr===null) ? 0 : Math.max(0, parseFloat(String(estoqueLocalStr).replace(",",".")) || 0);
   const ajuste = (ajusteStr===""||ajusteStr===null) ? 0 : (parseFloat(String(ajusteStr).replace(",",".")) || 0);
@@ -2518,7 +2608,7 @@ async function salvarItemSuprimentoPedido(destinoTipo, destinoId, data, insumoId
   const pedidoFinal = (pedidoFinalStrOuNull===undefined || pedidoFinalStrOuNull===null || pedidoFinalStrOuNull==="") ? sugerido : Math.max(0, parseFloat(String(pedidoFinalStrOuNull).replace(",",".")) || 0);
   const ins = insumos.get(insumoId);
   const custoUnitario = ins ? (ins.custo_kg_l_und||0) : 0;
-  const pedido = suprimentoPedidoAtual(destinoTipo, destinoId, data);
+  const pedido = suprimentoPedidoAtual(destinoTipo, destinoId, semana);
   const itens = pedido ? [...(pedido.itens||[])] : [];
   const idx = itens.findIndex(it => it.insumo_id === insumoId);
   const novoItem = { insumo_id: insumoId, estoque_local: estoqueLocal, ajuste, pedido_sugerido: sugerido, pedido_final: pedidoFinal, custo_unitario: custoUnitario, subtotal: +(pedidoFinal*custoUnitario).toFixed(2) };
@@ -2529,7 +2619,8 @@ async function salvarItemSuprimentoPedido(destinoTipo, destinoId, data, insumoId
       const { error } = await sb.from('suprimento_pedidos').update({ itens, valor_total: valorTotal, ...carimbo() }).eq('id', pedido.id);
       if(error) throw error;
     } else {
-      const payload = { destino_tipo:destinoTipo, destino_id:destinoId||null, data, itens, valor_total: valorTotal, status:"rascunho", criado_por: usuarioId||null };
+      const dataRef = dataDoDia(semana, "SEGUNDA").toISOString().slice(0,10);
+      const payload = { destino_tipo:destinoTipo, destino_id:destinoId||null, semana, data: dataRef, itens, valor_total: valorTotal, status:"rascunho", criado_por: usuarioId||null };
       const { error } = await sb.from('suprimento_pedidos').insert([payload]);
       if(error) throw error;
     }
@@ -2588,13 +2679,14 @@ async function salvarSuprimentoOrcamentoFixo(unidade, competenciaYMD, valorStr){
     await loadSuprimentoOrcamentoFixo();
   }catch(e){ showAlert(mensagemErro(e, "Erro ao salvar orçamento fixo: ")); }
 }
+// atribui o gasto da semana ao mês pela QUARTA-feira dela — mesmo critério que o resto do sistema
+// usa pra decidir de qual mês é uma semana que atravessa a virada (ver mesDoDia/MESES_REFERENCIA).
 function suprimentoGastoNoMes(destinoTipo, destinoId, competenciaYMD){
-  const [ano, mes] = competenciaYMD.split("-").map(n=>parseInt(n,10));
+  const mesId = competenciaYMD.slice(0,7);
   let total = 0, nPedidos = 0;
   suprimentoPedidos.forEach(p => {
-    if(p.destino_tipo!==destinoTipo || (p.destino_id||null)!==(destinoId||null) || p.status==="cancelado" || !p.data) return;
-    const [py,pm] = p.data.split("-").map(n=>parseInt(n,10));
-    if(py===ano && pm===mes){ total += (p.valor_total||0); nPedidos++; }
+    if(p.destino_tipo!==destinoTipo || (p.destino_id||null)!==(destinoId||null) || p.status==="cancelado" || !p.semana) return;
+    if(mesDoDia(p.semana, "QUARTA") === mesId){ total += (p.valor_total||0); nPedidos++; }
   });
   return { total, nPedidos };
 }
@@ -9793,15 +9885,23 @@ let estoqueSemanaSel = null;
 let estoqueFilter = "";
 let estoqueGrupoFilter = "";
 
-/* ===== Suprimentos (19/11/2026) — controle de consumo/abastecimento de limpeza, descartáveis e
-   café nas unidades transportadas (contratos), matriz e filial, com mínimo, pedido/separação e
-   orçamento em R$. destino = {tipo: 'matriz'|'filial'|'contrato', id: null|contrato_id} — NÃO
-   confundir com o campo "unidade" usado no resto do banco (que só existe para matriz/filial). ===== */
-let suprimentoSubView = "minimos"; // "minimos" | "pedido" | "orcamento"
+/* ===== Suprimentos (19/11/2026, ajustado 19/11/2026) — controle de consumo/abastecimento de
+   limpeza/embalagens/descartáveis/temperos e café/suco nas unidades transportadas (contratos),
+   matriz e filial, com mínimo, pedido/separação por SEMANA (fornecimento às unidades transportadas
+   é semanal) e orçamento em R$. destino = {tipo: 'matriz'|'filial'|'contrato', id: null|contrato_id}
+   — NÃO confundir com o campo "unidade" usado no resto do banco (que só existe para matriz/filial).
+   Casos especiais de destino (pedido do Marcelo, 19/11/2026): a CNS (contrato cadastrado em Filial)
+   NÃO aparece como destino de cliente — é o mesmo lugar que o destino "Filial" (produção local da
+   filial). MLASER e M2L contam como um destino só ("MLASER / M2L"), usando o id da MLASER — caso
+   único, se precisar agrupar outros clientes no futuro isso vira uma tabela própria. */
+const SUPRIMENTO_CONTRATO_NOME_EXCLUIR = ["CNS"]; // mesmo destino que "Filial" — não lista como cliente
+const SUPRIMENTO_CONTRATO_NOME_OCULTAR_DO_GRUPO = ["M2L"]; // entra combinado no destino da MLASER
+const SUPRIMENTO_CONTRATO_NOME_GRUPO_LABEL = {"MLASER": "MLASER / M2L"};
+let suprimentoSubView = "minimos"; // "minimos" | "pedido" | "orcamento" | "itens"
 let suprimentoDestinoSel = "matriz|"; // chave `${tipo}|${id||""}`
-let suprimentoDataSel = null; // YYYY-MM-DD, default hoje
+let suprimentoSemanaSel = null; // nº da semana (mesma contagem de Cardápio/Contratos/Vendas)
 let suprimentoFilter = "";
-let suprimentoGrupoFilter = ""; // "" = grupos padrão de suprimento (ver SUPRIMENTO_GRUPOS_PADRAO); "__todos" = todos os grupos
+let suprimentoListaSel = "limpeza_temperos"; // "limpeza_temperos" | "cafe_suco" — qual das 2 listas está em tela
 let suprimentoMesSel = null; // YYYY-MM-01, pro painel de orçamento
 
 // "outros" (refrigerante, lanche, etc.) continua fora da lista de compra — só refeição aqui.
