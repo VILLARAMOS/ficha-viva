@@ -11234,7 +11234,7 @@ function renderTabPedidos(){
 /* ---- modal: registrar/editar pedido ---- */
 function linhaDePedidoAnterior(it){
   return { insumo_id: it.insumo_id||null, insumo_compra_id: it.insumo_compra_id||null, nome: it.nome||"", unidade: it.unidade||"", fator_embalagem: it.fator_embalagem||null, quantidade: it.quantidade!=null?it.quantidade:null, preco_unitario: it.preco_unitario!=null?it.preco_unitario:null,
-    embalagem_tipo: it.embalagem_tipo||null, embalagem_outra: it.embalagem_outra||null };
+    embalagem_tipo: it.embalagem_tipo||null, embalagem_outra: it.embalagem_outra||null, _grupoFiltro: it.grupo_filtro||null };
 }
 function destinoOpcoes(){
   const ativos = [...contratos.entries()].filter(([,c]) => c.ativo);
@@ -11545,7 +11545,12 @@ async function openPedidoModal(id, opts){
     draft = { fornecedor: existing.fornecedor||"", data_pedido: existing.data_pedido||hojeYMD(), data_entrega_prevista: existing.data_entrega_prevista||"",
       unidade: pedidoUnidade(existing), destino_rotulo: existing.destino_rotulo||"Grupo inteiro", destino_ids: existing.destino_ids||null,
       semana_referencia: existing.semana_referencia!=null?existing.semana_referencia:null, cnpj_faturamento: existing.cnpj_faturamento||"",
-      observacoes: existing.observacoes||"", itens: (existing.itens||[]).map(it => ({...it})) };
+      // 19/11/2026, relato da compradora: o filtro "Grupo (filtro de busca)" por linha voltava sempre pra
+      // "Todos os grupos" ao reabrir um pedido salvo, porque _grupoFiltro nunca era gravado no banco (campo
+      // transiente, só client-side). Agora o valor escolhido é salvo em grupo_filtro (ver payload de salvar,
+      // mais abaixo) e reidratado aqui como _grupoFiltro ao reabrir — deixa de ser só filtro de tela, passa a
+      // persistir, mas continua editável/trocável livremente pelo operador e salvo de novo a cada troca.
+      observacoes: existing.observacoes||"", itens: (existing.itens||[]).map(it => ({...it, _grupoFiltro: it.grupo_filtro||null})) };
   } else if(origem){
     draft = { fornecedor: origem.fornecedor||"", data_pedido: hojeYMD(), data_entrega_prevista: "",
       unidade: pedidoUnidade(origem), destino_rotulo: origem.destino_rotulo||"Grupo inteiro", destino_ids: origem.destino_ids||null,
@@ -11724,10 +11729,14 @@ async function openPedidoModal(id, opts){
   // Então agora só existe 1 jeito de lançar: Custo da embalagem (o que pagou) ÷ Peso/qtd. na embalagem =
   // Custo por kg/L/un, sempre calculado, nunca digitado — elimina de vez a ambiguidade de "campo certo".
   // 10/11/2026, pedido do Marcelo: filtro de "Grupo" por linha pra achar o insumo mais rápido (843 insumos
-  // numa lista só, sem categoria, era lento de buscar) — não é um dado do pedido, só estreita as opções do
-  // datalist de Produto antes de escolher; l._grupoFiltro é transiente (fora da lista de campos do payload).
-  // Sem grupo escolhido, usa o datalist global (todos os insumos); com grupo, usa um datalist só daquele
-  // bloco, próprio da linha (ids únicos por linha porque cada uma pode filtrar um grupo diferente).
+  // numa lista só, sem categoria, era lento de buscar) — não afeta orçamento/CMV (isso continua vindo do
+  // grupo_compra cadastrado no insumo, via blocoDoInsumo), só estreita as opções do datalist de Produto antes
+  // de escolher. Sem grupo escolhido, usa o datalist global (todos os insumos); com grupo, usa um datalist só
+  // daquele bloco, próprio da linha (ids únicos por linha porque cada uma pode filtrar um grupo diferente).
+  // 19/11/2026, correção (relato da compradora): l._grupoFiltro passou a ser salvo como grupo_filtro no item
+  // do pedido (ver payload de "Salvar pedido") e reidratado ao reabrir — antes voltava sempre a "Todos os
+  // grupos" ao reabrir um pedido já salvo, mesmo com o grupo certo escolhido antes de salvar. Continua só um
+  // atalho de busca, trocável livremente pelo operador a qualquer momento.
   function linhaHtml(l,i){
     const ins = l.insumo_id ? insumos.get(l.insumo_id) : null;
     const baseLabel = ins ? unidadeCustoInsumo(ins) : "—";
@@ -12014,6 +12023,7 @@ async function openPedidoModal(id, opts){
       cnpj_faturamento: document.getElementById("pd-cnpj-fat").value.trim() || null,
       itens: itensValidos.map(l => ({ insumo_id:l.insumo_id, insumo_compra_id:l.insumo_compra_id||null, nome:l.nome, unidade: rotuloEmbalagemItem(l, insumos.get(l.insumo_id)) || l.unidade, fator_embalagem:fatorEmbalagemItem(l), quantidade:l.quantidade, preco_unitario:l.preco_unitario||0,
         embalagem_tipo:l.embalagem_tipo||null, embalagem_outra: l.embalagem_tipo==="Outra" ? (l.embalagem_outra||null) : null, observacao: (l.observacao||"").trim() || null,
+        grupo_filtro: l._grupoFiltro || null,
         ...(existing ? (() => { const orig=(existing.itens||[]).find(o=> l.insumo_compra_id ? o.insumo_compra_id===l.insumo_compra_id : o.insumo_id===l.insumo_id); return orig && orig.quantidade_recebida!=null ? {quantidade_recebida:orig.quantidade_recebida} : {}; })() : {}) })),
       valor_total: valorTotalItensPedido(itensValidos),
       observacoes: document.getElementById("pd-obs").value.trim() || null,
