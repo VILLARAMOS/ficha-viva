@@ -11234,7 +11234,7 @@ function renderTabPedidos(){
 /* ---- modal: registrar/editar pedido ---- */
 function linhaDePedidoAnterior(it){
   return { insumo_id: it.insumo_id||null, insumo_compra_id: it.insumo_compra_id||null, nome: it.nome||"", unidade: it.unidade||"", fator_embalagem: it.fator_embalagem||null, quantidade: it.quantidade!=null?it.quantidade:null, preco_unitario: it.preco_unitario!=null?it.preco_unitario:null,
-    embalagem_tipo: it.embalagem_tipo||null, embalagem_outra: it.embalagem_outra||null, _grupoFiltro: it.grupo_filtro||null };
+    embalagem_tipo: it.embalagem_tipo||null, embalagem_outra: it.embalagem_outra||null };
 }
 function destinoOpcoes(){
   const ativos = [...contratos.entries()].filter(([,c]) => c.ativo);
@@ -11545,12 +11545,7 @@ async function openPedidoModal(id, opts){
     draft = { fornecedor: existing.fornecedor||"", data_pedido: existing.data_pedido||hojeYMD(), data_entrega_prevista: existing.data_entrega_prevista||"",
       unidade: pedidoUnidade(existing), destino_rotulo: existing.destino_rotulo||"Grupo inteiro", destino_ids: existing.destino_ids||null,
       semana_referencia: existing.semana_referencia!=null?existing.semana_referencia:null, cnpj_faturamento: existing.cnpj_faturamento||"",
-      // 19/11/2026, relato da compradora: o filtro "Grupo (filtro de busca)" por linha voltava sempre pra
-      // "Todos os grupos" ao reabrir um pedido salvo, porque _grupoFiltro nunca era gravado no banco (campo
-      // transiente, só client-side). Agora o valor escolhido é salvo em grupo_filtro (ver payload de salvar,
-      // mais abaixo) e reidratado aqui como _grupoFiltro ao reabrir — deixa de ser só filtro de tela, passa a
-      // persistir, mas continua editável/trocável livremente pelo operador e salvo de novo a cada troca.
-      observacoes: existing.observacoes||"", itens: (existing.itens||[]).map(it => ({...it, _grupoFiltro: it.grupo_filtro||null})) };
+      observacoes: existing.observacoes||"", itens: (existing.itens||[]).map(it => ({...it})) };
   } else if(origem){
     draft = { fornecedor: origem.fornecedor||"", data_pedido: hojeYMD(), data_entrega_prevista: "",
       unidade: pedidoUnidade(origem), destino_rotulo: origem.destino_rotulo||"Grupo inteiro", destino_ids: origem.destino_ids||null,
@@ -11730,32 +11725,20 @@ async function openPedidoModal(id, opts){
   // Custo por kg/L/un, sempre calculado, nunca digitado — elimina de vez a ambiguidade de "campo certo".
   // 10/11/2026, pedido do Marcelo: filtro de "Grupo" por linha pra achar o insumo mais rápido (843 insumos
   // numa lista só, sem categoria, era lento de buscar) — não afeta orçamento/CMV (isso continua vindo do
-  // grupo_compra cadastrado no insumo, via blocoDoInsumo), só estreita as opções do datalist de Produto antes
-  // de escolher. Sem grupo escolhido, usa o datalist global (todos os insumos); com grupo, usa um datalist só
-  // daquele bloco, próprio da linha (ids únicos por linha porque cada uma pode filtrar um grupo diferente).
-  // 19/11/2026, correção (relato da compradora): l._grupoFiltro passou a ser salvo como grupo_filtro no item
-  // do pedido (ver payload de "Salvar pedido") e reidratado ao reabrir — antes voltava sempre a "Todos os
-  // grupos" ao reabrir um pedido já salvo, mesmo com o grupo certo escolhido antes de salvar. Continua só um
-  // atalho de busca, trocável livremente pelo operador a qualquer momento.
+  // grupo_compra cadastrado no insumo, via blocoDoInsumo), só estreitava as opções do datalist de Produto.
+  // 19/11/2026, removido (confirmado com a compradora): na prática ninguém usava — ela já digita o nome do
+  // produto direto. Também corrigia um bug de persistência (o filtro voltava a "Todos os grupos" ao reabrir
+  // um pedido salvo), mas como o campo em si saiu, essa correção foi revertida junto.
   function linhaHtml(l,i){
     const ins = l.insumo_id ? insumos.get(l.insumo_id) : null;
     const baseLabel = ins ? unidadeCustoInsumo(ins) : "—";
     const custoBase = (l.insumo_id && l.preco_unitario != null) ? precoBaseItem(l) : null;
     const outraVisivel = l.embalagem_tipo === "Outra";
-    const grupoFiltro = l._grupoFiltro || "";
-    const datalistId = grupoFiltro ? `pd-insumo-list-${i}` : "pd-insumo-list";
-    const datalistFiltradaHtml = grupoFiltro ? `<datalist id="${datalistId}">${insumosCompraOrdenados.filter(([,c2]) => ((insumos.get(c2.insumo_base_id)||{}).grupo_compra||"SEM GRUPO") === grupoFiltro).map(([cid,c2]) => `<option value="${escapeHtml(c2.nome)}" data-id="${cid}"></option>`).join("")}</datalist>` : "";
     return `
       <div class="pd-line" data-i="${i}" style="border:1px solid var(--border); border-radius:10px; padding:12px 12px 8px; margin-bottom:10px;">
         <div class="footnote" style="font-weight:600; margin-bottom:4px; opacity:.7;">O que comprou</div>
         <div class="field-row" style="margin-bottom:8px;">
-          <div class="field"><label>Grupo (filtro de busca)</label>
-            <select class="pd-grupo">
-              <option value="">Todos os grupos</option>
-              ${blocosCadastro().map(g => `<option value="${escapeHtml(g)}" ${grupoFiltro===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}
-            </select>
-          </div>
-          <div class="field" style="grid-column:span 2;"><label>Produto</label><input type="text" class="pd-nome" list="${datalistId}" autocomplete="off" value="${escapeHtml(l.nome||"")}" placeholder="Buscar produto de compra…">${datalistFiltradaHtml}<div class="footnote" style="margin-top:2px;">${l.insumo_id ? escapeHtml(blocoDoInsumo(l.insumo_id)) : (l.nome ? '<span style="color:var(--critical);">produto não encontrado — escolha da lista</span>' : "")}</div><div class="footnote pd-ultimo" style="margin-top:2px;"></div></div>
+          <div class="field" style="grid-column:span 2;"><label>Produto</label><input type="text" class="pd-nome" list="pd-insumo-list" autocomplete="off" value="${escapeHtml(l.nome||"")}" placeholder="Buscar produto de compra…"><div class="footnote" style="margin-top:2px;">${l.insumo_id ? escapeHtml(blocoDoInsumo(l.insumo_id)) : (l.nome ? '<span style="color:var(--critical);">produto não encontrado — escolha da lista</span>' : "")}</div><div class="footnote pd-ultimo" style="margin-top:2px;"></div></div>
           <div class="field"><label>Qtd. de embalagens</label><input type="number" step="0.001" min="0" class="pd-qtd" value="${l.quantidade!=null?l.quantidade:""}"></div>
           <div class="field"><label>Embalagem</label>
             <select class="pd-embtipo">
@@ -11823,10 +11806,6 @@ async function openPedidoModal(id, opts){
         const base = (l.preco_unitario != null && fator > 0) ? l.preco_unitario / fator : null;
         if(custoBaseEl) custoBaseEl.textContent = base != null ? fmtMoney(base) : "—";
       }
-      // 10/11/2026: filtro de Grupo só estreita o datalist do Produto — não zera o insumo já escolhido
-      // (trocar o filtro depois de já ter selecionado o produto não deveria obrigar a reescolher).
-      const grupoEl = row.querySelector(".pd-grupo");
-      if(grupoEl) grupoEl.addEventListener("change", e => { l._grupoFiltro = e.target.value || null; renderLines(); });
       row.querySelector(".pd-nome").addEventListener("change", e => {
         const texto = e.target.value;
         // 18/11/2026: "Produto" busca entre os produtos de compra (marca/embalagem), não mais o insumo
@@ -12023,7 +12002,6 @@ async function openPedidoModal(id, opts){
       cnpj_faturamento: document.getElementById("pd-cnpj-fat").value.trim() || null,
       itens: itensValidos.map(l => ({ insumo_id:l.insumo_id, insumo_compra_id:l.insumo_compra_id||null, nome:l.nome, unidade: rotuloEmbalagemItem(l, insumos.get(l.insumo_id)) || l.unidade, fator_embalagem:fatorEmbalagemItem(l), quantidade:l.quantidade, preco_unitario:l.preco_unitario||0,
         embalagem_tipo:l.embalagem_tipo||null, embalagem_outra: l.embalagem_tipo==="Outra" ? (l.embalagem_outra||null) : null, observacao: (l.observacao||"").trim() || null,
-        grupo_filtro: l._grupoFiltro || null,
         ...(existing ? (() => { const orig=(existing.itens||[]).find(o=> l.insumo_compra_id ? o.insumo_compra_id===l.insumo_compra_id : o.insumo_id===l.insumo_id); return orig && orig.quantidade_recebida!=null ? {quantidade_recebida:orig.quantidade_recebida} : {}; })() : {}) })),
       valor_total: valorTotalItensPedido(itensValidos),
       observacoes: document.getElementById("pd-obs").value.trim() || null,
