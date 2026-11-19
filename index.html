@@ -8578,7 +8578,7 @@ function renderGradeLancamento(){
           <thead><tr>
             <th class="cat-col">Item</th>
             <th style="text-align:right;">Preço unit.</th>
-            ${DIAS_ORDEM.map(dia => `<th>${DIA_LABEL[dia].slice(0,3)}</th>`).join("")}
+            ${DIAS_ORDEM.map(dia => `<th>${DIA_LABEL[dia].slice(0,3)}<br><span style="font-weight:400; font-size:10px; color:#666;">${fmtData(dataDoDia(vendaSemanaSel, dia))}</span></th>`).join("")}
             <th style="text-align:right;">Ajuste mín.</th>
             <th style="text-align:right;">Receita sem.</th>
             <th style="text-align:right;">Custo sem.</th>
