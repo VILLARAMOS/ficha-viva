@@ -693,13 +693,15 @@ const VIEWS = {
   orcamento: renderOrcamento,
   pcp: renderPCP,
   desperdicio: () => renderEmConstrucao("Desperdício", "trash-2"),
-  suprimento: () => renderEmConstrucao("Suprimento", "package-plus"),
+  suprimento: renderSuprimento,
   ajuda: renderAjuda,
 };
 
 // Módulos ainda não construídos — placeholder simples, só pra já existir o botão/rota.
 // Visível pra todo mundo por ora (sem área de permissão própria ainda); quando o módulo for
 // construído de verdade, revisar VIEW_AREA/possoVerView junto com o Marcelo.
+// 19/11/2026: "Suprimento" saiu desse grupo — já tem área própria ('suprimentos') e tela real,
+// ver renderSuprimento.
 function renderEmConstrucao(titulo, icone){
   document.getElementById("page-title").textContent = titulo;
   document.getElementById("page-desc").textContent = "";
@@ -709,6 +711,277 @@ function renderEmConstrucao(titulo, icone){
       <i class="ico" data-lucide="${icone}" style="width:28px;height:28px;color:var(--text-faint);margin-bottom:8px;"></i><br>
       Módulo "${escapeHtml(titulo)}" ainda em construção.
     </div>`;
+  if(window.lucide) lucide.createIcons();
+}
+
+/* ================= Suprimento (19/11/2026) — mínimos, pedido/separação e orçamento (R$) ================= */
+const SUPRIMENTO_MES_NOMES = ["janeiro","fevereiro","março","abril","maio","junho","julho","agosto","setembro","outubro","novembro","dezembro"];
+function suprimentoFmtMes(ymd){
+  const [y,m] = ymd.split("-").map(n=>parseInt(n,10));
+  return `${SUPRIMENTO_MES_NOMES[m-1]}/${y}`;
+}
+function suprimentoDestinoSelectHtml(id){
+  const destinos = suprimentoDestinos();
+  const proprias = destinos.filter(d=>d.tipo!=="contrato");
+  const clientes = destinos.filter(d=>d.tipo==="contrato");
+  const opt = d => `<option value="${suprimentoDestinoChave(d.tipo,d.id)}" ${suprimentoDestinoChave(d.tipo,d.id)===suprimentoDestinoSel?"selected":""}>${escapeHtml(d.nome)}</option>`;
+  return `<select id="${id}">
+    <optgroup label="Unidades próprias">${proprias.map(opt).join("")}</optgroup>
+    <optgroup label="Unidades transportadas (clientes)">${clientes.map(opt).join("")}</optgroup>
+  </select>`;
+}
+
+async function renderSuprimento(){
+  document.getElementById("page-title").textContent = "Suprimento";
+  document.getElementById("page-desc").textContent = "";
+  document.getElementById("topbar-actions").innerHTML = "";
+  if(!suprimentoDestinos().some(d => suprimentoDestinoChave(d.tipo,d.id)===suprimentoDestinoSel)) suprimentoDestinoSel = "matriz|";
+  if(!suprimentoDataSel) suprimentoDataSel = hojeYMD();
+  if(!suprimentoMesSel) suprimentoMesSel = hojeYMD().slice(0,7)+"-01";
+
+  const subtabs = [
+    {id:"minimos", nome:"Mínimos", ico:"list-checks"},
+    {id:"pedido", nome:"Pedido / separação", ico:"clipboard-list"},
+    {id:"orcamento", nome:"Orçamento (R$)", ico:"wallet"},
+  ];
+  document.getElementById("content").innerHTML = `
+    <div class="es-wrap">
+      <div class="es-nav">
+        <div class="seg-toggle" id="sup-subtabs">
+          ${subtabs.map(t => `<button type="button" data-sub="${t.id}" class="${suprimentoSubView===t.id?"active":""}"><i class="ico" data-lucide="${t.ico}"></i>${t.nome}</button>`).join("")}
+        </div>
+      </div>
+      <div id="sup-sub-body"></div>
+    </div>
+  `;
+  document.getElementById("sup-subtabs").addEventListener("click", e => {
+    const b = e.target.closest("button[data-sub]"); if(!b) return;
+    suprimentoSubView = b.dataset.sub;
+    renderSuprimento();
+  });
+  if(suprimentoSubView === "minimos") renderSuprimentoMinimosTab();
+  else if(suprimentoSubView === "pedido") renderSuprimentoPedidoTab();
+  else renderSuprimentoOrcamentoTab();
+  if(window.lucide) lucide.createIcons();
+}
+
+function renderSuprimentoMinimosTab(){
+  const sub = document.getElementById("sup-sub-body");
+  const destino = suprimentoDestinoAtual();
+  const minimosMapa = suprimentoMinimoPorDestino(destino.tipo, destino.id);
+  const grupos = [...new Set([...insumos.values()].map(i=>i.grupo_compra).filter(Boolean))].sort();
+  sub.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h3><i class="ico" data-lucide="list-checks"></i>Mínimo por destino — ${escapeHtml(destino.nome)}</h3></div>
+      <div class="panel-body">
+        <div class="menu-controls" style="margin-bottom:14px;">
+          ${suprimentoDestinoSelectHtml("sup-min-destino")}
+        </div>
+        <div class="search-bar" style="margin-bottom:0;">
+          <input type="text" id="sup-min-search" placeholder="Buscar insumo…" value="${escapeHtml(suprimentoFilter)}">
+          <select id="sup-min-grupo">
+            <option value="" ${suprimentoGrupoFilter===""?"selected":""}>Grupos de suprimento (padrão)</option>
+            <option value="__todos" ${suprimentoGrupoFilter==="__todos"?"selected":""}>Todos os grupos</option>
+            ${grupos.map(g=>`<option value="${escapeHtml(g)}" ${suprimentoGrupoFilter===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}
+          </select>
+          <span class="pend-count" id="sup-min-count"></span>
+        </div>
+      </div>
+      <div class="table-wrap es-table"><table>
+        <thead><tr><th>Insumo</th><th>Grupo</th><th>Unidade</th><th style="text-align:right;">Mínimo (qtd.)</th><th>Regra (texto, só exibição)</th></tr></thead>
+        <tbody id="sup-min-tbody"></tbody>
+      </table></div>
+    </div>
+  `;
+  document.getElementById("sup-min-destino").addEventListener("change", e => { suprimentoDestinoSel = e.target.value; renderSuprimentoMinimosTab(); });
+  document.getElementById("sup-min-search").addEventListener("input", e => { suprimentoFilter = e.target.value; updateTable(); });
+  document.getElementById("sup-min-grupo").addEventListener("change", e => { suprimentoGrupoFilter = e.target.value; updateTable(); });
+
+  function updateTable(){
+    const rows = suprimentoInsumosFiltrados();
+    document.getElementById("sup-min-count").textContent = `${rows.length} insumo${rows.length===1?"":"s"}`;
+    document.getElementById("sup-min-tbody").innerHTML = rows.map(r => {
+      const row = minimosMapa.get(r.id);
+      return `<tr>
+        <td class="name-cell">${escapeHtml(r.nome)}</td>
+        <td style="font-size:12.5px;">${escapeHtml(r.grupo_compra||"—")}</td>
+        <td>${escapeHtml(r.unidade_medida||"—")}</td>
+        <td class="num-cell"><input type="number" min="0" step="0.001" class="sup-min-qtd" data-id="${r.id}" value="${row&&row.minimo_qtd!==null&&row.minimo_qtd!==undefined?row.minimo_qtd:""}" placeholder="—"></td>
+        <td><input type="text" class="sup-min-regra" data-id="${r.id}" value="${row&&row.minimo_regra_texto?escapeHtml(row.minimo_regra_texto):""}" placeholder="ex.: 2 por semana"></td>
+      </tr>`;
+    }).join("") || `<tr><td colspan="5" class="empty-state">Nenhum insumo encontrado com este filtro.</td></tr>`;
+    const salvar = async (id) => {
+      const qtdInp = document.querySelector(`.sup-min-qtd[data-id="${id}"]`);
+      const regraInp = document.querySelector(`.sup-min-regra[data-id="${id}"]`);
+      await salvarSuprimentoMinimo(destino.tipo, destino.id, id, qtdInp.value, regraInp.value);
+    };
+    document.getElementById("sup-min-tbody").querySelectorAll(".sup-min-qtd, .sup-min-regra").forEach(inp => {
+      inp.addEventListener("change", () => salvar(inp.dataset.id));
+    });
+  }
+  updateTable();
+}
+
+function renderSuprimentoPedidoTab(){
+  const sub = document.getElementById("sup-sub-body");
+  const destino = suprimentoDestinoAtual();
+  const pedido = suprimentoPedidoAtual(destino.tipo, destino.id, suprimentoDataSel);
+  const status = pedido ? pedido.status : "rascunho";
+  const minimosMapa = suprimentoMinimoPorDestino(destino.tipo, destino.id);
+  const itensDoPedido = new Map(((pedido && pedido.itens) || []).map(it => [it.insumo_id, it]));
+  const travado = status !== "rascunho";
+  // só entram na lista os insumos com mínimo cadastrado pra este destino — igual à planilha hoje.
+  const insumosComMinimo = [...minimosMapa.keys()].map(id => insumos.get(id) ? {id, ...insumos.get(id)} : null).filter(Boolean)
+    .sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
+  const valorTotal = pedido ? (pedido.valor_total||0) : 0;
+  const statusChip = {
+    rascunho: `<span class="chip">Rascunho</span>`,
+    separado: `<span class="chip ok">Separado</span>`,
+    entregue: `<span class="chip ok">Entregue</span>`,
+    cancelado: `<span class="chip warn">Cancelado</span>`,
+  }[status] || "";
+  sub.innerHTML = `
+    <div class="panel">
+      <div class="panel-head">
+        <h3><i class="ico" data-lucide="clipboard-list"></i>Pedido / separação — ${escapeHtml(destino.nome)}</h3>
+        <div class="es-tools">
+          ${statusChip}
+          ${status==="rascunho" ? `<button class="btn primary" id="sup-ped-fechar"><i class="ico" data-lucide="check-check"></i>Fechar separação</button>` : ""}
+          ${status==="separado" ? `<button class="btn small" id="sup-ped-entregue"><i class="ico" data-lucide="truck"></i>Marcar entregue</button>` : ""}
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="menu-controls" style="margin-bottom:14px;">
+          ${suprimentoDestinoSelectHtml("sup-ped-destino")}
+          <input type="date" id="sup-ped-data" value="${suprimentoDataSel}">
+        </div>
+        <div class="es-kpis inner">
+          ${estoqueKpiCard({label:"Valor do pedido", value: fmtMoney(valorTotal)})}
+          ${estoqueKpiCard({label:"Itens com mínimo cadastrado", value: String(insumosComMinimo.length)})}
+        </div>
+        ${!insumosComMinimo.length ? `<div class="insight-list" style="margin:0 0 14px;"><div class="insight-item warn"><span class="dot"></span><span>Nenhum mínimo cadastrado pra este destino ainda — cadastre na aba "Mínimos" antes de pedir.</span></div></div>` : ""}
+      </div>
+      <div class="table-wrap es-table"><table>
+        <thead><tr><th>Insumo</th><th style="text-align:right;">Mínimo</th><th style="text-align:right;">Estoque local</th><th style="text-align:right;">Ajuste (+/-)</th><th style="text-align:right;">Sugerido</th><th style="text-align:right;">Pedido final</th><th style="text-align:right;">Subtotal</th></tr></thead>
+        <tbody id="sup-ped-tbody">${insumosComMinimo.map(r => {
+          const min = minimosMapa.get(r.id);
+          const it = itensDoPedido.get(r.id);
+          const estoqueLocal = it ? it.estoque_local : null;
+          const ajuste = it ? it.ajuste : 0;
+          const sugerido = suprimentoCalcularSugerido(estoqueLocal||0, ajuste||0, min?min.minimo_qtd:0);
+          const final = it ? it.pedido_final : sugerido;
+          const subtotal = it ? it.subtotal : 0;
+          return `<tr>
+            <td class="name-cell">${escapeHtml(r.nome)}${min&&min.minimo_regra_texto?`<br><span class="footnote" style="margin:0;">${escapeHtml(min.minimo_regra_texto)}</span>`:""}</td>
+            <td class="num-cell">${fmtNum(min?min.minimo_qtd:0,3)}</td>
+            <td class="num-cell"><input type="number" min="0" step="0.001" class="sup-ped-estoque" data-id="${r.id}" value="${estoqueLocal!==null&&estoqueLocal!==undefined?estoqueLocal:""}" ${travado?"disabled":""} placeholder="—"></td>
+            <td class="num-cell"><input type="number" step="0.001" class="sup-ped-ajuste" data-id="${r.id}" value="${ajuste||""}" ${travado?"disabled":""} placeholder="0"></td>
+            <td class="num-cell">${fmtNum(sugerido,3)}</td>
+            <td class="num-cell"><input type="number" min="0" step="0.001" class="sup-ped-final" data-id="${r.id}" value="${final!==null&&final!==undefined?final:""}" ${travado?"disabled":""} placeholder="—"></td>
+            <td class="num-cell">${fmtMoney(subtotal)}</td>
+          </tr>`;
+        }).join("") || `<tr><td colspan="7" class="empty-state">Nenhum insumo com mínimo cadastrado pra este destino.</td></tr>`}</tbody>
+      </table></div>
+    </div>
+  `;
+  document.getElementById("sup-ped-destino").addEventListener("change", e => { suprimentoDestinoSel = e.target.value; renderSuprimentoPedidoTab(); });
+  document.getElementById("sup-ped-data").addEventListener("change", e => { suprimentoDataSel = e.target.value; renderSuprimentoPedidoTab(); });
+  if(status==="rascunho"){
+    document.getElementById("sup-ped-fechar").addEventListener("click", async () => {
+      if(!pedido){ showAlert("Informe ao menos um item antes de fechar a separação."); return; }
+      if(!confirm("Fechar a separação deste pedido? Isso vai dar baixa real no estoque.")) return;
+      const ok = await fecharSuprimentoPedido(pedido.id);
+      if(ok) renderSuprimentoPedidoTab();
+    });
+  }
+  if(status==="separado"){
+    document.getElementById("sup-ped-entregue").addEventListener("click", async () => {
+      const ok = await marcarSuprimentoPedidoEntregue(pedido.id);
+      if(ok) renderSuprimentoPedidoTab();
+    });
+  }
+  if(!travado){
+    // editar estoque local/ajuste recalcula o sugerido automaticamente, A MENOS que o pedido final já
+    // tenha sido editado manualmente antes (preserva a escolha do usuário em vez de sobrescrever).
+    const salvarLinha = async (id, campoTocado) => {
+      const estEl = document.querySelector(`.sup-ped-estoque[data-id="${id}"]`);
+      const ajEl = document.querySelector(`.sup-ped-ajuste[data-id="${id}"]`);
+      let finalParaEnviar = null;
+      if(campoTocado === "final"){
+        finalParaEnviar = document.querySelector(`.sup-ped-final[data-id="${id}"]`).value;
+      } else {
+        const existente = itensDoPedido.get(id);
+        if(existente && Math.abs((existente.pedido_final||0) - (existente.pedido_sugerido||0)) > 0.0005) finalParaEnviar = existente.pedido_final;
+      }
+      await salvarItemSuprimentoPedido(destino.tipo, destino.id, suprimentoDataSel, id, estEl.value, ajEl.value, finalParaEnviar);
+      renderSuprimentoPedidoTab();
+    };
+    document.getElementById("sup-ped-tbody").querySelectorAll(".sup-ped-estoque, .sup-ped-ajuste").forEach(inp => {
+      inp.addEventListener("change", () => salvarLinha(inp.dataset.id, "auto"));
+    });
+    document.getElementById("sup-ped-tbody").querySelectorAll(".sup-ped-final").forEach(inp => {
+      inp.addEventListener("change", () => salvarLinha(inp.dataset.id, "final"));
+    });
+  }
+}
+
+function renderSuprimentoOrcamentoTab(){
+  const sub = document.getElementById("sup-sub-body");
+  const mesesOpts = (() => {
+    const base = hojeYMD().slice(0,7);
+    const [y,m] = base.split("-").map(n=>parseInt(n,10));
+    const lista = [];
+    for(let i=-3;i<=1;i++){
+      let yy=y, mm=m+i;
+      while(mm<1){mm+=12;yy--;} while(mm>12){mm-=12;yy++;}
+      lista.push(`${yy}-${String(mm).padStart(2,"0")}-01`);
+    }
+    return lista;
+  })();
+  if(!mesesOpts.includes(suprimentoMesSel)) suprimentoMesSel = mesesOpts[mesesOpts.length-2] || mesesOpts[0];
+
+  const linhasFixas = ["matriz","filial"].map(u => {
+    const fixo = suprimentoOrcamentoFixoDe(u, suprimentoMesSel);
+    const gasto = suprimentoGastoNoMes(u, null, suprimentoMesSel);
+    const valorFixo = fixo ? fixo.valor_mensal : 0;
+    const pct = valorFixo>0 ? (gasto.total/valorFixo) : null;
+    return {unidade:u, label: u==="matriz"?"Matriz":"Filial", valorFixo, gasto, pct};
+  });
+  const linhasContrato = suprimentoDestinos().filter(d=>d.tipo==="contrato").map(d => ({nome:d.nome, gasto: suprimentoGastoNoMes("contrato", d.id, suprimentoMesSel)})).filter(l => l.gasto.nPedidos > 0);
+
+  sub.innerHTML = `
+    <div class="panel">
+      <div class="panel-head"><h3><i class="ico" data-lucide="wallet"></i>Orçamento fixo — Matriz / Filial</h3></div>
+      <div class="panel-body">
+        <div class="menu-controls" style="margin-bottom:0;">
+          <select id="sup-orc-mes">${mesesOpts.map(m=>`<option value="${m}" ${m===suprimentoMesSel?"selected":""}>${suprimentoFmtMes(m)}</option>`).join("")}</select>
+        </div>
+      </div>
+      <div class="table-wrap es-table"><table>
+        <thead><tr><th>Destino</th><th style="text-align:right;">Orçamento fixo (R$/mês)</th><th style="text-align:right;">Gasto no mês</th><th style="text-align:right;">% do orçamento</th></tr></thead>
+        <tbody>${linhasFixas.map(l => `<tr>
+          <td class="name-cell">${escapeHtml(l.label)}</td>
+          <td class="num-cell"><input type="number" min="0" step="0.01" class="sup-orc-fixo" data-un="${l.unidade}" value="${l.valorFixo||""}" placeholder="—"></td>
+          <td class="num-cell">${fmtMoney(l.gasto.total)}</td>
+          <td class="num-cell">${l.pct!==null ? `<span class="chip ${l.pct>1?"warn":"ok"}">${fmtPct(l.pct)}</span>` : "—"}</td>
+        </tr>`).join("")}</tbody>
+      </table></div>
+    </div>
+    <div class="panel" style="margin-top:16px;">
+      <div class="panel-head"><h3><i class="ico" data-lucide="truck"></i>Gasto por cliente (unidade transportada) no mês</h3></div>
+      <div class="panel-body" style="padding-bottom:0;">
+        <div class="footnote" style="margin:0 0 10px;">Ainda sem meta de R$/pessoa cadastrada no sistema pra comparar — por ora mostra só o gasto realizado (via pedidos fechados). A meta por efetivo, como existe hoje na planilha, entra numa próxima etapa.</div>
+      </div>
+      <div class="table-wrap es-table"><table>
+        <thead><tr><th>Cliente</th><th style="text-align:right;">Pedidos no mês</th><th style="text-align:right;">Gasto no mês</th></tr></thead>
+        <tbody>${linhasContrato.map(l=>`<tr><td class="name-cell">${escapeHtml(l.nome)}</td><td class="num-cell">${l.gasto.nPedidos}</td><td class="num-cell">${fmtMoney(l.gasto.total)}</td></tr>`).join("") || `<tr><td colspan="3" class="empty-state">Nenhum pedido lançado neste mês ainda.</td></tr>`}</tbody>
+      </table></div>
+    </div>
+  `;
+  document.getElementById("sup-orc-mes").addEventListener("change", e => { suprimentoMesSel = e.target.value; renderSuprimentoOrcamentoTab(); });
+  sub.querySelectorAll(".sup-orc-fixo").forEach(inp => {
+    inp.addEventListener("change", async () => { await salvarSuprimentoOrcamentoFixo(inp.dataset.un, suprimentoMesSel, inp.value); renderSuprimentoOrcamentoTab(); });
+  });
   if(window.lucide) lucide.createIcons();
 }
 
@@ -906,7 +1179,7 @@ async function showApp(user){
   await carregarMeusAcessos();
   aplicarMenuPorPerfil();
   if(!possoVerView(currentView)) currentView = primeiraViewPermitida() || currentView;
-  await Promise.all([loadInsumos(), loadInsumosCompra(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadOrcamentosCardapio(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadRotas(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadFornecedores(), loadConjuntosCompra(), loadAjusteSeguranca(), loadRefeicoesFuncionarios(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadVendasSemanaEstado(), loadSemanasFechadas(), loadPcpConfig(), loadPcpSubstituicoesTudo(), loadComposicoesTipos(), loadComposicoesSemana(), loadAjudaConteudo(), loadAjudaDuvidas()]);
+  await Promise.all([loadInsumos(), loadInsumosCompra(), loadFichas(), loadCardapios(), loadCafeSemanas(), loadCafeConfig(), loadCardapioNumerosExtra(), loadCardapioMetas(), loadCardapioEstrutura(), loadOrcamentosCardapio(), loadCatalogoItens(), loadContratos(), loadContratoItens(), loadRotas(), loadContratoEventos(), loadContratoFaturamentoHistorico(), loadEventos(), loadPerfisIncidencia(), loadVendas(), loadAjustesMinimo(), loadFeriados(), loadPrevisaoCompra(), loadPedidos(), loadFornecedores(), loadConjuntosCompra(), loadAjusteSeguranca(), loadRefeicoesFuncionarios(), loadEstoqueContagem(), loadEstoqueMovimentos(), loadSuprimentoMinimos(), loadSuprimentoPedidos(), loadSuprimentoOrcamentoFixo(), loadVendasSemanaEstado(), loadSemanasFechadas(), loadPcpConfig(), loadPcpSubstituicoesTudo(), loadComposicoesTipos(), loadComposicoesSemana(), loadAjudaConteudo(), loadAjudaDuvidas()]);
   renderBotaoDuvidaFlutuante();
   goToView(currentView);
 }
@@ -934,10 +1207,10 @@ function temAcesso(area, nivelMin){
 const VIEW_AREA = {
   insumos: 'insumos', fichas: 'fichas', cardapio: 'cardapio',
   contratos: 'contratos', eventos: 'eventos', incidencia: 'incidencia', vendas: 'vendas', faturamento: 'faturamento',
-  fornecedores: 'compras', compras: 'compras', orcamento: 'compras', pcp: 'pcp'
+  fornecedores: 'compras', compras: 'compras', orcamento: 'compras', pcp: 'pcp', suprimento: 'suprimentos'
 };
 function possoVerView(view){
-  if(view === 'ajuda' || view === 'inicio' || view === 'desperdicio' || view === 'suprimento') return true;
+  if(view === 'ajuda' || view === 'inicio' || view === 'desperdicio') return true;
   if(meusAcessos.diretoria) return true;
   if(view === 'painel') return temAcesso('faturamento','leitura') || temAcesso('compras','leitura') || temAcesso('pcp','leitura');
   const area = VIEW_AREA[view];
@@ -2150,6 +2423,182 @@ async function registrarBaixaLote(unidade, tipo, itens, observacao, dataYMD){
     return linhas.length;
   }catch(e){ showAlert(mensagemErro(e, "Erro ao registrar baixa em lote: ")); return -1; }
 }
+/* ===== Suprimentos (19/11/2026) — camada de dados =====
+   destino = {tipo:'matriz'|'filial'|'contrato', id:null|contrato_id}. Itens de suprimento ficam
+   no MESMO cadastro de Insumos (decisão de 12/10/2026), só filtrados pelos grupos abaixo — não
+   existe um cadastro de item paralelo aqui. */
+const SUPRIMENTO_GRUPOS_PADRAO = ["LIMPEZA E DESCARTÁVEIS", "PADARIA"];
+
+let suprimentoMinimos = new Map(); // id -> {destino_tipo, destino_id, insumo_id, minimo_qtd, minimo_regra_texto, ativo}
+let suprimentoPedidos = new Map(); // id -> {destino_tipo, destino_id, data, itens:[{insumo_id,estoque_local,ajuste,pedido_sugerido,pedido_final,custo_unitario,subtotal}], status, valor_total, observacoes, grupo_movimentacao}
+let suprimentoOrcamentoFixo = new Map(); // id -> {unidade, competencia, valor_mensal}
+
+async function loadSuprimentoMinimos(){
+  const { data, error } = await sb.from('suprimento_minimos').select('*');
+  suprimentoMinimos = new Map();
+  if(error){ showAlert('Erro ao carregar mínimos de suprimento: ' + error.message); return; }
+  (data || []).forEach(row => suprimentoMinimos.set(row.id, row));
+}
+async function loadSuprimentoPedidos(){
+  const { data, error } = await sb.from('suprimento_pedidos').select('*').order('data', {ascending:false});
+  suprimentoPedidos = new Map();
+  if(error){ showAlert('Erro ao carregar pedidos de suprimento: ' + error.message); return; }
+  (data || []).forEach(row => suprimentoPedidos.set(row.id, row));
+}
+async function loadSuprimentoOrcamentoFixo(){
+  const { data, error } = await sb.from('suprimento_orcamento_fixo').select('*');
+  suprimentoOrcamentoFixo = new Map();
+  if(error){ showAlert('Erro ao carregar orçamento fixo de suprimento: ' + error.message); return; }
+  (data || []).forEach(row => suprimentoOrcamentoFixo.set(row.id, row));
+}
+
+function suprimentoDestinoChave(tipo, id){ return `${tipo}|${id||""}`; }
+function suprimentoDestinos(){
+  const lista = [
+    {tipo:"matriz", id:null, nome:"Matriz"},
+    {tipo:"filial", id:null, nome:"Filial"},
+  ];
+  [...contratos.entries()].filter(([,c]) => c.ativo).forEach(([id,c]) => lista.push({tipo:"contrato", id, nome:c.nome_cliente || "(sem nome)"}));
+  lista.sort((a,b) => {
+    if(a.tipo!=="contrato" && b.tipo==="contrato") return -1;
+    if(a.tipo==="contrato" && b.tipo!=="contrato") return 1;
+    return normalizeText(a.nome).localeCompare(normalizeText(b.nome));
+  });
+  return lista;
+}
+function suprimentoDestinoAtual(){
+  return suprimentoDestinos().find(d => suprimentoDestinoChave(d.tipo, d.id) === suprimentoDestinoSel) || suprimentoDestinos()[0];
+}
+function suprimentoInsumosFiltrados(){
+  let rows = [...insumos.entries()].map(([id,d]) => ({id, ...d}));
+  if(suprimentoGrupoFilter === "__todos"){ /* sem filtro de grupo */ }
+  else if(suprimentoGrupoFilter){ rows = rows.filter(r => r.grupo_compra === suprimentoGrupoFilter); }
+  else { rows = rows.filter(r => SUPRIMENTO_GRUPOS_PADRAO.includes(r.grupo_compra)); }
+  if(suprimentoFilter.trim()) rows = rows.filter(r => normalizeText(r.nome||"").includes(normalizeText(suprimentoFilter.trim())));
+  rows.sort((a,b) => normalizeText(a.nome||"").localeCompare(normalizeText(b.nome||"")));
+  return rows;
+}
+
+/* ---- mínimos ---- */
+function suprimentoMinimoPorDestino(destinoTipo, destinoId){
+  const mapa = new Map();
+  suprimentoMinimos.forEach(row => { if(row.destino_tipo===destinoTipo && (row.destino_id||null)===(destinoId||null)) mapa.set(row.insumo_id, row); });
+  return mapa;
+}
+async function salvarSuprimentoMinimo(destinoTipo, destinoId, insumoId, minimoQtdStr, minimoRegraTexto){
+  const minimoQtd = (minimoQtdStr===""||minimoQtdStr===null||minimoQtdStr===undefined) ? null : Math.max(0, parseFloat(String(minimoQtdStr).replace(",",".")) || 0);
+  const regra = (minimoRegraTexto||"").trim() || null;
+  const existente = [...suprimentoMinimos.values()].find(r => r.destino_tipo===destinoTipo && (r.destino_id||null)===(destinoId||null) && r.insumo_id===insumoId);
+  try{
+    if(minimoQtd===null && !regra){
+      if(existente){ const { error } = await sb.from('suprimento_minimos').delete().eq('id', existente.id); if(error) throw error; }
+    } else {
+      const payload = { destino_tipo:destinoTipo, destino_id:destinoId||null, insumo_id:insumoId, minimo_qtd:minimoQtd, minimo_regra_texto:regra, ...carimbo() };
+      if(existente){ const { error } = await sb.from('suprimento_minimos').update(payload).eq('id', existente.id); if(error) throw error; }
+      else { const { error } = await sb.from('suprimento_minimos').insert([payload]); if(error) throw error; }
+    }
+    await loadSuprimentoMinimos();
+  }catch(e){ showAlert(mensagemErro(e, "Erro ao salvar mínimo: ")); }
+}
+
+/* ---- pedido / separação ---- */
+function suprimentoPedidoAtual(destinoTipo, destinoId, data){
+  return [...suprimentoPedidos.values()].find(r => r.destino_tipo===destinoTipo && (r.destino_id||null)===(destinoId||null) && r.data===data) || null;
+}
+function suprimentoCalcularSugerido(estoqueLocal, ajuste, minimoQtd){
+  return Math.max(0, (minimoQtd||0) - (estoqueLocal||0) + (ajuste||0));
+}
+// grava (upsert) um item do pedido do dia — cria o pedido (status rascunho) se ainda não existir.
+// pedidoFinalStrOuNull null/"" => usa o sugerido calculado (comportamento padrão, igual à planilha).
+async function salvarItemSuprimentoPedido(destinoTipo, destinoId, data, insumoId, estoqueLocalStr, ajusteStr, pedidoFinalStrOuNull){
+  const minimoRow = suprimentoMinimoPorDestino(destinoTipo, destinoId).get(insumoId);
+  const estoqueLocal = (estoqueLocalStr===""||estoqueLocalStr===null) ? 0 : Math.max(0, parseFloat(String(estoqueLocalStr).replace(",",".")) || 0);
+  const ajuste = (ajusteStr===""||ajusteStr===null) ? 0 : (parseFloat(String(ajusteStr).replace(",",".")) || 0);
+  const sugerido = suprimentoCalcularSugerido(estoqueLocal, ajuste, minimoRow ? minimoRow.minimo_qtd : 0);
+  const pedidoFinal = (pedidoFinalStrOuNull===undefined || pedidoFinalStrOuNull===null || pedidoFinalStrOuNull==="") ? sugerido : Math.max(0, parseFloat(String(pedidoFinalStrOuNull).replace(",",".")) || 0);
+  const ins = insumos.get(insumoId);
+  const custoUnitario = ins ? (ins.custo_kg_l_und||0) : 0;
+  const pedido = suprimentoPedidoAtual(destinoTipo, destinoId, data);
+  const itens = pedido ? [...(pedido.itens||[])] : [];
+  const idx = itens.findIndex(it => it.insumo_id === insumoId);
+  const novoItem = { insumo_id: insumoId, estoque_local: estoqueLocal, ajuste, pedido_sugerido: sugerido, pedido_final: pedidoFinal, custo_unitario: custoUnitario, subtotal: +(pedidoFinal*custoUnitario).toFixed(2) };
+  if(idx >= 0) itens[idx] = novoItem; else itens.push(novoItem);
+  const valorTotal = itens.reduce((s,it) => s + (it.subtotal||0), 0);
+  try{
+    if(pedido){
+      const { error } = await sb.from('suprimento_pedidos').update({ itens, valor_total: valorTotal, ...carimbo() }).eq('id', pedido.id);
+      if(error) throw error;
+    } else {
+      const payload = { destino_tipo:destinoTipo, destino_id:destinoId||null, data, itens, valor_total: valorTotal, status:"rascunho", criado_por: usuarioId||null };
+      const { error } = await sb.from('suprimento_pedidos').insert([payload]);
+      if(error) throw error;
+    }
+    await loadSuprimentoPedidos();
+  }catch(e){ showAlert(mensagemErro(e, "Erro ao salvar item do pedido: ")); }
+}
+// Fecha a lista de separação: trava o pedido (status=separado) e gera a baixa real no estoque
+// central via estoque_movimentos — reaproveita o kardex que já existe, não cria um paralelo.
+// Origem da baixa: filial debita o próprio kardex (filial); matriz E contrato (cliente transportado)
+// debitam o kardex da matriz, que é o armazém central — SUPOSIÇÃO a confirmar com o Marcelo se a
+// filial tiver estoque próprio de limpeza/café separado do that ela mesma controla.
+async function fecharSuprimentoPedido(pedidoId){
+  const pedido = suprimentoPedidos.get(pedidoId);
+  if(!pedido) return false;
+  const itensComQtd = (pedido.itens||[]).filter(it => it.pedido_final > 0);
+  if(!itensComQtd.length){ showAlert("Não há quantidade pedida neste pedido — nada para separar."); return false; }
+  const unidadeOrigem = pedido.destino_tipo === "filial" ? "filial" : "matriz";
+  const grupoMov = (window.crypto && window.crypto.randomUUID) ? window.crypto.randomUUID() : (Date.now()+"-"+Math.random().toString(16).slice(2));
+  const destinoLabel = pedido.destino_tipo === "contrato" ? (contratos.get(pedido.destino_id)?.nome_cliente || "contrato") : (pedido.destino_tipo === "matriz" ? "Matriz" : "Filial");
+  const linhas = itensComQtd.map(it => ({ unidade: unidadeOrigem, insumo_id: it.insumo_id, tipo:"baixa_suprimento", quantidade: -Math.abs(it.pedido_final), custo_unitario: it.custo_unitario, status:"aprovado", data: pedido.data, pedido_id: pedidoId, grupo_movimentacao: grupoMov, observacao: `Suprimento → ${destinoLabel}`, criado_por: usuarioId||null }));
+  try{
+    const { error: errMov } = await sb.from('estoque_movimentos').insert(linhas);
+    if(errMov) throw errMov;
+    const { error: errPed } = await sb.from('suprimento_pedidos').update({ status:"separado", grupo_movimentacao: grupoMov, ...carimbo() }).eq('id', pedidoId);
+    if(errPed) throw errPed;
+    await Promise.all([loadSuprimentoPedidos(), loadEstoqueMovimentos()]);
+    return true;
+  }catch(e){ showAlert(mensagemErro(e, "Erro ao fechar separação: ")); return false; }
+}
+async function marcarSuprimentoPedidoEntregue(pedidoId){
+  try{
+    const { error } = await sb.from('suprimento_pedidos').update({ status:"entregue", ...carimbo() }).eq('id', pedidoId);
+    if(error) throw error;
+    await loadSuprimentoPedidos();
+    return true;
+  }catch(e){ showAlert(mensagemErro(e, "Erro ao marcar como entregue: ")); return false; }
+}
+
+/* ---- orçamento ---- */
+function suprimentoOrcamentoFixoDe(unidade, competenciaYMD){
+  return [...suprimentoOrcamentoFixo.values()].find(r => r.unidade===unidade && r.competencia===competenciaYMD) || null;
+}
+async function salvarSuprimentoOrcamentoFixo(unidade, competenciaYMD, valorStr){
+  const valor = (valorStr===""||valorStr===null) ? null : Math.max(0, parseFloat(String(valorStr).replace(",",".")) || 0);
+  const existente = suprimentoOrcamentoFixoDe(unidade, competenciaYMD);
+  try{
+    if(valor===null){
+      if(existente){ const { error } = await sb.from('suprimento_orcamento_fixo').delete().eq('id', existente.id); if(error) throw error; }
+    } else if(existente){
+      const { error } = await sb.from('suprimento_orcamento_fixo').update({ valor_mensal: valor, ...carimbo() }).eq('id', existente.id);
+      if(error) throw error;
+    } else {
+      const { error } = await sb.from('suprimento_orcamento_fixo').insert([{ unidade, competencia: competenciaYMD, valor_mensal: valor, ...carimbo() }]);
+      if(error) throw error;
+    }
+    await loadSuprimentoOrcamentoFixo();
+  }catch(e){ showAlert(mensagemErro(e, "Erro ao salvar orçamento fixo: ")); }
+}
+function suprimentoGastoNoMes(destinoTipo, destinoId, competenciaYMD){
+  const [ano, mes] = competenciaYMD.split("-").map(n=>parseInt(n,10));
+  let total = 0, nPedidos = 0;
+  suprimentoPedidos.forEach(p => {
+    if(p.destino_tipo!==destinoTipo || (p.destino_id||null)!==(destinoId||null) || p.status==="cancelado" || !p.data) return;
+    const [py,pm] = p.data.split("-").map(n=>parseInt(n,10));
+    if(py===ano && pm===mes){ total += (p.valor_total||0); nPedidos++; }
+  });
+  return { total, nPedidos };
+}
+
 async function gerarAjustesContagem(semana, unidade){
   const contagem = contagemPorSemana(semana, unidade);
   const ajustes = [];
@@ -9343,6 +9792,17 @@ let estoqueUnidadeSel = "matriz";
 let estoqueSemanaSel = null;
 let estoqueFilter = "";
 let estoqueGrupoFilter = "";
+
+/* ===== Suprimentos (19/11/2026) — controle de consumo/abastecimento de limpeza, descartáveis e
+   café nas unidades transportadas (contratos), matriz e filial, com mínimo, pedido/separação e
+   orçamento em R$. destino = {tipo: 'matriz'|'filial'|'contrato', id: null|contrato_id} — NÃO
+   confundir com o campo "unidade" usado no resto do banco (que só existe para matriz/filial). ===== */
+let suprimentoSubView = "minimos"; // "minimos" | "pedido" | "orcamento"
+let suprimentoDestinoSel = "matriz|"; // chave `${tipo}|${id||""}`
+let suprimentoDataSel = null; // YYYY-MM-DD, default hoje
+let suprimentoFilter = "";
+let suprimentoGrupoFilter = ""; // "" = grupos padrão de suprimento (ver SUPRIMENTO_GRUPOS_PADRAO); "__todos" = todos os grupos
+let suprimentoMesSel = null; // YYYY-MM-01, pro painel de orçamento
 
 // "outros" (refrigerante, lanche, etc.) continua fora da lista de compra — só refeição aqui.
 // É o que alimenta a grade de Previsão de consumo / Totais editáveis (ainda só refeição).
