@@ -13690,8 +13690,16 @@ function pcpDiasCobertos(diaProd, diasOp){
 // fim de semana) cai direto na sexta ANTERIOR, mesmo que seja da semana passada. Pedido do Marcelo
 // (16/11/2026): mostrar esse dia junto do dia de uso na Requisição do estoque, o que a tela nunca mostrou —
 // até aqui só a visão "hoje" mostrava cobertura, e só pra frente.
+// 23/11/2026, bug relatado pelo PCP ("data errada na impressão da requisição"): usava .getDay() (hora
+// LOCAL do navegador) numa Date que é sempre meia-noite UTC (ver dataDoDia/Date.UTC). Em São Paulo
+// (UTC-3), meia-noite UTC é 21h do dia ANTERIOR no horário local — .getDay() voltava pro dia de semana
+// errado (ex.: 31/08 é segunda, mas caía "domingo"). Isso não só errava o RÓTULO do dia da semana, como
+// também desviava o próprio cálculo de pcpDataSeparacao (o loop decide em que dia parar comparando esse
+// rótulo contra os dias de operação) — podia devolver uma data de separação 1 dia diferente da correta.
+// .getUTCDay() lê o mesmo componente (dia da semana) mas em UTC, consistente com o resto do arquivo
+// (fmtData/fmtDataCompleta já usam getUTCDate/getUTCMonth/getUTCFullYear nessas mesmas datas).
 function pcpDiaDaData(data){
-  return ["DOMINGO","SEGUNDA","TERCA","QUARTA","QUINTA","SEXTA","SABADO"][data.getDay()];
+  return ["DOMINGO","SEGUNDA","TERCA","QUARTA","QUINTA","SEXTA","SABADO"][data.getUTCDay()];
 }
 function pcpDataSeparacao(dataUso, diasOp){
   const d = new Date(dataUso);
