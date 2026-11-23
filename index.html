@@ -15315,23 +15315,45 @@ function pcpControleProteinasHtml(linhas, turnoNome){
 // pcpSubstituicoesImpressaoLinhas (função mantida só porque ainda alimenta o resumo embutido nos
 // impressos de Produção/Receitas — ver pcpSubstituicoesImpressaoHtml). Tirado o campo "nome de quem faz o
 // filé" (rodapé FUNCIONÁRIOS) — não tinha mais utilidade pro Marcelo nesse formato.
-function pcpImprimirControleProteinas(resOuLista){
-  const listaRes = Array.isArray(resOuLista) ? resOuLista : [resOuLista];
-  const base = listaRes[0];
-  // recalcula SEM filtro de serviço — a tabela sai pra TODOS os turnos (pedido do PCP), mesmo que a tela
-  // esteja filtrada em só 1 turno no momento em que a pessoa clicou em imprimir.
-  const resCompletos = listaRes.map(r => pcpCalcularDia(r.semana, r.dia, r.unidade, null));
-  const blocos = PCP_TURNOS.filter(t => t.id !== "todos").map(t => {
-    const linhas = resCompletos.flatMap(r => pcpControleProteinasLinhas(r, t.id));
-    if(!linhas.length) return "";
-    return pcpControleProteinasHtml(linhas, t.nome);
+// 23/11/2026 (correção de bug relatado pelo PV): recebe agora o `resPorDia` inteiro (array de
+// {dia, listaRes}, 1 entrada por dia marcado em "Dias da semana") e abre UMA SÓ janela, com cada dia
+// virando sua própria seção com quebra de página antes — nunca mistura dias na mesma tabela (mesma regra
+// de antes). Antes, pcpSubstituicoesBind chamava esta função 1x por dia marcado (1 window.open por dia),
+// com um await num INSERT no Supabase entre cada chamada — a partir da 2ª aba o navegador deixava de
+// reconhecer o window.open como originado do clique do usuário e passava a bloquear o pop-up de forma
+// inconsistente, o que aparecia pro usuário como "abre várias abas com bug". Com 1 janela só, aberta
+// antes de qualquer await, esse risco desaparece.
+function pcpImprimirControleProteinas(resPorDia){
+  const diasHtml = resPorDia.map(({listaRes}) => {
+    const base = listaRes[0];
+    // recalcula SEM filtro de serviço — a tabela sai pra TODOS os turnos (pedido do PCP), mesmo que a tela
+    // esteja filtrada em só 1 turno no momento em que a pessoa clicou em imprimir.
+    const resCompletos = listaRes.map(r => pcpCalcularDia(r.semana, r.dia, r.unidade, null));
+    const blocosTurno = PCP_TURNOS.filter(t => t.id !== "todos").map(t => {
+      const linhas = resCompletos.flatMap(r => pcpControleProteinasLinhas(r, t.id));
+      if(!linhas.length) return "";
+      return pcpControleProteinasHtml(linhas, t.nome);
+    }).filter(Boolean);
+    if(!blocosTurno.length) return null;
+    // dia + data (10/11/2026, pedido do Marcelo: "quero que saia o dia e a data do dia") — dataDoDia/fmtDataCompleta
+    // já existem no sistema (mesmo cálculo usado em Compras/Produção), então nunca diverge da semana selecionada.
+    const diaELabel = `${DIA_LABEL[base.dia]}, ${fmtDataCompleta(dataDoDia(base.semana, base.dia))}`;
+    const unidadeTxt = listaRes.length > 1 ? "Matriz + Filial" : nomeUnidadeCompra(base.unidade);
+    return { diaELabel, unidadeTxt, corpo: blocosTurno.join(`<div style="page-break-before:always;"></div>`) };
   }).filter(Boolean);
-  if(!blocos.length){ showAlert("Nenhum cliente com refeições previstas neste dia, em nenhum turno."); return; }
-  // dia + data (10/11/2026, pedido do Marcelo: "quero que saia o dia e a data do dia") — dataDoDia/fmtDataCompleta
-  // já existem no sistema (mesmo cálculo usado em Compras/Produção), então nunca diverge da semana selecionada.
-  const diaELabel = `${DIA_LABEL[base.dia]}, ${fmtDataCompleta(dataDoDia(base.semana, base.dia))}`;
-  const contexto = `${diaELabel} · ${rotuloSemana(base.semana)} · Unidade: ${listaRes.length > 1 ? "Matriz + Filial" : nomeUnidadeCompra(base.unidade)}`;
-  pcpAbrirImpressaoReceitas(`Controle de proteínas e substituições — ${diaELabel}`, contexto, blocos.join(`<div style="page-break-before:always;"></div>`));
+  if(!diasHtml.length){ showAlert("Nenhum cliente com refeições previstas nos dias marcados, em nenhum turno."); return; }
+  const multiDia = diasHtml.length > 1;
+  // com mais de 1 dia marcado, cada seção ganha um cabeçalho com dia/unidade (senão, dentro da janela
+  // única, ficaria ambíguo a qual dia cada bloco de turno pertence).
+  const corpo = diasHtml.map(d => (multiDia
+    ? `<h2 style="font-size:14px; margin:0 0 10px; border:none; color:#7a0000;">${escapeHtml(d.diaELabel)} · Unidade: ${escapeHtml(d.unidadeTxt)}</h2>`
+    : "") + d.corpo).join(`<div style="page-break-before:always;"></div>`);
+  const semana = resPorDia[0].listaRes[0].semana;
+  const tituloJanela = multiDia ? `${diasHtml.length} dias — ${rotuloSemana(semana)}` : diasHtml[0].diaELabel;
+  const contexto = multiDia
+    ? `${rotuloSemana(semana)} · ${diasHtml.map(d => d.diaELabel).join(" · ")}`
+    : `${diasHtml[0].diaELabel} · ${rotuloSemana(semana)} · Unidade: ${diasHtml[0].unidadeTxt}`;
+  pcpAbrirImpressaoReceitas(`Controle de proteínas e substituições — ${tituloJanela}`, contexto, corpo);
 }
 // ---------- "Imprimir cardápios do dia" dentro de Produção (16/10/2026, Tarefa 9) ----------
 // Pedido do Marcelo: poder imprimir os cardápios do dia selecionado direto da Produção. Como cada cliente
@@ -18919,16 +18941,20 @@ function pcpSubstituicoesBind(content, semana, unidadeFiltro, resPorDia){
   });
   content.addEventListener("click", async e => {
     // 10/11/2026 (pedido do Marcelo): botão único "Imprimir lista de substituições" — imprime no formato
-    // "Controle de proteínas" (1 janela por dia marcado, mesmo padrão de pcpImprimirCardapiosDoDia pra
-    // vários cardápios, pra nunca misturar lançamentos de dias diferentes numa tabela só) E já marca cada
-    // dia/unidade impresso como revisado (substitui o antigo botão manual "Marcar como revisado" — a
-    // impressão passou a SER a ferramenta de revisão, não só uma ação separada dela).
+    // "Controle de proteínas" E já marca cada dia/unidade impresso como revisado (substitui o antigo
+    // botão manual "Marcar como revisado" — a impressão passou a SER a ferramenta de revisão, não só uma
+    // ação separada dela).
+    // 23/11/2026 (correção de bug relatado pelo PV, abria "várias abas com bug" ao imprimir): antes,
+    // abria 1 janela por dia marcado em loop, com um await (gravação no Supabase) ENTRE cada
+    // window.open — a partir da 2ª aba o navegador podia deixar de associar a abertura ao clique do
+    // usuário e bloquear o pop-up de forma inconsistente. Agora pcpImprimirControleProteinas recebe o
+    // resPorDia inteiro e abre 1 SÓ janela (1 dia por seção, com quebra de página — nunca mistura dias
+    // na mesma tabela, mesma regra de antes), sempre dentro do próprio clique, antes de qualquer await.
+    // As gravações de "revisado" (uma por dia) passaram a rodar em paralelo, depois da janela já aberta.
     const btnImprimirLista = e.target.closest("button[data-subst-imprimir-lista]");
     if(btnImprimirLista){
-      for(const {dia, listaRes} of resPorDia){
-        pcpImprimirControleProteinas(listaRes);
-        await pcpMarcarSubstituicoesRevisadas(semana, dia, unidadeFiltro);
-      }
+      pcpImprimirControleProteinas(resPorDia);
+      await Promise.all(resPorDia.map(({dia}) => pcpMarcarSubstituicoesRevisadas(semana, dia, unidadeFiltro)));
       renderPCP();
       return;
     }
