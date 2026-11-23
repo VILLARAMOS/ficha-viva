@@ -1465,6 +1465,22 @@ function confirmDialog(message){
     document.getElementById("cf-ov").addEventListener("click", e => { if(e.target.id==="cf-ov") cleanup(false); });
   });
 }
+// 23/11/2026 (correção de bug relatado pela supervisão + pelo operador do PCP — impressão de Substituições
+// saindo com a semana errada E abrindo várias janelas por clique): toda tela principal (renderPCP,
+// renderContratos, renderVendas etc.) fazia `const content = document.getElementById("content");
+// content.innerHTML = ...` e, dentro disso, cada "Bind" de sub-tela registra seus listeners com
+// `content.addEventListener(...)`.
+// Só o innerHTML era trocado a cada novo render — o próprio <div id="content"> nunca era recriado — então os
+// listeners de TODOS os renders anteriores da sessão continuavam presos nele, se acumulando (1 clique chegou a
+// disparar a mesma ação 4x em teste, 1x com a semana antiga e 3x com a atual). getContentFresh() troca o nó por
+// um clone vazio (mesmo id, sem filhos nem listeners) antes de cada render, resolvendo as duas coisas de uma vez
+// — substitui, em TODA tela principal, o `document.getElementById("content")` direto por esta função.
+function getContentFresh(){
+  const atual = document.getElementById("content");
+  const limpo = atual.cloneNode(false);
+  atual.replaceWith(limpo);
+  return limpo;
+}
 function showAlert(message){
   const root = document.getElementById("confirm-root");
   root.innerHTML = `
@@ -2855,7 +2871,7 @@ function renderInsumos(){
   if(insumoTabSel === "cadastro") document.getElementById("btn-novo-insumo").addEventListener("click", () => openInsumoModal(null));
   if(insumoTabSel === "compra") document.getElementById("btn-novo-insumo").addEventListener("click", () => openInsumoCompraModal(null, { onSaved: () => { document.getElementById("modal-root").innerHTML = ""; renderInsumos(); } }));
 
-  const content = document.getElementById("content");
+  const content = getContentFresh();
   content.innerHTML = `
     <div class="seg-toggle" id="ins-tabs" style="margin-bottom:14px; width:fit-content;">
       <button type="button" data-tab="cadastro" class="${insumoTabSel==="cadastro"?"active":""}">Insumos Base</button>
@@ -4421,7 +4437,7 @@ function renderCardapio(){
 
   document.getElementById("topbar-actions").innerHTML = "";
 
-  const content = document.getElementById("content");
+  const content = getContentFresh();
   content.innerHTML = `
     <div class="menu-controls">
       <select id="card-num">${numerosPorGrupo.map(n => `<option value="${n}" ${n===cardapioNumSel?"selected":""}>${labelNumeroCardapio(grupo, n)}</option>`).join("")}</select>
@@ -4507,7 +4523,7 @@ function construirDraftOrcamento(id){
 
 function renderOrcamentoArea(){
   document.getElementById("topbar-actions").innerHTML = "";
-  const content = document.getElementById("content");
+  const content = getContentFresh();
   const lista = [...orcamentosCardapio.values()].sort((a,b) => normalizeText(a.nome||"").localeCompare(normalizeText(b.nome||"")));
 
   if(!orcamentoCriandoNovo){
@@ -6124,7 +6140,7 @@ function renderContratos(){
 
   const semUnidade = [...contratos.entries()].filter(([,c]) => !c.unidade);
 
-  const content = document.getElementById("content");
+  const content = getContentFresh();
   content.innerHTML = `
     <div class="menu-controls">
       <div class="seg-toggle" id="kp-modo">
@@ -6819,7 +6835,7 @@ function renderEventos(){
   document.getElementById("topbar-actions").innerHTML = `<button class="btn primary" id="btn-novo-evento">+ Novo evento</button>`;
   document.getElementById("btn-novo-evento").addEventListener("click", () => openEventoModal(null));
 
-  const content = document.getElementById("content");
+  const content = getContentFresh();
   content.innerHTML = `
     <div class="search-bar">
       <input type="text" id="ev-busca" placeholder="Buscar cliente…" value="${escapeHtml(eventoFilters.busca)}">
@@ -7014,7 +7030,7 @@ function renderInicio(){
   document.getElementById("topbar-actions").innerHTML = "";
 
   const atalhos = INICIO_ATALHOS.filter(a => possoVerView(a.view));
-  const content = document.getElementById("content");
+  const content = getContentFresh();
   content.innerHTML = `
     <div class="home-hero">
       <div class="home-textblock">
@@ -7045,7 +7061,7 @@ function renderAjuda(){
     : "";
   if(document.getElementById("btn-nova-orientacao")) document.getElementById("btn-nova-orientacao").addEventListener("click", () => openAjudaConteudoModal(null));
 
-  const content = document.getElementById("content");
+  const content = getContentFresh();
   const duvidasAbertas = [...ajudaDuvidas.values()].filter(d => d.status === "aberta").length;
 
   const subtabs = [
@@ -7371,7 +7387,7 @@ function renderIncidencia(){
   document.getElementById("topbar-actions").innerHTML = `<button class="btn primary" id="btn-novo-perfil">+ Novo perfil</button>`;
   document.getElementById("btn-novo-perfil").addEventListener("click", () => openPerfilModal(null));
 
-  const content = document.getElementById("content");
+  const content = getContentFresh();
   const perfisOrdenados = [...perfisIncidencia.entries()].sort((a,b) => normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
 
   // Quantas vezes cada ficha já foi usada em algum cardápio real (qualquer categoria) — usado pra priorizar
@@ -7595,7 +7611,7 @@ function renderFichas(){
 
   const grupos = [...new Set([...fichas.values()].map(f=>f.grupo).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'pt-BR'));
 
-  const content = document.getElementById("content");
+  const content = getContentFresh();
   content.innerHTML = `
     <div class="search-bar">
       <input type="text" id="f-busca" placeholder="Buscar ficha…" value="${escapeHtml(fichaFilters.busca)}">
@@ -8455,7 +8471,7 @@ function renderVendas(){
   document.getElementById("page-desc").textContent = "";
   document.getElementById("topbar-actions").innerHTML = "";
 
-  const content = document.getElementById("content");
+  const content = getContentFresh();
   content.innerHTML = `
     <div class="seg-toggle" id="vd-tabs" style="margin-bottom:14px; width:fit-content;">
       <button type="button" data-tab="lancamento" class="${vendaTabSel==="lancamento"?"active":""}">Lançamento</button>
@@ -9424,7 +9440,7 @@ function renderFaturamento(){
     faturamentoMesSel = meses.some(m => m.id === mesAtualId()) ? mesAtualId() : (meses[0] ? meses[0].id : null);
   }
 
-  const content = document.getElementById("content");
+  const content = getContentFresh();
   if(!faturamentoMesSel){
     content.innerHTML = `<div class="empty-state">Nenhum mês de referência disponível.</div>`;
     return;
@@ -11130,7 +11146,7 @@ function renderCompras(){
   document.getElementById("page-desc").textContent = "";
   document.getElementById("topbar-actions").innerHTML = "";
 
-  const content = document.getElementById("content");
+  const content = getContentFresh();
   const tabsHtml = `
     <div class="seg-toggle" id="cp-tabs" style="margin-bottom:14px; width:fit-content;">
       <button type="button" data-tab="lista" class="${comprasTab==="lista"?"active":""}">Lista de compra</button>
@@ -12269,7 +12285,7 @@ function pedidosDoFornecedor(fornecedorId){
 function renderFornecedores(){
   document.getElementById("page-title").textContent = "Fornecedores";
   document.getElementById("page-desc").textContent = "";
-  const content = document.getElementById("content");
+  const content = getContentFresh();
   const lista = [...fornecedores.entries()]
     .filter(([,f]) => !fornecedoresFiltro || (f.departamentos||[]).includes(fornecedoresFiltro))
     .filter(([,f]) => !fornecedoresBusca || normalizeText(f.nome||"").includes(normalizeText(fornecedoresBusca)) || normalizeText(f.cnpj||"").includes(normalizeText(fornecedoresBusca)))
@@ -12568,7 +12584,7 @@ function renderOrcamento(){
   const meses = MESES_REFERENCIA;
   if(orcamentoMesSel === null || !meses.some(m => m.id === orcamentoMesSel)) orcamentoMesSel = meses.some(m => m.id === mesAtualId()) ? mesAtualId() : (meses[0] ? meses[0].id : null);
 
-  const content = document.getElementById("content");
+  const content = getContentFresh();
   if(!orcamentoMesSel){ content.innerHTML = `<div class="empty-state">Nenhum mês de referência cadastrado ainda.</div>`; return; }
 
   const orc = orcadoPorBlocoSemana(orcamentoMesSel, orcamentoEscopoSel);
@@ -13409,7 +13425,7 @@ function renderPainel(){
   const meses = MESES_REFERENCIA;
   if(painelMesSel === null || !meses.some(m => m.id === painelMesSel)) painelMesSel = meses.some(m => m.id === mesAtualId()) ? mesAtualId() : (meses[0] ? meses[0].id : null);
 
-  const content = document.getElementById("content");
+  const content = getContentFresh();
   if(!painelMesSel){ content.innerHTML = `<div class="empty-state">Nenhum mês de referência cadastrado ainda.</div>`; return; }
 
   const almocoIdx = indiceCardapioAlmoco(), cafeIdx = indiceCafeSemana();
@@ -19827,7 +19843,7 @@ async function renderPCP(){
     dia: d,
     grupos: pcpRomaneioPorRota(pcpCalcularDia(pcpSemanaSel, d, unidadeFiltro, servicosFiltro))
   })) : null;
-  const content = document.getElementById("content");
+  const content = getContentFresh();
   content.innerHTML = `
     <div class="seg-toggle" id="pcp-subview-tabs" style="margin-bottom:14px; width:fit-content;">
       <button type="button" data-pcpsub="quantidades" class="${pcpSubView==="quantidades"?"active":""}">Quantidade de atendimento</button>
