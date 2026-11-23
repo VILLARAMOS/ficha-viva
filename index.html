@@ -19013,6 +19013,9 @@ function pcpAjustesGrupoEntra(grupo){ return !/^(SUCO|SOBREMESA)/.test((grupo ||
 // pcpCalcularDia/Produção, aplicado aqui por cima do `res` já calculado (res já veio filtrado por cliente
 // quando chamado com clienteFiltro — ver ajustesBlocos em renderPCP — então este filtro aqui é redundante
 // mas inofensivo, serve de garantia extra).
+// 23/11/2026, pedido do Marcelo: "pessoas atendidas" (mesmo número de res.clientes, que Produção/
+// Substituições/Açougue/Conferência/Romaneio já mostram) passou a sair também aqui, pra ficar em TODAS
+// as tabelas por cliente do PCP — antes só o nome do cliente aparecia no card de Ajustes do dia.
 function pcpAjustesLinhas(res, clienteFiltro){
   const porCliente = new Map();
   res.receitas.filter(r => pcpAjustesGrupoEntra(r.grupo)).forEach(r => {
@@ -19020,7 +19023,8 @@ function pcpAjustesLinhas(res, clienteFiltro){
       if(!pc.produtoId) return;
       if(clienteFiltro && !clienteFiltro.has(pc.contratoId)) return;
       const servico = pcpTurnoDoProduto(pc.produtoId);
-      const grupo = porCliente.get(pc.contratoId) || { id: pc.contratoId, nome: pc.nome, linhas: [] };
+      const cli = res.clientes.find(c => c.id === pc.contratoId);
+      const grupo = porCliente.get(pc.contratoId) || { id: pc.contratoId, nome: pc.nome, pessoas: cli ? cli.pessoas : 0, linhas: [] };
       grupo.linhas.push({ fichaId: r.fichaId, nomeReceita: r.nome, servico, qtdCalculada: pc.qtdOriginal, ajuste: pc.ajuste || null });
       porCliente.set(pc.contratoId, grupo);
     });
@@ -19037,7 +19041,7 @@ function pcpAjustesHtml(res, dia, clienteFiltro){
   if(!grupos.length) return `<div class="empty-state">Nenhum cliente com produção prevista para este dia${clienteFiltro ? " (confira o filtro de clientes acima)" : ""}.</div>`;
   const opcoesMotivo = atual => `<option value="">—</option>` + PCP_AJUSTE_MOTIVOS.map(m => `<option value="${escapeHtml(m)}" ${atual===m?"selected":""}>${escapeHtml(m)}</option>`).join("");
   const cards = grupos.map(g => `<div class="panel" style="margin-bottom:14px;" data-ajuste-card="${escapeHtml(g.id)}">
-      <div class="panel-head"><h3 style="font-size:14px;">${escapeHtml(g.nome)}</h3></div>
+      <div class="panel-head"><h3 style="font-size:14px;">${escapeHtml(g.nome)}</h3><span class="hint">Pessoas atendidas: <strong>${fmtNum(g.pessoas,0)}</strong></span></div>
       <div class="panel-body"><div class="table-wrap"><table>
         <thead><tr><th>Receita</th><th>Serviço</th><th style="text-align:right;">Calculado</th><th style="text-align:right;">Valor efetivo</th><th>Motivo</th><th>Observação</th></tr></thead>
         <tbody>${g.linhas.map(l => `<tr data-ajuste-contrato="${g.id}" data-ajuste-ficha="${l.fichaId}" data-ajuste-servico="${l.servico}" data-ajuste-dia="${dia}" ${l.ajuste ? `data-ajuste-id="${l.ajuste.id}"` : ""}>
