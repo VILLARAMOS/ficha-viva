@@ -16474,12 +16474,37 @@ function pcpReqDiaServidoHtml(diaInfo, semana, unidadeFiltro, area){
     ${pcpAvulsoFormHtml(dia, unidadeFiltro, area)}
   </div>`;
 }
-function pcpReqDiaServidoPrintHtml(diaInfo, semana, unidadeLabel, area){
+// 23/11/2026, pedido do Marcelo: separar a impressão da Requisição do estoque por Almoço/Jantar/Ceia
+// quando a requisição cobre mais de 1 serviço — hoje pcpReqListaDia soma os 3 serviços num único número
+// por insumo (não guarda de qual serviço veio cada quantidade; ver comentário em pcpCalcularRequisicaoDia
+// sobre essa decisão de propósito). Em vez de alterar o motor de cálculo — usado também pela tela, pela
+// baixa real no kardex e por outras telas (Preparo da semana do Açougue, Mapa da semana) — o que arriscaria
+// essas contas divergirem entre si, chama pcpReqListaDia 1x por serviço, com servicosFiltro restrito a 1
+// serviço só: é exatamente a mesma conta que já roda quando só o chip "Almoço" (ou "Jantar"/"Ceia")
+// sozinho está marcado na tela, só repetida pra cada serviço ativo. Retiradas avulsas (fora de cardápio,
+// sem serviço) nunca entram aqui — ficam num bloco próprio na impressão (ver pcpReqDiaServidoPrintHtml).
+function pcpReqLinhasPorTurno(semana, dia, unidadeFiltro, clienteFiltro, servicosFiltro){
+  const ativos = PCP_TURNOS.filter(t => t.id !== "todos" && (!servicosFiltro || servicosFiltro.has(t.id)));
+  return ativos.map(t => ({ turno: t.id, label: t.nome, linhas: pcpReqListaDia(semana, dia, unidadeFiltro, new Set([t.id]), clienteFiltro).linhas }));
+}
+function pcpReqDiaServidoPrintHtml(diaInfo, semana, unidadeLabel, area, unidadeFiltro, servicosFiltro, clienteFiltro){
   const { dia, linhas, dataUso, dataSeparacao } = diaInfo;
   const custoDia = pcpCustoLinhas(linhas);
+  // só separa por serviço na Requisição do estoque (nunca no Açougue, que não usa este bloco hoje — ver
+  // comentário acima de pcpReqSemanaSecaoHtml) e só quando há 2+ serviços ativos; com 1 serviço só
+  // selecionado não há nada pra separar, mantém a tabela única de sempre.
+  const blocosTurno = area !== "acougue" ? pcpReqLinhasPorTurno(semana, dia, unidadeFiltro, clienteFiltro, servicosFiltro) : [];
+  const corpo = blocosTurno.length > 1
+    ? blocosTurno.map(b => `<h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.04em; margin:16px 0 6px; border-bottom:1px solid #333; padding-bottom:3px;">${escapeHtml(b.label)} <span style="font-weight:400; text-transform:none;">— ${fmtMoney(pcpCustoLinhas(b.linhas))}</span></h2>${pcpReqBlocosGrupoHtml(b.linhas, true)}`).join("")
+      + (() => {
+          const avulsas = pcpAvulsasDoDia(semana, dia, unidadeFiltro, area).map(pcpAvulsaParaLinha);
+          if(!avulsas.length) return "";
+          return `<h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.04em; margin:16px 0 6px; border-bottom:1px solid #333; padding-bottom:3px;">Itens avulsos (fora de cardápio) <span style="font-weight:400; text-transform:none;">— ${fmtMoney(pcpCustoLinhas(avulsas))}</span></h2>${pcpReqBlocosGrupoHtml(avulsas, true)}`;
+        })()
+    : pcpReqBlocosGrupoHtml(linhas, true);
   return `<h1>${area === "acougue" ? "AÇOUGUE" : "ESTOQUE"} — ${escapeHtml(pcpTituloBlocoReqUso(dataUso, dataSeparacao))}</h1>
     <div style="font-size:12px; color:#666; margin-bottom:14px;">${escapeHtml(unidadeLabel)} · ${escapeHtml(rotuloSemana(semana))} · Custo do dia: <strong>${fmtMoney(custoDia)}</strong></div>
-    ${pcpReqBlocosGrupoHtml(linhas, true)}
+    ${corpo}
     <div style="margin-top:24px; font-size:11px; color:#666; display:flex; justify-content:space-between;"><span>Separado por: ____________________ &nbsp; Entregue por: ____________________</span><span>Impresso em ${fmtDataCompleta(new Date())}</span></div>`;
 }
 // imprime os dias ESCOLHIDOS (checkboxes da tela, sempre em ordem Segunda→Domingo) — SÓ impressão, não
@@ -16491,7 +16516,7 @@ async function pcpImprimirReqDiasEscolhidos(dias, semana, unidadeFiltro, unidade
   if(!dias.length){ showAlert("Escolha ao menos um dia pra imprimir."); return; }
   const todos = pcpReqSemanaPorDiaServido(semana, unidadeFiltro, area, servicosFiltro, clienteFiltro);
   const porDia = new Map(todos.map(d => [d.dia, d]));
-  const partes = dias.map(dia => pcpReqDiaServidoPrintHtml(porDia.get(dia) || {dia, linhas:[], dataUso: dataDoDia(semana,dia), dataSeparacao: pcpDataSeparacao(dataDoDia(semana,dia), area === "acougue" ? pcpAcgDias() : pcpEstDias())}, semana, unidadeLabel, area));
+  const partes = dias.map(dia => pcpReqDiaServidoPrintHtml(porDia.get(dia) || {dia, linhas:[], dataUso: dataDoDia(semana,dia), dataSeparacao: pcpDataSeparacao(dataDoDia(semana,dia), area === "acougue" ? pcpAcgDias() : pcpEstDias())}, semana, unidadeLabel, area, unidadeFiltro, servicosFiltro, clienteFiltro));
   const w = window.open("", "_blank");
   if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>${area==="acougue"?"Açougue":"Requisição do estoque"} — dias selecionados</title>
