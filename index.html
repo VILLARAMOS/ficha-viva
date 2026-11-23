@@ -6081,6 +6081,31 @@ function apurarContratoVigenciaTotal(id, ct, almocoIdx, cafeIdx){
   return { receita: receitaSistema + receitaManual, receitaManual, receitaSistema, custo, cmv: receitaSistema > 0 ? custo/receitaSistema : null };
 }
 
+// 23/11/2026, pedido do Marcelo: Aubicon passou a ter 2 locais de entrega (Matriz e CD) — pra
+// PCP/Compras/Vendas/Painel eles são dois clientes de verdade (volume, cardápio e rota PRÓPRIOS de
+// cada um — cadastrados como dois contratos separados, de propósito), mas pra faturamento/NF é o
+// mesmo cliente. `fatura_junto_com` (campo no contrato "filho", ex. Aubicon CD) aponta pro contrato
+// "pai" (ex. Aubicon Matriz) só pra fins de fatura — não muda NADA em apurarContrato/
+// apurarContratoVigenciaTotal nem em nenhuma tela que já soma por contrato hoje (Painel, Vendas,
+// Faturamento apurado): cada contrato continua tendo seu próprio número ali, sem soma escondida. O
+// único lugar que soma pai+filho é esta tela (Contratos), onde mostramos o número que de fato fecha
+// a fatura/NF do cliente, ao lado do número "operacional" de cada local.
+function contratosFilhosFaturamento(id){
+  return [...contratos.entries()].filter(([, c]) => c.fatura_junto_com === id);
+}
+function apurarContratoVigenciaTotalComGrupo(id, ct, almocoIdx, cafeIdx){
+  const base = apurarContratoVigenciaTotal(id, ct, almocoIdx, cafeIdx);
+  const filhos = contratosFilhosFaturamento(id);
+  if(!filhos.length) return { ...base, filhos: [] };
+  let receita = base.receita, custo = base.custo;
+  const detalhe = filhos.map(([fid, fc]) => {
+    const r = apurarContratoVigenciaTotal(fid, fc, almocoIdx, cafeIdx);
+    receita += r.receita; custo += r.custo;
+    return { id: fid, nome: fc.nome_cliente, receita: r.receita };
+  });
+  return { ...base, receita, custo, cmv: receita > 0 ? custo / receita : null, filhos: detalhe };
+}
+
 function renderContratos(){
   document.getElementById("page-title").textContent = "Contratos";
   document.getElementById("page-desc").textContent = "";
@@ -6150,16 +6175,23 @@ function renderContratos(){
   `;
 
   function linhaCliente(id, c){
-    const vig = apurarContratoVigenciaTotal(id, c, almocoIdx, cafeIdx);
+    // 23/11/2026: contrato "pai" (tem filhos de fatura, ex. Aubicon Matriz com Aubicon CD) mostra o
+    // total JÁ SOMADO com os filhos (é o que vai pra NF); contrato "filho" (ex. Aubicon CD) mostra só
+    // o seu próprio número operacional, com um aviso de que soma na fatura de outro contrato — pra não
+    // dar a entender, lendo só esta tela, que o total dele some duas vezes.
+    const vig = c.fatura_junto_com ? apurarContratoVigenciaTotal(id, c, almocoIdx, cafeIdx) : apurarContratoVigenciaTotalComGrupo(id, c, almocoIdx, cafeIdx);
     const apMes = contratoPainelMesSel ? apurarContrato(id, c, contratoPainelMesSel, almocoIdx, cafeIdx) : null;
     const plMes = contratoPainelMesSel ? apurarPlanejadoContrato(id, c, contratoPainelMesSel, almocoIdx, cafeIdx) : null;
     const vigTxt = (c.data_inicio || c.data_fim) ? `${fmtDataBr(c.data_inicio)} – ${fmtDataBr(c.data_fim)}` : '<span style="color:var(--text-faint);">—</span>';
     const aviso = contratoAvisoVigencia(c);
     const avisoCor = aviso ? (aviso.nivel === "critico" ? "var(--danger, #c0392b)" : aviso.nivel === "alerta" ? "var(--warning, #b58105)" : "var(--text-faint)") : null;
     const avisoHtml = aviso ? `<div style="font-size:11.5px; color:${avisoCor}; margin-top:2px;">${escapeHtml(aviso.texto)}</div>` : "";
+    const faturaBadgeHtml = c.fatura_junto_com
+      ? `<div style="font-size:11.5px; color:var(--text-faint); margin-top:2px;">fatura junto com ${escapeHtml(contratos.get(c.fatura_junto_com)?.nome_cliente || "—")}</div>`
+      : (vig.filhos && vig.filhos.length ? `<div style="font-size:11.5px; color:var(--text-faint); margin-top:2px;">inclui ${vig.filhos.map(f => escapeHtml(f.nome)).join(", ")} (fatura)</div>` : "");
     return `
             <tr>
-              <td class="name-cell">${escapeHtml(c.nome_cliente)}${!c.ativo ? ' <span class="chip neutral">inativo</span>' : ''}</td>
+              <td class="name-cell">${escapeHtml(c.nome_cliente)}${!c.ativo ? ' <span class="chip neutral">inativo</span>' : ''}${faturaBadgeHtml}</td>
               <td class="num-cell">${fmtMoney(vig.receita)}</td>
               <td class="num-cell">${apMes ? fmtMoney(apMes.receita) : "—"}</td>
               <td class="num-cell">${plMes ? fmtMoney(plMes.custo) : "—"}</td>
@@ -6204,7 +6236,7 @@ function openContratoModal(id){
   const draft = existing ? JSON.parse(JSON.stringify(existing)) : {
     nome_cliente:"", ativo:true, modelo_faturamento:"itemizado", valor_fixo_mensal:null,
     unidade:"matriz", rota_id:null, rota_ordem:null, endereco_entrega:null, horario_entrega:null, data_inicio:null, data_fim:null,
-    cnpj:null, tipo_renovacao:null, data_fim_prazo_original:null,
+    cnpj:null, tipo_renovacao:null, data_fim_prazo_original:null, fatura_junto_com:null,
     cardapio_refeicao_num: REFEICAO_NUMS[0], cardapio_marmita_num: MARMITA_NUMS[0], marmita_especial_ativo:false, cardapio_marmita_especial_num:null,
     cardapio_cafe_num: CAFE_NUMS[0], cafe_especial_ativo:false, cardapio_cafe_especial_num:null, cafe_terceirizado:false,
     observacoes:null,
@@ -6272,6 +6304,20 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
             <div class="field" id="kk-valorfixo-wrap" style="display:${draft.modelo_faturamento==="fixo"||draft.modelo_faturamento==="franquia"?"block":"none"};"><label id="kk-valorfixo-label">${draft.modelo_faturamento==="franquia"?"Mensalidade base (R$)":"Valor fixo mensal (R$)"}</label><input type="number" step="0.01" id="kk-valorfixo" value="${draft.valor_fixo_mensal??""}"></div>
             <div class="field"><label>Início do contrato</label><input type="date" id="kk-inicio" value="${draft.data_inicio||""}"></div>
             <div class="field"><label>Fim do contrato</label><input type="date" id="kk-fim" value="${draft.data_fim||""}"></div>
+          </div>
+          <div class="field-row">
+            <!-- 23/11/2026, pedido do Marcelo (caso Aubicon Matriz + Aubicon CD): quando o mesmo cliente
+            tem mais de um local de entrega, cada local é cadastrado como um contrato próprio (volume,
+            cardápio e rota independentes — PCP/Compras/Painel continuam tratando cada um separado).
+            Este campo só serve pra fatura/NF: aponta esse contrato como "filho" de outro, e a aba
+            Contratos passa a somar os dois na linha do contrato "pai" (ver apurarContratoVigenciaTotalComGrupo). -->
+            <div class="field" style="flex:2;"><label>Fatura junto com (outro local do mesmo cliente)</label>
+              <select id="kk-fatura-junto">
+                <option value="" ${!draft.fatura_junto_com?"selected":""}>— fatura separado —</option>
+                ${[...contratos.entries()].filter(([cid]) => cid !== id).sort((a,b)=>normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente))).map(([cid,c]) => `<option value="${cid}" ${draft.fatura_junto_com===cid?"selected":""}>${escapeHtml(c.nome_cliente)}</option>`).join("")}
+              </select>
+            </div>
+            <div class="footnote" style="flex:1; align-self:center; margin:18px 0 0;">Deixe em branco na maioria dos casos — só use quando este contrato é outro local de entrega do MESMO cliente/CNPJ, faturado junto.</div>
           </div>
           <div class="field-row">
             <div class="field"><label>Renovação ao fim do prazo</label>
@@ -6670,6 +6716,7 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
       cnpj: document.getElementById("kk-cnpj").value.trim() || null,
       data_inicio: document.getElementById("kk-inicio").value || null,
       data_fim: document.getElementById("kk-fim").value || null,
+      fatura_junto_com: document.getElementById("kk-fatura-junto").value || null,
       tipo_renovacao: document.getElementById("kk-tipo-renovacao").value || null,
       data_fim_prazo_original: document.getElementById("kk-tipo-renovacao").value === "automatica_indeterminado" ? (document.getElementById("kk-prazo-orig").value || null) : null,
       cardapio_refeicao_num: Number(document.getElementById("kk-ref-num").value),
@@ -6690,6 +6737,12 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
     };
 
     // coleta a grade de itens direto do DOM (preço/mínimo/dias podem ter sido editados)
+    // PONTO DE ATENÇÃO (23/11/2026): esta tela só edita quantidade_dia como UM número uniforme pros dias
+    // marcados (quantidade_minima). A tabela nova "Quantidade de atendimento" do PCP (ver pcpQuantAtualizarContrato)
+    // grava valores DIFERENTES por dia da semana direto em quantidade_dia — se alguém salvar este modal
+    // depois disso sem antes atualizar quantidade_minima/dias aqui, o valor uniforme abaixo SOBRESCREVE
+    // a variação por dia que o PCP gravou. Ainda não resolvido — ideal seria esta grade também mostrar/
+    // editar por dia, igual a nova tela do PCP, em vez de 1 número só pros dias marcados.
     const itensCatalogo = [...document.querySelectorAll("#modal-root [data-cat-item]")].map(row => {
       const quantidade_minima = row.querySelector(".kk-min").value === "" ? null : parseFloat(row.querySelector(".kk-min").value);
       const diasOn = [...row.querySelectorAll(".chip-dia.on")].map(b => b.dataset.dia);
@@ -6725,6 +6778,12 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
         contratoId = data.id;
       }
 
+      // 23/11/2026: captura a quantidade_dia ANTIGA (ainda em memória, antes do reload) pra poder
+      // comparar com a nova depois do save e auto-preencher o ajuste de projeção só nos dias que
+      // de fato mudaram — ver pcpAjusteAutoPorMudancaContrato.
+      const itensAntigosPorProduto = new Map();
+      itensDoContrato(contratoId).forEach(([, it]) => { if(it.produto_id) itensAntigosPorProduto.set(it.produto_id, it); });
+
       // substitui a grade de itens inteira (mais simples e seguro do que diffs parciais)
       const { error: delErr } = await sb.from('contrato_itens').delete().eq('contrato_id', contratoId);
       if(delErr) throw delErr;
@@ -6734,7 +6793,10 @@ function renderContratoModal(id, draft, draftCatalogo, draftCustom){
         if(insErr) throw insErr;
       }
 
-      await Promise.all([loadContratos(), loadContratoItens()]);
+      const ajustesAuto = pcpAjusteAutoPorMudancaContrato(itensAntigosPorProduto, itensCatalogo);
+      await pcpAplicarAjusteAutoContrato(contratoId, ajustesAuto);
+
+      await Promise.all([loadContratos(), loadContratoItens(), loadPrevisaoCompra()]);
       root.innerHTML = "";
       renderContratos();
     }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao salvar: "); }
@@ -9813,6 +9875,67 @@ function contratoVigenteNoDia(ct, semana, dia){
   if(ct.data_fim && ymd > ct.data_fim) return false;
   if(ct.data_inicio && ymd < ct.data_inicio) return false;
   return true;
+}
+// 23/11/2026, pedido do Marcelo: quando a quantidade contratada de um dia muda (renegociação, ex.
+// EDAN 106→110), a projeção do PCP/Compras não deve ficar presa à mediana do histórico antigo até
+// acumular semanas novas sob o número novo — em origemSugestao acima, o contrato só é usado quando
+// NÃO há histórico (lançado/média/ciclo têm prioridade). Modelo simples escolhido: ao salvar o
+// contrato, pré-preencher o ajuste manual (previsao_compra.quantidade_ajustada — mesmo campo que a
+// Lista de compra usa, e que já tem prioridade máxima em quantidadePrevista) com o número novo, pras
+// semanas futuras que o sistema já tem cardápio planejado. Compara o quantidade_dia ANTIGO (ainda em
+// memória, antes do reload) contra o NOVO por dia da semana — só gera ajuste nos dias cujo número de
+// fato mudou. Nunca sobrescreve: (a) uma venda real já lançada naquele dia/semana, nem (b) um ajuste
+// manual que alguém já tenha digitado ali por outro motivo (ex. feriado, evento pontual do cliente) —
+// nesses dois casos o ponto fica de fora da lista, silenciosamente, pra não brigar com um ajuste
+// deliberado de alguém.
+function pcpAjusteAutoPorMudancaContrato(itensAntigosPorProduto, itensNovos){
+  const semanaHoje = semanaDaData(new Date().toISOString().slice(0,10));
+  if(!semanaHoje) return [];
+  const semanasFuturas = semanasDisponiveisVendas().filter(s => s >= semanaHoje);
+  if(!semanasFuturas.length) return [];
+  const ajustes = []; // {produtoId, dia, semana, valor}
+  itensNovos.filter(it => it.produto_id && it.quantidade_dia).forEach(it => {
+    const antigo = itensAntigosPorProduto.get(it.produto_id);
+    DIAS_ORDEM.forEach(dia => {
+      const novoVal = it.quantidade_dia[dia];
+      if(novoVal === null || novoVal === undefined) return;
+      const velhoVal = (antigo && antigo.quantidade_dia) ? antigo.quantidade_dia[dia] : null;
+      if(novoVal === velhoVal) return; // não mudou nesse dia — nada a fazer
+      semanasFuturas.forEach(semana => ajustes.push({ produtoId: it.produto_id, dia, semana, valor: novoVal }));
+    });
+  });
+  return ajustes;
+}
+// Grava a lista acima em previsao_compra, em lote por semana/dia (mesmo formato de upsert que
+// comprasSalvarAlteracoes usa) — lê o que já existe pra nunca sobrescrever ajuste manual nem dia com
+// venda real já lançada.
+async function pcpAplicarAjusteAutoContrato(contratoId, ajustes){
+  if(!ajustes || !ajustes.length) return;
+  const porSemanaDia = new Map(); // "semana|dia" -> [{produtoId, valor}]
+  ajustes.forEach(a => {
+    const k = `${a.semana}|${a.dia}`;
+    if(!porSemanaDia.has(k)) porSemanaDia.set(k, []);
+    porSemanaDia.get(k).push(a);
+  });
+  for(const [k, lista] of porSemanaDia){
+    const [semanaStr, dia] = k.split("|");
+    const semana = parseInt(semanaStr, 10);
+    const gk = `${contratoId}|${semana}|${dia}`;
+    const doc = previsaoCompra.get(gk);
+    const mapa = new Map((doc?.itens||[]).map(it => [it.produto_id, it.quantidade_ajustada]));
+    let mudou = false;
+    lista.forEach(({produtoId, valor}) => {
+      const jaTemAjuste = mapa.has(produtoId) && mapa.get(produtoId) !== null && mapa.get(produtoId) !== undefined;
+      if(jaTemAjuste) return; // ajuste manual já existente — não sobrescreve
+      if(vendaLancadaNoDia(contratoId, produtoId, dia, semana) !== null) return; // venda real já lançada — não sobrescreve
+      mapa.set(produtoId, valor);
+      mudou = true;
+    });
+    if(!mudou) continue;
+    const itens = [...mapa.entries()].map(([produto_id, quantidade_ajustada]) => ({ produto_id, quantidade_ajustada }));
+    const { error } = await sb.from('previsao_compra').upsert({ contrato_id: contratoId, semana, dia, itens, ...carimbo() }, { onConflict: 'contrato_id,semana,dia' });
+    if(error) throw error;
+  }
 }
 function quantidadePrevista(contratoId, produtoId, dia, semana){
   if(!contratoVigenteNoDia(contratos.get(contratoId), semana, dia)) return 0;
@@ -14904,6 +15027,11 @@ function pcpEtqaQtdPadrao(l, kgEmb){ return l.unidade === "kg" ? Math.max(1, Mat
 
 /* ---------- tela ---------- */
 let pcpSubView = "producao"; // "producao" (já inclui Volume por cliente, incorporado em 16/10/2026)
+// 23/11/2026, pedido do Marcelo: rascunho pendente da tabela "Quantidade de atendimento" (PCP/quantidades)
+// — "contratoId|DIA" -> valor digitado (string; "" = apagar o ajuste manual desse dia). Zera ao trocar de
+// semana (mesmo princípio de comprasDiasSelecionados etc. — nunca atravessa semanas sem salvar).
+let pcpQuantDraft = new Map();
+let pcpQuantSalvando = false;
 let pcpUnidadeSel = "matriz"; // "matriz" | "filial" | "todos"
 let pcpSemanaSel = null;
 let pcpDiaSel = "SEGUNDA";
@@ -19270,6 +19398,174 @@ function pcpPesosBind(content){
   });
 }
 
+/* ---------- PCP / Quantidade de atendimento (23/11/2026, pedido do Marcelo) ----------
+   Tabela única cliente × dia da semana com a quantidade de atendimento prevista pra semana selecionada
+   — mesmo número que já aparece como "pessoas" em qualquer outra tela do PCP (soma de todos os itens de
+   refeição do contrato relevantes pra produção, ver PCP_TIPOS_PRODUCAO/pcpCalcularDia). Duas ações
+   separadas de propósito (decisão de 23/11, pra não misturar ajuste operacional com renegociação
+   comercial):
+   - "Ajustar só esta semana": grava em previsao_compra.quantidade_ajustada — o MESMO campo que a Lista
+     de compra (Compras) usa, reaproveitado aqui sem duplicar mecanismo (pcpQuantGravarPrevisao, upsert
+     próprio, não passa pelo comprasDraft da aba Compras pra não arrastar rascunho esquecido de lá).
+   - "Atualizar quantidade do contrato": regrava contrato_itens.quantidade_dia (a baseline) e, reaproveitando
+     pcpAjusteAutoPorMudancaContrato/pcpAplicarAjusteAutoContrato (mesmo fluxo do save da aba Contratos),
+     já empurra o número novo pras semanas futuras sem histórico — pede confirmação explícita, porque isso
+     é o número que entra em faturamento, não só produção desta semana.
+   Cada ação é protegida também no banco (RLS): previsao_compra exige acesso 'compras' completo,
+   contrato_itens exige 'contratos' completo — os botões ficam ocultos/desabilitados sem esse acesso,
+   pra não oferecer uma ação que vai falhar. */
+function pcpQuantItensContrato(contratoId){
+  return itensDoContratoVenda(contratoId).filter(it => {
+    const cat = catalogoPorProduto(it.produto_id);
+    return cat && PCP_TIPOS_PRODUCAO.has(cat.tipo_custo);
+  });
+}
+function pcpQuantAtual(contratoId, dia, semana){
+  return pcpQuantItensContrato(contratoId).reduce((s, it) => s + (quantidadePrevista(contratoId, it.produto_id, dia, semana) || 0), 0);
+}
+function pcpQuantDraftKey(contratoId, dia){ return `${contratoId}|${dia}`; }
+function pcpQuantValorExibido(contratoId, dia, semana){
+  const k = pcpQuantDraftKey(contratoId, dia);
+  return pcpQuantDraft.has(k) ? pcpQuantDraft.get(k) : pcpQuantAtual(contratoId, dia, semana);
+}
+// distribui o total novo (editado como 1 número só) entre os itens do cliente, proporcional à
+// participação atual de cada um — ex. Marmita 30 + Marmita especial 10 (total 40), editar pra 44 vira
+// 33+11 (mantém a proporção 75/25). Com 1 item só, ou com o total atual zerado, tudo vai pro primeiro
+// item (ordem do contrato) — caso raro (reativar um cliente do zero nesse dia).
+function pcpQuantDistribuir(itens, valoresAtuais, novoTotal){
+  if(!itens.length) return [];
+  const somaAtual = valoresAtuais.reduce((s,v) => s+v, 0);
+  if(itens.length === 1 || !(somaAtual > 0)){
+    return itens.map((it, i) => ({ produtoId: it.produto_id, valor: i === 0 ? novoTotal : 0 }));
+  }
+  const arred = valoresAtuais.map(v => Math.round(novoTotal * (v / somaAtual)));
+  const diff = novoTotal - arred.reduce((s,v) => s+v, 0);
+  if(diff !== 0){
+    let idxMaior = 0;
+    for(let i = 1; i < valoresAtuais.length; i++) if(valoresAtuais[i] > valoresAtuais[idxMaior]) idxMaior = i;
+    arred[idxMaior] += diff;
+  }
+  return itens.map((it, i) => ({ produtoId: it.produto_id, valor: Math.max(0, arred[i]) }));
+}
+// grava direto em previsao_compra (upsert por contrato/semana/dia, merge com o que já existe) — não usa
+// comprasDraft/comprasSalvarAlteracoes de propósito, pra essa tela nunca salvar "de carona" um rascunho
+// pendente que tenha ficado esquecido na aba Compras.
+async function pcpQuantGravarPrevisao(ajustes){
+  if(!ajustes.length) return;
+  const porChave = new Map(); // "contratoId|semana|dia" -> [{produtoId, valor}]
+  ajustes.forEach(a => {
+    const k = `${a.contratoId}|${a.semana}|${a.dia}`;
+    if(!porChave.has(k)) porChave.set(k, []);
+    porChave.get(k).push(a);
+  });
+  for(const [k, lista] of porChave){
+    const [contratoId, semanaStr, dia] = k.split("|");
+    const semana = parseInt(semanaStr, 10);
+    const doc = previsaoCompra.get(k);
+    const mapa = new Map((doc?.itens||[]).map(it => [it.produto_id, it.quantidade_ajustada]));
+    lista.forEach(({produtoId, valor}) => { if(valor === null) mapa.delete(produtoId); else mapa.set(produtoId, valor); });
+    const itens = [...mapa.entries()].map(([produto_id, quantidade_ajustada]) => ({ produto_id, quantidade_ajustada }));
+    const { error } = await sb.from('previsao_compra').upsert({ contrato_id: contratoId, semana, dia, itens, ...carimbo() }, { onConflict: 'contrato_id,semana,dia' });
+    if(error) throw error;
+  }
+}
+async function pcpQuantSalvarSemana(){
+  if(!pcpQuantDraft.size || pcpQuantSalvando) return;
+  pcpQuantSalvando = true; renderPCP();
+  try{
+    const ajustes = [];
+    for(const [k, valStr] of pcpQuantDraft){
+      const [contratoId, dia] = k.split("|");
+      const itens = pcpQuantItensContrato(contratoId);
+      if(!itens.length) continue;
+      if(valStr === ""){
+        itens.forEach(it => ajustes.push({ contratoId, produtoId: it.produto_id, dia, semana: pcpSemanaSel, valor: null }));
+      } else {
+        const atuais = itens.map(it => quantidadePrevista(contratoId, it.produto_id, dia, pcpSemanaSel) || 0);
+        const novoTotal = Math.max(0, Math.round(Number(valStr)) || 0);
+        pcpQuantDistribuir(itens, atuais, novoTotal).forEach(({produtoId, valor}) => ajustes.push({ contratoId, produtoId, dia, semana: pcpSemanaSel, valor }));
+      }
+    }
+    await pcpQuantGravarPrevisao(ajustes);
+    await loadPrevisaoCompra();
+    pcpQuantDraft = new Map();
+  } catch(e) {
+    showAlert("Erro ao salvar ajuste da semana: " + (e?.message || e));
+  } finally {
+    pcpQuantSalvando = false; renderPCP();
+  }
+}
+async function pcpQuantAtualizarContrato(){
+  if(!pcpQuantDraft.size || pcpQuantSalvando) return;
+  const chavesComValor = [...pcpQuantDraft.entries()].filter(([,v]) => v !== "");
+  if(!chavesComValor.length){ showAlert("Nenhum valor novo marcado — \"Atualizar quantidade do contrato\" não apaga quantidade contratada, só grava números novos."); return; }
+  if(!confirm(`Isso vai alterar a quantidade CONTRATADA (a base usada em faturamento e nas próximas semanas, não só esta) em ${chavesComValor.length} combinação(ões) de cliente/dia marcadas nesta tabela. Confirma?`)) return;
+  pcpQuantSalvando = true; renderPCP();
+  try{
+    const porContrato = new Map(); // contratoId -> Map(dia -> valStr)
+    chavesComValor.forEach(([k, valStr]) => {
+      const [contratoId, dia] = k.split("|");
+      if(!porContrato.has(contratoId)) porContrato.set(contratoId, new Map());
+      porContrato.get(contratoId).set(dia, valStr);
+    });
+    for(const [contratoId, diasMap] of porContrato){
+      const itens = pcpQuantItensContrato(contratoId);
+      if(!itens.length) continue;
+      const itensAntigosPorProduto = new Map();
+      itens.forEach(it => itensAntigosPorProduto.set(it.produto_id, it));
+      const itensNovos = itens.map(it => ({ produto_id: it.produto_id, quantidade_dia: { ...(it.quantidade_dia||{}) } }));
+      for(const [dia, valStr] of diasMap){
+        const atuais = itens.map(it => quantidadePrevista(contratoId, it.produto_id, dia, pcpSemanaSel) || 0);
+        const novoTotal = Math.max(0, Math.round(Number(valStr)) || 0);
+        pcpQuantDistribuir(itens, atuais, novoTotal).forEach(({valor}, i) => { itensNovos[i].quantidade_dia[dia] = valor; });
+      }
+      for(let i = 0; i < itens.length; i++){
+        const { error } = await sb.from('contrato_itens').update({ quantidade_dia: itensNovos[i].quantidade_dia }).eq('id', itens[i].id);
+        if(error) throw error;
+      }
+      // mesmo auto-preenchimento do save da aba Contratos — ver pcpAjusteAutoPorMudancaContrato.
+      const ajustesAuto = pcpAjusteAutoPorMudancaContrato(itensAntigosPorProduto, itensNovos);
+      await pcpAplicarAjusteAutoContrato(contratoId, ajustesAuto);
+    }
+    await Promise.all([loadContratoItens(), loadPrevisaoCompra()]);
+    pcpQuantDraft = new Map();
+  } catch(e) {
+    showAlert("Erro ao atualizar quantidade do contrato: " + (e?.message || e));
+  } finally {
+    pcpQuantSalvando = false; renderPCP();
+  }
+}
+function pcpQuantHtml(unidadeFiltro, semana){
+  const linhas = [...contratos.entries()]
+    .filter(([, ct]) => ct.ativo !== false)
+    .filter(([, ct]) => !unidadeFiltro || unidadeFiltro === "todos" || ct.unidade === unidadeFiltro)
+    .sort((a,b) => normalizeText(a[1].nome_cliente).localeCompare(normalizeText(b[1].nome_cliente)));
+  const podeAjustarSemana = temAcesso('compras', 'completo');
+  const podeAtualizarContrato = temAcesso('contratos', 'completo');
+  const avisoPermissao = (!podeAjustarSemana && !podeAtualizarContrato)
+    ? `<div class="footnote" style="margin-bottom:10px; color:var(--warning, #b58105);">Seu acesso não inclui gravar em Compras nem em Contratos — a tabela abaixo é só de consulta pra você.</div>` : "";
+  return `
+    <div class="footnote" style="margin:0 0 12px;">Quantidade de atendimento prevista por cliente, dia a dia, pra ${escapeHtml(rotuloSemana(semana))}. Editar aqui muda a mesma projeção usada em toda a aba PCP (mesmo número de "pessoas" de Produção/Volume por cliente/Açougue etc.).</div>
+    ${avisoPermissao}
+    <div class="table-wrap">
+      <table class="pcp-quant-table">
+        <thead><tr><th>Cliente</th>${DIAS_ORDEM.map(d => `<th style="text-align:center;">${DIA_LABEL[d].slice(0,3)}</th>`).join("")}</tr></thead>
+        <tbody>
+          ${linhas.length ? linhas.map(([id, ct]) => `
+            <tr>
+              <td class="name-cell">${escapeHtml(ct.nome_cliente)}</td>
+              ${DIAS_ORDEM.map(d => `<td style="text-align:center;"><input type="number" min="0" step="1" class="pcp-quant-input" style="width:64px; text-align:center;" data-pcp-quant-id="${id}" data-pcp-quant-dia="${d}" value="${pcpQuantValorExibido(id, d, semana)}" ${podeAjustarSemana ? "" : "disabled"}></td>`).join("")}
+            </tr>`).join("") : `<tr><td colspan="8" class="empty-state">Nenhum contrato ativo para esta unidade.</td></tr>`}
+        </tbody>
+      </table>
+    </div>
+    <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:14px;">
+      <button class="btn small primary" id="pcp-quant-salvar-semana" ${(!podeAjustarSemana || !pcpQuantDraft.size || pcpQuantSalvando) ? "disabled" : ""}>Ajustar só esta semana (${pcpQuantDraft.size} pendente${pcpQuantDraft.size===1?"":"s"})</button>
+      ${podeAtualizarContrato ? `<button class="btn small ghost" id="pcp-quant-atualizar-contrato" ${(!pcpQuantDraft.size || pcpQuantSalvando) ? "disabled" : ""}>Atualizar quantidade do contrato</button>` : ""}
+      ${pcpQuantDraft.size ? `<button class="btn small ghost" id="pcp-quant-descartar">Descartar alterações</button>` : ""}
+    </div>`;
+}
+
 async function renderPCP(){
   document.getElementById("page-title").textContent = "PCP";
   document.getElementById("page-desc").textContent = "";
@@ -19288,6 +19584,7 @@ async function renderPCP(){
   const ehAjustes = pcpSubView === "ajustes";
   const ehProducao = pcpSubView === "producao";
   const ehSalSob = pcpSubView === "saladas";
+  const ehQuantidades = pcpSubView === "quantidades";
   const pcpDataSel = dataDoDia(pcpSemanaSel, pcpDiaSel).toISOString().slice(0,10);
   const pcpDiaLabelSel = DIA_LABEL[pcpDiaSel];
   document.getElementById("topbar-actions").innerHTML = (ehAcougue || ehEstoque) ? `
@@ -19532,6 +19829,7 @@ async function renderPCP(){
       <button type="button" data-pcpsub="producao" class="${pcpSubView==="producao"?"active":""}">Produção da cozinha</button>
       <button type="button" data-pcpsub="substituicoes" class="${pcpSubView==="substituicoes"?"active":""}">Substituições</button>
       <button type="button" data-pcpsub="ajustes" class="${pcpSubView==="ajustes"?"active":""}">Ajustes do dia</button>
+      <button type="button" data-pcpsub="quantidades" class="${pcpSubView==="quantidades"?"active":""}">Quantidade de atendimento</button>
       <button type="button" data-pcpsub="cafe" class="${pcpSubView==="cafe"?"active":""}">Café / Padaria</button>
       <button type="button" data-pcpsub="saladas" class="${pcpSubView==="saladas"?"active":""}">Saladas / Sobremesas</button>
       <button type="button" data-pcpsub="acougue" class="${pcpSubView==="acougue"?"active":""}">Açougue</button>
@@ -19542,7 +19840,7 @@ async function renderPCP(){
     <div class="menu-controls" style="margin-bottom:16px;">
       ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes || ehCafe || ehSalSob || ehAcougue || ehEstoque || ehRomaneio ? "" : `<div class="kk-dias-chips" id="pcp-uni-tabs">${PCP_UNIDADES.map(u => `<button type="button" class="chip-dia ${pcpUnidadeSel===u.id?"on":""}" data-pcpuni="${u.id}">${u.nome}${u.id !== "todos" ? ` · ${pcpContagemUnidade(u.id)}` : ""}</button>`).join("")}</div>`}
       <select id="pcp-semana">${opcoesSemana.map(s => `<option value="${s}" ${s===pcpSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
-      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes || ehCafe || ehSalSob || ehAcougue || ehEstoque || ehConferencia || ehRomaneio ? "" : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
+      ${(ehProducao && !ehProducaoAmbas) || ehSubst || ehAjustes || ehCafe || ehSalSob || ehAcougue || ehEstoque || ehConferencia || ehRomaneio || ehQuantidades ? "" : `<div class="kk-dias-chips" id="pcp-dia-tabs">${DIAS_ORDEM.map(d => `<button type="button" class="chip-dia ${pcpDiaSel===d?"on":""}" data-pcpdia="${d}">${DIA_LABEL[d]}</button>`).join("")}</div>`}
       ${servicosAplicavel ? `<div class="kk-dias-chips" id="pcp-serv-tabs">${PCP_TURNOS.filter(t=>t.id!=="todos").map(t => `<button type="button" class="chip-dia ${pcpServicosSel.has(t.id)?"on":""}" data-pcp-serv="${t.id}">${t.nome}</button>`).join("")}</div>` : ""}
     </div>
     ${ehAcougue ? `
@@ -19737,7 +20035,9 @@ async function renderPCP(){
         }).join(`<div style="height:18px;"></div>`);
       const quantidadesHtml = `<div class="panel-head" style="margin:24px 0 10px; border:none;"><h3><i class="ico" data-lucide="clipboard-list"></i>Quantidades a enviar (por cliente)</h3></div>${ajustesBlocos}`;
       return diasPanelAjustes + clientesPanelAjustes + kpiPainel + gramagemHtml + quantidadesHtml;
-    })()) : ehSalSob ? ((() => {
+    })()) : ehQuantidades ? (
+      pcpQuantHtml(unidadeFiltro, pcpSemanaSel)
+    ) : ehSalSob ? ((() => {
       // 11/11/2026, pedido do Marcelo ("mesmo padrão de caixas de Substituições"): painel "Dias da semana"
       // (multi-seleção) + painel "Clientes" — os dois copiados quase literalmente de pcpSubstituicoesHtml.
       // "Clientes" aqui é só informativo, igual Substituições: a exclusão por cliente de verdade já existe
@@ -19928,7 +20228,10 @@ async function renderPCP(){
   // sub-abas do PCP, por isso o elemento pode não existir — wiring defensivo.
   const uniTabs = content.querySelector("#pcp-uni-tabs");
   if(uniTabs) uniTabs.addEventListener("click", e => { const b = e.target.closest("button[data-pcpuni]"); if(!b) return; pcpUnidadeSel = b.dataset.pcpuni; pcpProdClientesSel = null; renderPCP(); });
-  content.querySelector("#pcp-dia-tabs").addEventListener("click", e => {
+  // 23/11/2026: defensivo (como uniTabs acima) — "Quantidade de atendimento" não define nenhum
+  // #pcp-dia-tabs próprio (mostra os 7 dias como colunas da tabela, não precisa de seletor de dia).
+  const diaTabsEl = content.querySelector("#pcp-dia-tabs");
+  if(diaTabsEl) diaTabsEl.addEventListener("click", e => {
     const bProd = e.target.closest("button.pcp-prod-dia-chip");
     if(bProd){ const d = bProd.dataset.dia; if(pcpProdDiasSel.has(d)) pcpProdDiasSel.delete(d); else pcpProdDiasSel.add(d); renderPCP(); return; }
     // multi-seleção de dias em Substituições (10/11/2026, "Visual + multi-dia") — mesmo padrão do chip de
@@ -19953,7 +20256,26 @@ async function renderPCP(){
     if(bConf){ const d = bConf.dataset.dia; if(pcpConfDiasSel.has(d)) pcpConfDiasSel.delete(d); else pcpConfDiasSel.add(d); renderPCP(); return; }
     const b = e.target.closest("button[data-pcpdia]"); if(!b) return; pcpDiaSel = b.dataset.pcpdia; renderPCP();
   });
-  content.querySelector("#pcp-semana").addEventListener("change", e => { pcpSemanaSel = parseInt(e.target.value,10); renderPCP(); });
+  content.querySelector("#pcp-semana").addEventListener("change", e => { pcpSemanaSel = parseInt(e.target.value,10); pcpQuantDraft = new Map(); renderPCP(); });
+  if(ehQuantidades){
+    content.querySelectorAll(".pcp-quant-input").forEach(inp => inp.addEventListener("change", () => {
+      const k = pcpQuantDraftKey(inp.dataset.pcpQuantId, inp.dataset.pcpQuantDia);
+      const atual = pcpQuantAtual(inp.dataset.pcpQuantId, inp.dataset.pcpQuantDia, pcpSemanaSel);
+      // campo esvaziado de propósito (o valor exibido nunca nasce vazio) = pedido explícito de remover
+      // o ajuste manual e voltar pra sugestão automática — diferente de só digitar de volta o mesmo
+      // número de antes, que não é mudança nenhuma (sai do rascunho).
+      if(inp.value === "") pcpQuantDraft.set(k, "");
+      else if(Number(inp.value) === atual) pcpQuantDraft.delete(k);
+      else pcpQuantDraft.set(k, inp.value);
+      renderPCP();
+    }));
+    const btnSalvarSemana = document.getElementById("pcp-quant-salvar-semana");
+    if(btnSalvarSemana) btnSalvarSemana.addEventListener("click", pcpQuantSalvarSemana);
+    const btnAtualizarContrato = document.getElementById("pcp-quant-atualizar-contrato");
+    if(btnAtualizarContrato) btnAtualizarContrato.addEventListener("click", pcpQuantAtualizarContrato);
+    const btnDescartar = document.getElementById("pcp-quant-descartar");
+    if(btnDescartar) btnDescartar.addEventListener("click", () => { pcpQuantDraft = new Map(); renderPCP(); });
+  }
   const servTabs = content.querySelector("#pcp-serv-tabs");
   if(servTabs) servTabs.addEventListener("click", e => {
     const b = e.target.closest("button[data-pcp-serv]");
