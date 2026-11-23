@@ -14458,7 +14458,14 @@ function pcpSubReceitasDoDia(receitasTopo){
 // Ponto cego registrado: pcpAplicarSubstituicoesInsumos (troca de proteína) roda DEPOIS e só atualiza
 // `buckets`, não `porClienteCtx.map` — uma substituição de proteína não aparece hoje no detalhe por
 // cliente do açougue (não é o pedido do Marcelo agora; se precisar, revisitar junto).
-function pcpAcumularInsumosDia(dayDoc, numPessoas, acougueSet, buckets, pessoasSubstituidas, coletor, dia, ct, porClienteCtx){
+// turno/porTurnoBuckets (23/11/2026, opcionais): só pra Requisição do estoque conseguir separar a
+// impressão por Almoço/Jantar/Ceia (ver pcpReqLinhasPorTurno) sem rodar o motor 3x — rastreia, POR CIMA
+// do bucket normal (que continua a fonte de verdade pro total/baixa), quanto de cada insumo veio de item
+// de cardápio de qual turno. De propósito NÃO inclui o que pcpAplicarSubstituicoesInsumos adiciona depois
+// (essa função é só sobre os itens individuais daqui) — substituição continua sendo 1 coisa só pro dia
+// inteiro (ver comentário lá), então na impressão separada ela aparece como a diferença entre o total da
+// linha e a soma dos 3 turnos, não dividida entre eles.
+function pcpAcumularInsumosDia(dayDoc, numPessoas, acougueSet, buckets, pessoasSubstituidas, coletor, dia, ct, porClienteCtx, turno, porTurnoBuckets){
   if(!dayDoc) return;
   (dayDoc.itens || []).forEach(it => {
     // 09/11/2026: mesma régua de pcpAcumularDia — `pessoasSubstituidas` é {proteina, completa} desde a
@@ -14500,6 +14507,13 @@ function pcpAcumularInsumosDia(dayDoc, numPessoas, acougueSet, buckets, pessoasS
       const mapa = buckets.get(destino) || new Map();
       mapa.set(insumoFinal, (mapa.get(insumoFinal) || 0) + kgEf);
       buckets.set(destino, mapa);
+      if(turno && porTurnoBuckets){
+        const pt = porTurnoBuckets.get(destino) || new Map();
+        const cur = pt.get(insumoFinal) || {almoco:0, jantar:0, ceia:0};
+        cur[turno] = (cur[turno] || 0) + kgEf;
+        pt.set(insumoFinal, cur);
+        porTurnoBuckets.set(destino, pt);
+      }
       if(coletor) coletor.add(insumoFinal, kgEf, nomeReceita, dia);
       if(destino === "acougue" && porClienteCtx){
         const porInsumoCli = porClienteCtx.map.get(insumoFinal) || new Map();
@@ -14531,6 +14545,10 @@ function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosF
   const buckets = new Map(); // "cozinha"|"saladas"|"sobremesas"|"acougue" -> Map(insumoId -> kg)
   // Fase 9 (11/11/2026): detalhe por cliente, só do açougue — ver comentário de pcpAcumularInsumosDia.
   const porClienteAcougue = new Map(); // insumoId -> Map("contratoId|produtoId" -> {...})
+  // 23/11/2026: mesmo esquema de porClienteAcougue, mas pra turno — ver comentário em pcpAcumularInsumosDia.
+  // "destino" -> Map(insumoId -> {almoco,jantar,ceia}). NÃO inclui o que pcpAplicarSubstituicoesInsumos
+  // adiciona depois (essa roda fora do loop de item, sem turno — de propósito, ver comentário lá).
+  const porTurnoBuckets = new Map();
 
   [...contratos.entries()]
     .filter(([, ct]) => ct.ativo !== false)
@@ -14543,7 +14561,8 @@ function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosF
       itensDoContratoVenda(contratoId).forEach(ci => {
         const cat = catalogoPorProduto(ci.produto_id);
         if(!cat || !PCP_TIPOS_PRODUCAO.has(cat.tipo_custo)) return;
-        if(servicosFiltro && !servicosFiltro.has(pcpTurnoDoProduto(ci.produto_id))) return;
+        const turnoItem = pcpTurnoDoProduto(ci.produto_id);
+        if(servicosFiltro && !servicosFiltro.has(turnoItem)) return;
         const qtd = quantidadePrevista(contratoId, ci.produto_id, dia, semana);
         if(!(qtd > 0)) return;
         const { row, qtdEf } = pcpResolveRowProducao(almocoIdx, cat, ct, semana, dia, qtd);
@@ -14552,7 +14571,7 @@ function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosF
         // peso de expedição (11/11/2026): estendido da refeição transportada pra qualquer tipo de produção
         // (cat já é refeição/marmita/marmita especial, filtrado por PCP_TIPOS_PRODUCAO acima) — a baixa de
         // estoque da marmita passa a seguir o peso ajustado por cliente também, não só o cardápio padrão.
-        pcpAcumularInsumosDia(row, qtdEf, acougueSet, buckets, pessoasSubst, coletor, dia, ct, { map: porClienteAcougue, contratoId, nomeCliente: ct.nome_cliente, produtoId: ci.produto_id });
+        pcpAcumularInsumosDia(row, qtdEf, acougueSet, buckets, pessoasSubst, coletor, dia, ct, { map: porClienteAcougue, contratoId, nomeCliente: ct.nome_cliente, produtoId: ci.produto_id }, turnoItem, porTurnoBuckets);
       });
       if(teveItem) pcpAplicarSubstituicoesInsumos(dia, contratoId, buckets);
     });
@@ -14592,6 +14611,10 @@ function pcpCalcularRequisicaoDia(semana, dia, unidadeFiltro, coletor, servicosF
       if(setor === "acougue" && porClienteAcougue.has(insumoId)){
         item.porCliente = [...porClienteAcougue.get(insumoId).values()];
       }
+      // 23/11/2026: soma dos itens de cardápio por turno (sem a parte de substituição, ver acima) — fica
+      // sempre <= kg; a diferença (quando houver) é substituição do dia inteiro, não deste insumo "puro".
+      const pt = porTurnoBuckets.get(setor);
+      item.porTurno = (pt && pt.get(insumoId)) || {almoco:0, jantar:0, ceia:0};
       return item;
     }).sort((a,b) => a.nome.localeCompare(b.nome,'pt-BR'));
     return { setor, label: SETOR_LABEL[setor], itens };
@@ -14642,11 +14665,12 @@ function pcpCalcularRequisicaoComMapa(semana, dia, unidadeFiltro, servicosFiltro
 // pcpDataSeparacao, chamado por pcpReqSemanaPorDiaServido, que é quem chama esta função 1x por dia).
 function pcpReqListaDia(semana, dia, unidadeFiltro, servicosFiltro, clienteFiltro){
   const res = pcpCalcularRequisicaoComMapa(semana, dia, unidadeFiltro, servicosFiltro, clienteFiltro);
-  const porInsumo = new Map(); // insumoId -> {insumoId, nome, unidade, qtd, receitas:Map(receita->qtd)}
+  const porInsumo = new Map(); // insumoId -> {insumoId, nome, unidade, qtd, receitas:Map(receita->qtd), porTurno}
   res.setores.forEach(s => {
     s.itens.forEach(it => {
-      const c = porInsumo.get(it.insumoId) || { insumoId: it.insumoId, nome: it.nome, unidade: it.unidade, qtd: 0, receitas: new Map() };
+      const c = porInsumo.get(it.insumoId) || { insumoId: it.insumoId, nome: it.nome, unidade: it.unidade, qtd: 0, receitas: new Map(), porTurno: {almoco:0, jantar:0, ceia:0} };
       c.qtd += it.kg;
+      if(it.porTurno){ c.porTurno.almoco += it.porTurno.almoco||0; c.porTurno.jantar += it.porTurno.jantar||0; c.porTurno.ceia += it.porTurno.ceia||0; }
       porInsumo.set(it.insumoId, c);
     });
     s.mapa.forEach(l => {
@@ -14659,7 +14683,7 @@ function pcpReqListaDia(semana, dia, unidadeFiltro, servicosFiltro, clienteFiltr
   const linhas = [...porInsumo.values()].map(c => {
     const ins = insumos.get(c.insumoId);
     const receitas = [...c.receitas.entries()].map(([nome, qtd]) => ({ nome, qtd })).sort((a, b) => b.qtd - a.qtd);
-    return { insumoId: c.insumoId, nome: c.nome, grupo: (ins && ins.grupo_compra) || "—", unidade: c.unidade, qtd: c.qtd, receitas };
+    return { insumoId: c.insumoId, nome: c.nome, grupo: (ins && ins.grupo_compra) || "—", unidade: c.unidade, qtd: c.qtd, receitas, porTurno: c.porTurno };
   }).sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
   return { dia, linhas };
 }
@@ -16475,27 +16499,54 @@ function pcpReqDiaServidoHtml(diaInfo, semana, unidadeFiltro, area){
   </div>`;
 }
 // 23/11/2026, pedido do Marcelo: separar a impressão da Requisição do estoque por Almoço/Jantar/Ceia
-// quando a requisição cobre mais de 1 serviço — hoje pcpReqListaDia soma os 3 serviços num único número
-// por insumo (não guarda de qual serviço veio cada quantidade; ver comentário em pcpCalcularRequisicaoDia
-// sobre essa decisão de propósito). Em vez de alterar o motor de cálculo — usado também pela tela, pela
-// baixa real no kardex e por outras telas (Preparo da semana do Açougue, Mapa da semana) — o que arriscaria
-// essas contas divergirem entre si, chama pcpReqListaDia 1x por serviço, com servicosFiltro restrito a 1
-// serviço só: é exatamente a mesma conta que já roda quando só o chip "Almoço" (ou "Jantar"/"Ceia")
-// sozinho está marcado na tela, só repetida pra cada serviço ativo. Retiradas avulsas (fora de cardápio,
-// sem serviço) nunca entram aqui — ficam num bloco próprio na impressão (ver pcpReqDiaServidoPrintHtml).
-function pcpReqLinhasPorTurno(semana, dia, unidadeFiltro, clienteFiltro, servicosFiltro){
+// quando a requisição cobre mais de 1 serviço. A 1ª versão disto chamava pcpReqListaDia 1x por serviço
+// (3 chamadas) — achei um bug real testando: pcpAplicarSubstituicoesInsumos (o insumo do PRATO SUBSTITUTO
+// de uma troca, ex. ovo extra do omelete) roda 1x por CONTRATO sempre que ele "teveItem" na chamada, sem
+// filtrar por serviço (de propósito, ver comentário lá — substituição é sempre do dia inteiro). Com 3
+// chamadas separadas, um contrato com item em mais de 1 turno fazia teveItem=true em cada chamada, e a
+// substituição entrava 3x em vez de 1x — inflava o total (conferi ao vivo: R$ 4.033,05 somando os 3
+// blocos contra R$ 3.995,34 do total real do dia, 30/11, diferença batendo exatamente com a substituição
+// do dia). Corrigido: 1 chamada SÓ (pcpReqListaDia com todos os serviços, igual já era), e cada item do
+// motor agora carrega também `porTurno` (ver pcpAcumularInsumosDia/pcpCalcularRequisicaoDia) — a soma por
+// serviço de cada insumo, SEM a parte de substituição (que fica de fora de propósito). A separação por
+// turno na impressão é só um RECORTE desse resultado único: pcpReqLinhasPorTurno filtra/reescreve `qtd`
+// pelas `porTurno`, e pcpReqLinhasSubstituicoesDoDia pega a diferença (qtd − soma dos 3 turnos) como bloco
+// à parte — a soma dos 3 blocos de turno + substituições sempre bate com o total do dia, por construção
+// (nunca por uma segunda conta que pode divergir da primeira).
+function pcpReqLinhasPorTurno(linhasBase, servicosFiltro){
   const ativos = PCP_TURNOS.filter(t => t.id !== "todos" && (!servicosFiltro || servicosFiltro.has(t.id)));
-  return ativos.map(t => ({ turno: t.id, label: t.nome, linhas: pcpReqListaDia(semana, dia, unidadeFiltro, new Set([t.id]), clienteFiltro).linhas }));
+  return ativos.map(t => ({
+    turno: t.id, label: t.nome,
+    linhas: linhasBase.filter(l => (l.porTurno ? l.porTurno[t.id] : 0) > 1e-9).map(l => ({ ...l, qtd: l.porTurno[t.id] })),
+  }));
+}
+function pcpReqLinhasSubstituicoesDoDia(linhasBase){
+  return linhasBase.filter(l => {
+    const pt = l.porTurno || {almoco:0, jantar:0, ceia:0};
+    return (l.qtd - (pt.almoco + pt.jantar + pt.ceia)) > 1e-9;
+  }).map(l => {
+    const pt = l.porTurno || {almoco:0, jantar:0, ceia:0};
+    const sobra = l.qtd - (pt.almoco + pt.jantar + pt.ceia);
+    return { ...l, qtd: sobra, receitas: [{ nome: "Substituição (troca de prato, dia inteiro)", qtd: sobra }] };
+  });
 }
 function pcpReqDiaServidoPrintHtml(diaInfo, semana, unidadeLabel, area, unidadeFiltro, servicosFiltro, clienteFiltro){
   const { dia, linhas, dataUso, dataSeparacao } = diaInfo;
   const custoDia = pcpCustoLinhas(linhas);
   // só separa por serviço na Requisição do estoque (nunca no Açougue, que não usa este bloco hoje — ver
   // comentário acima de pcpReqSemanaSecaoHtml) e só quando há 2+ serviços ativos; com 1 serviço só
-  // selecionado não há nada pra separar, mantém a tabela única de sempre.
-  const blocosTurno = area !== "acougue" ? pcpReqLinhasPorTurno(semana, dia, unidadeFiltro, clienteFiltro, servicosFiltro) : [];
+  // selecionado não há nada pra separar, mantém a tabela única de sempre. Recalcula a base SEM avulsos
+  // (pcpReqListaDia puro, não `linhas` que já vem com pcpMesclarAvulsas aplicado) — os avulsos não têm
+  // `porTurno` (são lançamento manual, sem serviço) e entram no bloco próprio logo abaixo, não aqui.
+  const baseSemAvulsos = (area !== "acougue") ? pcpReqListaDia(semana, dia, unidadeFiltro, servicosFiltro, clienteFiltro).linhas : [];
+  const blocosTurno = area !== "acougue" ? pcpReqLinhasPorTurno(baseSemAvulsos, servicosFiltro) : [];
   const corpo = blocosTurno.length > 1
     ? blocosTurno.map(b => `<h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.04em; margin:16px 0 6px; border-bottom:1px solid #333; padding-bottom:3px;">${escapeHtml(b.label)} <span style="font-weight:400; text-transform:none;">— ${fmtMoney(pcpCustoLinhas(b.linhas))}</span></h2>${pcpReqBlocosGrupoHtml(b.linhas, true)}`).join("")
+      + (() => {
+          const subst = pcpReqLinhasSubstituicoesDoDia(baseSemAvulsos);
+          if(!subst.length) return "";
+          return `<h2 style="font-size:13px; text-transform:uppercase; letter-spacing:.04em; margin:16px 0 6px; border-bottom:1px solid #333; padding-bottom:3px;">Substituições (troca de prato, dia inteiro) <span style="font-weight:400; text-transform:none;">— ${fmtMoney(pcpCustoLinhas(subst))}</span></h2>${pcpReqBlocosGrupoHtml(subst, true)}`;
+        })()
       + (() => {
           const avulsas = pcpAvulsasDoDia(semana, dia, unidadeFiltro, area).map(pcpAvulsaParaLinha);
           if(!avulsas.length) return "";
