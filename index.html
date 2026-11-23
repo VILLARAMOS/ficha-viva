@@ -7667,7 +7667,7 @@ function renderFichas(){
               <td style="text-align:right; white-space:nowrap;"><button class="btn small ghost" data-print="${id}" title="Imprimir ficha de produção">imprimir</button> <button class="btn small ghost" data-open="${id}">abrir</button></td>
             </tr>`).join("") || `<tr><td colspan="5" class="empty-state">Nenhuma ficha encontrada.</td></tr>`;
     tbody.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", () => openFichaModal(b.dataset.open)));
-    tbody.querySelectorAll("[data-print]").forEach(b => b.addEventListener("click", () => imprimirFichaProducao(fichas.get(b.dataset.print))));
+    tbody.querySelectorAll("[data-print]").forEach(b => b.addEventListener("click", () => imprimirFichaProducao(fichas.get(b.dataset.print), b.dataset.print)));
   }
 
   updateFichaTable();
@@ -7675,6 +7675,62 @@ function renderFichas(){
   document.getElementById("f-grupo").addEventListener("change", e => { fichaFilters.grupo = e.target.value; updateFichaTable(); });
 }
 
+// 23/11/2026, pedido do Marcelo (relato do PCP: "o volume da Requisição não bate com a Ficha Técnica"):
+// "Atendimento do dia (pessoas)" da Ficha Técnica era 100% manual, gravado direto na ficha (não por
+// dia/semana) — ficava parado no último número digitado até alguém lembrar de atualizar, divergindo em
+// silêncio do que o PCP já calcula pra Requisição/Produção a partir de contrato×venda real. Esta função
+// recalcula, pra HOJE (data real do navegador), quantas pessoas vão comer ESTA ficha — soma, por todo
+// contrato ativo vigente hoje, o efetivo (pessoasEf, já descontando troca de prato) de cada item de
+// cardápio do dia cujo ficha_id bate com esta ficha, iterando os 3 tipos de produção (refeição/marmita/
+// marmita especial) igual pcpCalcularRequisicaoDia faz — MESMA régua, só que por ficha em vez de por
+// insumo. Soma também pessoas de substituição lançada hoje que trocaram PRA esta ficha (ex. Omelete,
+// Prato Fit) — usa pcpSubstituicoesPorContrato (cache carregado 1x no boot) em vez de
+// pcpSubstituicoesCache/pcpListaSubstituicoes de propósito: esse outro cache só carrega a semana aberta
+// na tela de PCP, e aqui rodamos a partir da tela de Fichas Técnicas, que pode nunca ter aberto o PCP
+// nesta sessão — ficaria 0 por engano. Retorna null (sem sugestão) quando a ficha não aparece em nenhum
+// cardápio nem substituição de hoje — nesse caso o campo continua 100% manual, sem forçar nada.
+function ffAtendimentoHojeSugerido(fichaId){
+  if(!fichaId) return null;
+  const agora = new Date();
+  const y = agora.getFullYear(), m = agora.getMonth() + 1, dd = agora.getDate();
+  const ymdHoje = `${y}-${String(m).padStart(2,"0")}-${String(dd).padStart(2,"0")}`;
+  const semana = semanaDaData(ymdHoje);
+  if(semana === null) return null;
+  const dia = pcpDiaDaData(new Date(Date.UTC(y, m - 1, dd)));
+  const almocoIdx = new Map();
+  cardapiosAlmoco.forEach(row => almocoIdx.set(`${row.cardapio_num}|${row.semana}|${row.dia}`, row));
+  let total = 0, achou = false;
+  [...contratos.entries()]
+    .filter(([, ct]) => ct.ativo !== false)
+    .filter(([, ct]) => contratoVigenteNoDia(ct, semana, dia))
+    .forEach(([contratoId, ct]) => {
+      itensDoContratoVenda(contratoId).forEach(ci => {
+        const cat = catalogoPorProduto(ci.produto_id);
+        if(!cat || !PCP_TIPOS_PRODUCAO.has(cat.tipo_custo)) return;
+        const qtd = quantidadePrevista(contratoId, ci.produto_id, dia, semana);
+        if(!(qtd > 0)) return;
+        const { row, qtdEf } = pcpResolveRowProducao(almocoIdx, cat, ct, semana, dia, qtd);
+        if(!row) return;
+        (row.itens || []).forEach(it => {
+          if(it.ficha_id !== fichaId) return;
+          achou = true;
+          const catBase = categoriaBase(it.categoria);
+          let desconto = 0;
+          (pcpSubstituicoesPorContrato.get(contratoId) || []).forEach(s => {
+            if(s.semana !== semana || s.dia !== dia) return;
+            if(catBase === "Proteína") desconto += s.pessoas;
+            else if((catBase === "Base" || catBase === "Guarnição") && fichaEhComposicaoCompleta(s.fichaId)) desconto += s.pessoas;
+          });
+          total += desconto > 0 ? Math.max(0, qtdEf - desconto) : qtdEf;
+        });
+      });
+      // pessoas que trocaram PRA esta ficha hoje (ex. esta própria ficha é "Omelete"/"Prato Fit")
+      (pcpSubstituicoesPorContrato.get(contratoId) || []).forEach(s => {
+        if(s.semana === semana && s.dia === dia && s.fichaId === fichaId){ total += Number(s.pessoas) || 0; achou = true; }
+      });
+    });
+  return achou ? Math.round(total) : null;
+}
 function openFichaModal(id){
   const existing = id ? fichas.get(id) : null;
   const draft = existing ? JSON.parse(JSON.stringify(existing)) : {
@@ -7683,7 +7739,12 @@ function openFichaModal(id){
     disponivel_como_insumo:false, volume_dia:null, gramas_pessoa:null, atendimento:null, replicada_de:null,
     cuba_nome:null, cuba_kg_por_un:null
   };
-  renderFichaModal(id, draft);
+  // 23/11/2026: recalcula "Atendimento do dia" pra hoje sempre que a ficha é aberta — ver comentário de
+  // ffAtendimentoHojeSugerido. Só sobrescreve quando achou algo pra hoje (ficha em uso em algum cardápio
+  // ou substituição); sem isso, mantém o que já estava gravado, sem forçar número em ficha fora de uso.
+  const ffSugestaoHoje = id ? ffAtendimentoHojeSugerido(id) : null;
+  if(ffSugestaoHoje !== null) draft.atendimento = ffSugestaoHoje;
+  renderFichaModal(id, draft, ffSugestaoHoje !== null);
 }
 
 function _fichaMetaTxt(draft){
@@ -7713,7 +7774,16 @@ function nomeResolvidoLinha(l){
 }
 
 /* Ficha de produção pra cozinha: nome, ingredientes com peso (padrão e escalado pro volume do dia), modo de preparo — sem custo/preço. */
-function imprimirFichaProducao(draft){
+function imprimirFichaProducao(draft, id){
+  // 23/11/2026: impressão rápida da lista (sem abrir a ficha) usava direto o que estava gravado — podia
+  // estar velho (ver comentário de ffAtendimentoHojeSugerido). Recalcula aqui também, na hora de imprimir,
+  // SEM gravar no banco (ação de impressão não deveria ter efeito colateral silencioso) — clona o draft só
+  // pra esta impressão. Quando abre pela ficha editada no modal (sem id), já recalculado em openFichaModal
+  // e refletido nos campos — usa o draft como está.
+  const sugestaoHoje = id ? ffAtendimentoHojeSugerido(id) : null;
+  if(sugestaoHoje !== null){
+    draft = { ...draft, atendimento: sugestaoHoje, volume_dia: (draft.gramas_pessoa > 0) ? (sugestaoHoje * draft.gramas_pessoa) / 1000 : draft.volume_dia };
+  }
   const fator = fatorVolumeDia(draft);
   const linhas = (draft.ingredientes||[]).filter(l => nomeResolvidoLinha(l).trim()).map(l => {
     const peso = (l.peso_liquido!==null && l.peso_liquido!==undefined && l.peso_liquido!=="") ? l.peso_liquido : l.peso_bruto;
@@ -7740,6 +7810,7 @@ function imprimirFichaProducao(draft){
     ${printHeadHtml()}
     <h1>${escapeHtml(draft.nome||"(sem nome)")}</h1>
     <div class="meta">${_fichaMetaTxt(draft)}</div>
+    ${sugestaoHoje !== null ? `<div class="meta" style="font-style:italic;">Atendimento calculado automaticamente a partir do PCP de hoje (contratos vigentes + substituições).</div>` : ""}
     <h2>Ingredientes</h2>
     <table><thead><tr><th>Ingrediente</th><th style="width:140px;">Peso (receita padrão)</th><th style="width:140px;">Qtd. p/ volume do dia</th></tr></thead><tbody>${linhas}</tbody></table>
     <h2>Modo de preparo</h2>
@@ -7861,7 +7932,7 @@ function abrirBuscaInsumoModal(excludeId, onEscolher, modo){
   document.getElementById("pk-ov").addEventListener("click", e => { if(e.target.id==="pk-ov") root.innerHTML=""; });
 }
 
-function renderFichaModal(id, draft){
+function renderFichaModal(id, draft, atendimentoAutoSugerido){
   const root = document.getElementById("modal-root");
   const insumoOptions = [...insumos.entries()].filter(([,d]) => d.ativo !== false).sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
   const fichaIngOptions = fichasComoInsumoOptions(id).sort((a,b)=>normalizeText(a[1].nome).localeCompare(normalizeText(b[1].nome)));
@@ -7895,7 +7966,7 @@ function renderFichaModal(id, draft){
             <div class="field"><label>Grama por pessoa (g)</label><input type="number" step="1" id="ff-gramas-pessoa" value="${draft.gramas_pessoa||""}" placeholder="Porção por pessoa"></div>
             <div class="field"><label>Volume do dia (calculado)</label><div class="footnote" id="ff-volume-dia-calc" style="padding:9px 0;">—</div></div>
           </div>
-          <div class="footnote" style="margin:-8px 0 14px;">Atendimento do dia e grama por pessoa calculam o volume do dia (kg), que alimenta a coluna "Qtd. p/ volume do dia" nos ingredientes abaixo e sai na impressão — importante pra produção calcular quanto pesar.</div>
+          <div class="footnote" style="margin:-8px 0 14px;">Atendimento do dia e grama por pessoa calculam o volume do dia (kg), que alimenta a coluna "Qtd. p/ volume do dia" nos ingredientes abaixo e sai na impressão — importante pra produção calcular quanto pesar.${atendimentoAutoSugerido ? ' <strong>Atendimento preenchido automaticamente com a previsão de hoje do PCP</strong> (contratos vigentes + substituições lançadas) — ajuste se precisar de um número diferente.' : (id ? ' Esta ficha não apareceu em nenhum cardápio/substituição de hoje no PCP — atendimento continua manual.' : '')}</div>
           <div class="field"><label>Preço de venda (R$, opcional)</label><input type="number" step="0.01" id="ff-preco" value="${draft.preco_venda===null||draft.preco_venda===undefined?"":draft.preco_venda}"></div>
           <div class="field"><label><input type="checkbox" id="ff-vendavel" style="width:auto; display:inline-block; margin-right:6px;" ${draft.vendavel===true?"checked":""}> Item vendável</label></div>
           <div class="field"><label><input type="checkbox" id="ff-por-unidade" style="width:auto; display:inline-block; margin-right:6px;" ${draft.servido_por_unidade===true?"checked":""}> Servido por unidade (ovo, panqueca, hambúrguer, lanche…) — mostra o "Custo / un" desta ficha</label></div>
