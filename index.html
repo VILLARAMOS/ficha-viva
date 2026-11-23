@@ -19168,8 +19168,12 @@ function pcpAjustesHtml(res, dia, clienteFiltro){
   const grupos = pcpAjustesLinhas(res, clienteFiltro);
   if(!grupos.length) return `<div class="empty-state">Nenhum cliente com produção prevista para este dia${clienteFiltro ? " (confira o filtro de clientes acima)" : ""}.</div>`;
   const opcoesMotivo = atual => `<option value="">—</option>` + PCP_AJUSTE_MOTIVOS.map(m => `<option value="${escapeHtml(m)}" ${atual===m?"selected":""}>${escapeHtml(m)}</option>`).join("");
+  // 23/11/2026, pedido do Marcelo: dia/data ao lado do nome do cliente, junto com pessoas atendidas — antes
+  // só aparecia um cabeçalho de dia separado (e só quando tinha mais de um dia marcado); agora toda tabela
+  // de cliente aqui já deixa claro de qual dia é aquele número, mesmo com só 1 dia selecionado.
+  const diaDataTxt = `${DIA_LABEL[dia]||dia} · ${fmtData(dataDoDia(pcpSemanaSel, dia))}`;
   const cards = grupos.map(g => `<div class="panel" style="margin-bottom:14px;" data-ajuste-card="${escapeHtml(g.id)}">
-      <div class="panel-head"><h3 style="font-size:14px;">${escapeHtml(g.nome)}</h3><span class="hint">Pessoas atendidas: <strong>${fmtNum(g.pessoas,0)}</strong></span></div>
+      <div class="panel-head"><h3 style="font-size:14px;">${escapeHtml(g.nome)} <span class="footnote" style="font-weight:400; text-transform:none;">· ${escapeHtml(diaDataTxt)}</span></h3><span class="hint">Pessoas atendidas: <strong>${fmtNum(g.pessoas,0)}</strong></span></div>
       <div class="panel-body"><div class="table-wrap"><table>
         <thead><tr><th>Receita</th><th>Serviço</th><th style="text-align:right;">Calculado</th><th style="text-align:right;">Valor efetivo</th><th>Motivo</th><th>Observação</th></tr></thead>
         <tbody>${g.linhas.map(l => `<tr data-ajuste-contrato="${g.id}" data-ajuste-ficha="${l.fichaId}" data-ajuste-servico="${l.servico}" data-ajuste-dia="${dia}" ${l.ajuste ? `data-ajuste-id="${l.ajuste.id}"` : ""}>
