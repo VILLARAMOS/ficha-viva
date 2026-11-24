@@ -14,7 +14,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <style>
 :root{
   /* identidade Villa Ramos: base areia (claro) / marrom (escuro), vindas do logo e do Instagram oficial */
@@ -19186,6 +19186,19 @@ function pcpCafeFechamentoRenderResultado(fornecedorNome, de, ate, clientesForne
 }
 function pcpCafeFechamentoGerarExcel(fornecedorNome, de, ate, comDados){
   if(typeof XLSX === "undefined"){ showAlert("Biblioteca de Excel não carregou — verifique a conexão e recarregue a página."); return; }
+  const THIN = {style:"thin", color:{rgb:"FFB9ADA6"}};
+  const BORDER_ALL = {top:THIN, bottom:THIN, left:THIN, right:THIN};
+  const HEADER_STYLE = {
+    font:{bold:true, color:{rgb:"FFFFFFFF"}},
+    fill:{patternType:"solid", fgColor:{rgb:"FF7A2328"}},
+    border:BORDER_ALL,
+    alignment:{horizontal:"center", vertical:"center", wrapText:true}
+  };
+  const TITLE_STYLE = {font:{bold:true, sz:12}};
+  const MONEY_FMT = '"R$" #,##0.00';
+  const DATE_FMT = "dd/mm/yyyy";
+  const setStyle = (ws, r, c, style) => { const addr = XLSX.utils.encode_cell({r,c}); if(ws[addr]) ws[addr].s = style; };
+
   const wb = XLSX.utils.book_new();
   const resumoRows = [["Fornecedor","Período","Cliente","Total (R$)"]];
   comDados.forEach(r => {
@@ -19194,22 +19207,49 @@ function pcpCafeFechamentoGerarExcel(fornecedorNome, de, ate, comDados){
       [`Período: ${fmtDataYMD(de)} a ${fmtDataYMD(ate)}`], [],
       ["DIA DE FORNECIMENTO","PRODUTO","QUANTIDADE","PREÇO DO PRODUTO","TOTAL"]
     ];
-    r.linhas.slice().sort((a,b) => a.data === b.data ? a.produto.localeCompare(b.produto,'pt-BR') : a.data.localeCompare(b.data))
-      .forEach(l => aoa.push([new Date(l.data+"T00:00:00"), l.produto, l.quantidade, l.preco_unitario, l.valor_total]));
+    const linhas = r.linhas.slice().sort((a,b) => a.data === b.data ? a.produto.localeCompare(b.produto,'pt-BR') : a.data.localeCompare(b.data));
+    linhas.forEach(l => aoa.push([new Date(l.data+"T00:00:00"), l.produto, l.quantidade, l.preco_unitario, l.valor_total]));
     aoa.push([]);
     aoa.push([null, null, null, "TOTAL GERAL", r.total]);
     resumoRows.push([fornecedorNome, `${fmtDataYMD(de)} a ${fmtDataYMD(ate)}`, r.cliente.nome, r.total.toFixed(2)]);
+
     const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws['!cols'] = [{wch:16},{wch:26},{wch:12},{wch:16},{wch:12}];
+    ws['!cols'] = [{wch:17},{wch:28},{wch:12},{wch:16},{wch:14}];
+    const HEADER_ROW = 4, DATA_START = 5, DATA_END = HEADER_ROW + linhas.length, TOTAL_ROW = aoa.length - 1;
+    for(let rI=0; rI<=2; rI++) setStyle(ws, rI, 0, TITLE_STYLE);
+    for(let cI=0; cI<5; cI++) setStyle(ws, HEADER_ROW, cI, HEADER_STYLE);
+    for(let rI=DATA_START; rI<=DATA_END; rI++){
+      for(let cI=0; cI<5; cI++){
+        const style = {border:BORDER_ALL};
+        if(cI===0) style.numFmt = DATE_FMT;
+        if(cI===2) style.alignment = {horizontal:"center"};
+        if(cI===3 || cI===4) style.numFmt = MONEY_FMT;
+        setStyle(ws, rI, cI, style);
+      }
+    }
+    setStyle(ws, TOTAL_ROW, 3, {font:{bold:true}, border:{top:{style:"medium",color:{rgb:"FF7A2328"}}}, alignment:{horizontal:"right"}});
+    setStyle(ws, TOTAL_ROW, 4, {font:{bold:true}, border:{top:{style:"medium",color:{rgb:"FF7A2328"}}}, numFmt:MONEY_FMT});
+
     let nome = r.cliente.nome.substring(0,26), n2=2, finalNome = nome;
     while(wb.SheetNames.includes(finalNome)){ finalNome = `${nome.substring(0,24)}_${n2++}`; }
     XLSX.utils.book_append_sheet(wb, ws, finalNome);
   });
+
   const resumoWs = XLSX.utils.aoa_to_sheet(resumoRows);
+  resumoWs['!cols'] = [{wch:16},{wch:22},{wch:26},{wch:14}];
+  for(let cI=0; cI<4; cI++) setStyle(resumoWs, 0, cI, HEADER_STYLE);
+  for(let rI=1; rI<resumoRows.length; rI++){
+    for(let cI=0; cI<4; cI++){
+      const style = {border:BORDER_ALL};
+      if(cI===3) style.alignment = {horizontal:"right"};
+      setStyle(resumoWs, rI, cI, style);
+    }
+  }
   XLSX.utils.book_append_sheet(wb, resumoWs, "RESUMO");
   wb.SheetNames.splice(wb.SheetNames.indexOf("RESUMO"),1); wb.SheetNames.unshift("RESUMO");
   const stamp = hojeYMD().replace(/-/g,"");
-  XLSX.writeFile(wb, `Fechamento_${fornecedorNome.replace(/[^a-zA-Z0-9]+/g,"_")}_${stamp}.xlsx`);
+  const nomeArquivo = fornecedorNome.normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[^a-zA-Z0-9]+/g,"_").replace(/^_+|_+$/g,"");
+  XLSX.writeFile(wb, `Fechamento_${nomeArquivo}_${stamp}.xlsx`);
 }
 function pcpCafeTextoPedido(fornecedorId, ymd, diaLabel){
   const f = fornecedores.get(fornecedorId);
