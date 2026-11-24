@@ -716,31 +716,45 @@ function renderEmConstrucao(titulo, icone){
   if(window.lucide) lucide.createIcons();
 }
 
-/* ================= Desperdício (24/11/2026, pedido do Marcelo) =================
-   Pesagem de retorno/descarte por prato x cliente, feita pela colaboradora na unidade do cliente ao fim
-   do turno — hoje registrada numa plataforma externa (Konclui: nome do alimento, peso, cuba, gera PDF por
-   unidade); este módulo é o destino pra essa informação entrar no Ficha Viva, seguindo o cardápio real do
-   dia (reaproveita pcpCalcularDia/pcpConferenciaLinhas — mesma fonte de verdade da Conferência de
-   expedição, não reinventa "o que o cliente recebeu naquele dia"). Confirmado com o Marcelo: tudo que
-   retorna já virou descarte no próprio cliente (nada volta pra cozinha) — por isso a view
-   vw_desperdicio_diario separa custo_total_descartado (peso de retorno inteiro × custo — a resposta real
-   de "quanto foi pro lixo") de custo_excedente (só a parte acima da sobra normal esperada, usada pro
-   alerta semanal). "Peso enviado" exibido é o previsto/conferido no PCP daquele dia (qtdEnviada da
-   Conferência quando já lançada; senão qtdPrevista) — ainda não é a pesagem real de saída, é a estimativa
-   disponível hoje no sistema.
+/* ================= Desperdício (24/11/2026, pedido do Marcelo; ampliado 24/11/2026) =================
+   Duas origens de perda, mesma mecânica de R$ perdido = kg descartado × custo/kg:
+   - tipo='cliente': pesagem de retorno/descarte por prato x cliente, feita pela colaboradora na unidade do
+     cliente ao fim do turno — hoje registrada numa plataforma externa (Konclui: nome do alimento, peso,
+     cuba, gera PDF por unidade); este módulo é o destino pra essa informação entrar no Ficha Viva, seguindo
+     o cardápio real do dia (reaproveita pcpCalcularDia/pcpConferenciaLinhas — mesma fonte de verdade da
+     Conferência de expedição, não reinventa "o que o cliente recebeu naquele dia"). Confirmado com o
+     Marcelo: tudo que retorna já virou descarte no próprio cliente (nada volta pra cozinha).
+   - tipo='producao' (pedido do Marcelo, mesmo dia): perda dentro da própria matriz/filial — produção a
+     mais, fuga de ficha, erro — que ele acredita ser o maior volume de desperdício do negócio. Não tem
+     contrato_id (não é de cliente nenhum); tem `unidade` (matriz/filial) e um campo a mais,
+     `peso_produzido_kg` (quanto foi produzido daquele prato no dia), pra calcular o % perdido sobre o que
+     foi feito, não sobre o que foi enviado. Pré-preenchido com o total planejado no PCP pro dia
+     (pcpCalcularDia por unidade) mas editável — é só ponto de partida, não é a pesagem real de produção.
+   As duas origens moram na mesma tabela/mesma chave_origem (ver schema), mas aparecem SEPARADAS na tela —
+   tanto no Registro (bloco de Produção primeiro, como pedido: "pode ser a primeira na tabela") quanto no
+   Painel (ranking e alerta de produção nunca misturados com o de cliente — causas raiz diferentes:
+   disciplina de produção vs. comportamento de consumo do cliente).
+   custo_total_descartado = R$ realmente jogado fora; custo_excedente = só a parte acima da sobra/perda
+   normal esperada, usada pro alerta semanal. "Peso enviado" (tipo=cliente) é o previsto/conferido no PCP
+   daquele dia (qtdEnviada da Conferência quando já lançada; senão qtdPrevista) — ainda não é a pesagem real
+   de saída, é a estimativa disponível hoje no sistema.
    Em aberto: integração automática com o Konclui (sem conector disponível nesta sessão) — por ora a
    entrada aqui é manual (campo `origem` já deixado pronto pra marcar `konclui_importado` no futuro). */
 let desperdicioSubView = "registro";      // "registro" | "painel"
 let desperdicioDataSel = null;            // YYYY-MM-DD do dia sendo lançado na aba Registro
 let desperdicioFiltroCliente = "";
-let desperdicioRegistrosCache = new Map(); // `${contratoId}|${fichaId}` -> row de desperdicio_registros da semana/dia atual
-let desperdicioBaselineCache = new Map();  // `${contratoId}|${fichaId}` -> row de desperdicio_baseline
+let desperdicioRegistrosCache = new Map(); // `${chaveOrigem}|${fichaId}` -> row de desperdicio_registros da semana/dia atual (chaveOrigem = contratoId OU "producao:matriz"/"producao:filial")
+let desperdicioBaselineCache = new Map();  // `${chaveOrigem}|${fichaId}` -> row de desperdicio_baseline
 let desperdicioBaselineCarregada = false;
 let desperdicioPainelMesSel = null;        // "YYYY-MM-01" do mês mostrado no Painel
+const DESPERDICIO_UNIDADES_PRODUCAO = [
+  { id: "matriz", nome: "Matriz" },
+  { id: "filial", nome: "Filial" },
+];
 
 async function renderDesperdicio(){
   document.getElementById("page-title").textContent = "Desperdício";
-  document.getElementById("page-desc").textContent = "Pesagem de retorno/descarte por cliente e painel de R$ perdido";
+  document.getElementById("page-desc").textContent = "Perda na produção (matriz/filial) e no retorno do cliente — registro e painel de R$ perdido";
   document.getElementById("topbar-actions").innerHTML = "";
   const subtabs = [
     {id:"registro", nome:"Registro de retorno", ico:"scale"},
@@ -766,37 +780,49 @@ async function renderDesperdicio(){
   if(window.lucide) lucide.createIcons();
 }
 
+function desperdicioChaveOrigem(tipo, contratoId, unidade){
+  return tipo === "producao" ? ("producao:" + unidade) : contratoId;
+}
 async function desperdicioCarregarRegistros(semana, dia){
   desperdicioRegistrosCache = new Map();
   const { data, error } = await sb.from('desperdicio_registros').select('*').eq('semana', semana).eq('dia', dia);
   if(error){ showAlert("Erro ao carregar registros de desperdício: " + error.message); return; }
-  (data || []).forEach(row => desperdicioRegistrosCache.set(row.contrato_id + "|" + row.ficha_id, row));
+  (data || []).forEach(row => desperdicioRegistrosCache.set(row.chave_origem + "|" + row.ficha_id, row));
 }
 async function desperdicioCarregarBaseline(){
   if(desperdicioBaselineCarregada) return;
   const { data, error } = await sb.from('desperdicio_baseline').select('*');
   if(error){ showAlert("Erro ao carregar baseline de desperdício: " + error.message); return; }
   desperdicioBaselineCache = new Map();
-  (data || []).forEach(row => desperdicioBaselineCache.set(row.contrato_id + "|" + row.ficha_id, row));
+  (data || []).forEach(row => desperdicioBaselineCache.set(row.chave_origem + "|" + row.ficha_id, row));
   desperdicioBaselineCarregada = true;
 }
-async function desperdicioSalvarRetorno(semana, dia, contratoId, fichaId, pesoRetornoKg, cubaNome, pesoEnviadoKg){
-  if(pesoRetornoKg === "" || pesoRetornoKg === null || isNaN(Number(pesoRetornoKg))) return;
-  const custoKg = custoFichaOuInsumo({ ficha_id: fichaId }) || 0;
+// params.tipo === "cliente": { contratoId, fichaId, pesoRetornoKg, cubaNome, pesoEnviadoKg }
+// params.tipo === "producao": { unidade, fichaId, pesoRetornoKg, pesoProduzidoKg }
+async function desperdicioSalvarRegistro(semana, dia, params){
+  if(params.pesoRetornoKg === "" || params.pesoRetornoKg === null || isNaN(Number(params.pesoRetornoKg))) return;
+  const numOuNull = v => (v === null || v === undefined || v === "" || isNaN(Number(v))) ? null : Number(v);
+  const custoKg = custoFichaOuInsumo({ ficha_id: params.fichaId }) || 0;
+  const chaveOrigem = desperdicioChaveOrigem(params.tipo, params.contratoId, params.unidade);
   const row = {
-    semana, dia, contrato_id: contratoId, ficha_id: fichaId,
-    cuba_nome: cubaNome || null,
-    peso_enviado_kg: (pesoEnviadoKg === null || pesoEnviadoKg === undefined || isNaN(Number(pesoEnviadoKg))) ? null : Number(pesoEnviadoKg),
-    peso_retorno_kg: Number(pesoRetornoKg),
+    semana, dia, ficha_id: params.fichaId,
+    tipo: params.tipo,
+    contrato_id: params.tipo === "cliente" ? params.contratoId : null,
+    unidade: params.tipo === "producao" ? params.unidade : null,
+    cuba_nome: params.tipo === "cliente" ? (params.cubaNome || null) : null,
+    peso_enviado_kg: params.tipo === "cliente" ? numOuNull(params.pesoEnviadoKg) : null,
+    peso_produzido_kg: params.tipo === "producao" ? numOuNull(params.pesoProduzidoKg) : null,
+    peso_retorno_kg: Number(params.pesoRetornoKg),
     custo_kg_snapshot: custoKg,
     origem: 'manual',
     ...carimbo()
   };
   const { data, error } = await sb.from('desperdicio_registros')
-    .upsert(row, { onConflict: 'semana,dia,contrato_id,ficha_id' })
+    .upsert(row, { onConflict: 'semana,dia,chave_origem,ficha_id' })
     .select().single();
   if(error){ showAlert("Erro ao salvar desperdício: " + error.message); return; }
-  desperdicioRegistrosCache.set(contratoId + "|" + fichaId, data);
+  desperdicioRegistrosCache.set(chaveOrigem + "|" + params.fichaId, data);
+  return data;
 }
 
 async function renderDesperdicioRegistroTab(){
@@ -821,10 +847,33 @@ async function renderDesperdicioRegistroTab(){
   const grupos = linhas
     .map(l => ({ cliente: l.cliente, itens: l.itens.filter(it => it.fichaId) }))
     .filter(g => g.itens.length && (!filtro || normalizeText(g.cliente.nome).includes(filtro)));
+  // Produção (matriz/filial) — pedido do Marcelo: "pode ser a primeira na tabela de registro de retorno".
+  // Um bloco por unidade que efetivamente produziu algo no dia; kg previsto vem do próprio PCP (soma de
+  // todos os clientes daquela unidade), só como ponto de partida — "produzido" e "descartado" são sempre
+  // o que foi digitado aqui (ou o que já estiver salvo).
+  const blocosProducao = DESPERDICIO_UNIDADES_PRODUCAO.map(u => {
+    const resU = pcpCalcularDia(semana, dia, u.id, null, null);
+    return { unidade: u, itens: resU.receitas.filter(r => r.fichaId && r.total > 0) };
+  }).filter(b => b.itens.length);
 
   sub.innerHTML = `
     <div class="panel">
-      <div class="panel-head"><h3><i class="ico" data-lucide="scale"></i>Registro de retorno/descarte — ${diaSemanaExtenso(dia)}, ${fmtDataYMD(desperdicioDataSel)}</h3></div>
+      <div class="panel-head"><h3><i class="ico" data-lucide="factory"></i>Perda na produção — ${diaSemanaExtenso(dia)}, ${fmtDataYMD(desperdicioDataSel)}</h3></div>
+      <div class="panel-body">
+        <label>Dia do registro: <input type="date" id="desp-data-prod" value="${desperdicioDataSel}"></label>
+        <div class="footnote" style="margin:8px 0 10px;">Produção a mais, fuga de ficha ou erro — o que foi jogado fora dentro da própria cozinha, antes de sair pro cliente. "Kg previsto" é o planejado no PCP pro dia; ajuste "Kg produzido" se a produção real foi diferente.</div>
+      </div>
+      <div class="table-wrap es-table"><table>
+        <thead><tr>
+          <th>Unidade</th><th>Prato</th><th style="text-align:right;">Kg previsto</th>
+          <th style="text-align:right;">Kg produzido</th><th style="text-align:right;">Kg descartado</th>
+          <th style="text-align:right;">Custo/kg</th><th style="text-align:right;">R$ perdido</th>
+        </tr></thead>
+        <tbody id="desp-prod-tbody"></tbody>
+      </table></div>
+    </div>
+    <div class="panel" style="margin-top:16px;">
+      <div class="panel-head"><h3><i class="ico" data-lucide="scale"></i>Registro de retorno/descarte do cliente — ${diaSemanaExtenso(dia)}, ${fmtDataYMD(desperdicioDataSel)}</h3></div>
       <div class="panel-body">
         <div class="menu-controls" style="margin-bottom:10px; display:flex; gap:14px; flex-wrap:wrap; align-items:center;">
           <label>Dia do registro: <input type="date" id="desp-data" value="${desperdicioDataSel}"></label>
@@ -845,14 +894,51 @@ async function renderDesperdicioRegistroTab(){
     </div>
   `;
   document.getElementById("desp-data").addEventListener("change", e => { desperdicioDataSel = e.target.value; renderDesperdicioRegistroTab(); });
+  document.getElementById("desp-data-prod").addEventListener("change", e => { desperdicioDataSel = e.target.value; renderDesperdicioRegistroTab(); });
   document.getElementById("desp-filtro-cliente").addEventListener("input", e => { desperdicioFiltroCliente = e.target.value; renderDesperdicioRegistroTab(); });
+
+  const prodTbody = document.getElementById("desp-prod-tbody");
+  if(!blocosProducao.length){
+    prodTbody.innerHTML = `<tr><td colspan="7" class="empty-state">Nenhuma produção lançada no PCP pra matriz/filial nesse dia.</td></tr>`;
+  } else {
+    prodTbody.innerHTML = blocosProducao.map(b => b.itens.map((it, idx) => {
+      const chaveOrigem = "producao:" + b.unidade.id;
+      const key = chaveOrigem + "|" + it.fichaId;
+      const salvo = desperdicioRegistrosCache.get(key);
+      const custoKg = custoFichaOuInsumo({ ficha_id: it.fichaId }) || 0;
+      const produzido = salvo && salvo.peso_produzido_kg != null ? salvo.peso_produzido_kg : it.total;
+      return `<tr data-unidade="${b.unidade.id}" data-ficha="${it.fichaId}" data-custo="${custoKg}">
+        ${idx === 0 ? `<td class="name-cell" rowspan="${b.itens.length}">${escapeHtml(b.unidade.nome)}</td>` : ""}
+        <td>${escapeHtml(it.nome)}</td>
+        <td class="num-cell">${fmtNum(it.total, 3)}</td>
+        <td class="num-cell"><input type="number" min="0" step="0.001" class="desp-prod-produzido" value="${produzido != null ? produzido : ""}" placeholder="—"></td>
+        <td class="num-cell"><input type="number" min="0" step="0.001" class="desp-prod-descartado" value="${salvo && salvo.peso_retorno_kg != null ? salvo.peso_retorno_kg : ""}" placeholder="—"></td>
+        <td class="num-cell">${fmtMoney(custoKg)}</td>
+        <td class="num-cell desp-prod-rs">${salvo && salvo.peso_retorno_kg != null ? fmtMoney(salvo.peso_retorno_kg * custoKg) : "—"}</td>
+      </tr>`;
+    }).join("")).join("");
+    prodTbody.querySelectorAll(".desp-prod-produzido, .desp-prod-descartado").forEach(inp => {
+      inp.addEventListener("change", async () => {
+        const tr = inp.closest("tr");
+        const unidade = tr.dataset.unidade, fichaId = tr.dataset.ficha, custoKg = Number(tr.dataset.custo) || 0;
+        const produzidoInp = tr.querySelector(".desp-prod-produzido");
+        const descartadoInp = tr.querySelector(".desp-prod-descartado");
+        if(descartadoInp.value === "") return;
+        await desperdicioSalvarRegistro(semana, dia, {
+          tipo: "producao", unidade, fichaId,
+          pesoRetornoKg: descartadoInp.value, pesoProduzidoKg: produzidoInp.value,
+        });
+        tr.querySelector(".desp-prod-rs").textContent = fmtMoney(Number(descartadoInp.value) * custoKg);
+      });
+    });
+  }
 
   const tbody = document.getElementById("desp-reg-tbody");
   if(!grupos.length){
     tbody.innerHTML = `<tr><td colspan="7" class="empty-state">Nenhum prato encontrado pro cardápio desse dia (confira se há produção lançada no PCP).</td></tr>`;
   } else {
     tbody.innerHTML = grupos.map(g => g.itens.map((it, idx) => {
-      const key = g.cliente.id + "|" + it.fichaId;
+      const key = g.cliente.id + "|" + it.fichaId; // chave_origem de tipo=cliente é o próprio contrato_id
       const salvo = desperdicioRegistrosCache.get(key);
       const custoKg = custoFichaOuInsumo({ ficha_id: it.fichaId }) || 0;
       const pesoEnviado = it.qtdEnviada != null ? it.qtdEnviada : it.qtdPrevista;
@@ -874,7 +960,10 @@ async function renderDesperdicioRegistroTab(){
         const pesoInp = tr.querySelector(".desp-peso-retorno");
         const cubaInp = tr.querySelector(".desp-cuba");
         if(pesoInp.value === "") return;
-        await desperdicioSalvarRetorno(semana, dia, contratoId, fichaId, pesoInp.value, cubaInp.value, pesoEnviadoKg);
+        await desperdicioSalvarRegistro(semana, dia, {
+          tipo: "cliente", contratoId, fichaId,
+          pesoRetornoKg: pesoInp.value, cubaNome: cubaInp.value, pesoEnviadoKg,
+        });
         tr.querySelector(".desp-rs-descartado").textContent = fmtMoney(Number(pesoInp.value) * custoKg);
       });
     });
@@ -895,66 +984,109 @@ async function renderDesperdicioPainelTab(){
     return;
   }
   const doMes = (mensalTodos || []).filter(r => r.mes_inicio === desperdicioPainelMesSel);
-  const custoTotalMes = doMes.reduce((s, r) => s + Number(r.custo_total_descartado || 0), 0);
-  const custoExcedenteMes = doMes.reduce((s, r) => s + Number(r.custo_excedente || 0), 0);
-  const kgTotalMes = doMes.reduce((s, r) => s + Number(r.peso_retorno_kg || 0), 0);
+  // Produção e cliente SEMPRE separados aqui — causas raiz diferentes (disciplina de produção vs.
+  // comportamento de consumo do cliente), misturar os rankings esconderia o diagnóstico que o Marcelo
+  // pediu (24/11/2026: "produção a mais, por não seguir as fichas, por erros" é um problema à parte).
+  const doMesCliente = doMes.filter(r => r.tipo === "cliente");
+  const doMesProducao = doMes.filter(r => r.tipo === "producao");
+  const somaCusto = arr => arr.reduce((s, r) => s + Number(r.custo_total_descartado || 0), 0);
+  const somaExcedente = arr => arr.reduce((s, r) => s + Number(r.custo_excedente || 0), 0);
+  const somaKg = arr => arr.reduce((s, r) => s + Number(r.peso_retorno_kg || 0), 0);
+  const custoTotalCliente = somaCusto(doMesCliente), custoTotalProducao = somaCusto(doMesProducao);
+  const custoExcedenteCliente = somaExcedente(doMesCliente), custoExcedenteProducao = somaExcedente(doMesProducao);
+  const kgTotalCliente = somaKg(doMesCliente), kgTotalProducao = somaKg(doMesProducao);
 
-  const porClienteMap = new Map();
-  doMes.forEach(r => {
-    const cur = porClienteMap.get(r.contrato_id) || { nome: r.nome_cliente, total: 0 };
-    cur.total += Number(r.custo_total_descartado || 0);
-    porClienteMap.set(r.contrato_id, cur);
-  });
-  const rankingClientes = [...porClienteMap.values()].sort((a, b) => b.total - a.total).slice(0, 8);
+  const rankingPor = (arr, campoNome) => {
+    const map = new Map();
+    arr.forEach(r => {
+      const chave = r[campoNome];
+      const cur = map.get(chave) || { nome: r.nome_origem, total: 0 };
+      cur.total += Number(r.custo_total_descartado || 0);
+      map.set(chave, cur);
+    });
+    return [...map.values()].sort((a, b) => b.total - a.total).slice(0, 8);
+  };
+  const rankingClientes = rankingPor(doMesCliente, "contrato_id");
+  const rankingUnidadesProducao = rankingPor(doMesProducao, "unidade");
 
-  const porPratoMap = new Map();
-  doMes.forEach(r => {
-    const cur = porPratoMap.get(r.ficha_id) || { nome: r.ficha_nome, total: 0, kg: 0 };
-    cur.total += Number(r.custo_total_descartado || 0);
-    cur.kg += Number(r.peso_retorno_kg || 0);
-    porPratoMap.set(r.ficha_id, cur);
-  });
-  const rankingPratos = [...porPratoMap.values()].sort((a, b) => b.total - a.total).slice(0, 8);
+  const rankingPorPrato = arr => {
+    const map = new Map();
+    arr.forEach(r => {
+      const cur = map.get(r.ficha_id) || { nome: r.ficha_nome, total: 0, kg: 0 };
+      cur.total += Number(r.custo_total_descartado || 0);
+      cur.kg += Number(r.peso_retorno_kg || 0);
+      map.set(r.ficha_id, cur);
+    });
+    return [...map.values()].sort((a, b) => b.total - a.total).slice(0, 8);
+  };
+  const rankingPratosCliente = rankingPorPrato(doMesCliente);
+  const rankingPratosProducao = rankingPorPrato(doMesProducao);
 
-  const alertasAtivos = (alertas || []).filter(a => a.alerta);
+  const alertasAtivosCliente = (alertas || []).filter(a => a.alerta && a.tipo === "cliente");
+  const alertasAtivosProducao = (alertas || []).filter(a => a.alerta && a.tipo === "producao");
+
+  const tabelaRanking = (titulo, labelCol, linhas) => `
+    <div>
+      <h4 style="margin:0 0 8px;">${titulo}</h4>
+      <div class="table-wrap es-table"><table><thead><tr><th>${labelCol}</th><th style="text-align:right;">R$ descartado</th></tr></thead>
+        <tbody>${linhas.map(c => `<tr><td>${escapeHtml(c.nome)}</td><td class="num-cell">${fmtMoney(c.total)}</td></tr>`).join("") || `<tr><td colspan="2" class="empty-state">Sem lançamentos no mês</td></tr>`}</tbody>
+      </table></div>
+    </div>`;
+  const tabelaRankingPrato = (titulo, linhas) => `
+    <div>
+      <h4 style="margin:0 0 8px;">${titulo}</h4>
+      <div class="table-wrap es-table"><table><thead><tr><th>Prato</th><th style="text-align:right;">Kg</th><th style="text-align:right;">R$ descartado</th></tr></thead>
+        <tbody>${linhas.map(p => `<tr><td>${escapeHtml(p.nome)}</td><td class="num-cell">${fmtNum(p.kg,2)}</td><td class="num-cell">${fmtMoney(p.total)}</td></tr>`).join("") || `<tr><td colspan="3" class="empty-state">Sem lançamentos no mês</td></tr>`}</tbody>
+      </table></div>
+    </div>`;
+  const tabelaAlertas = (linhas, colOrigem) => `
+    <div class="table-wrap es-table"><table><thead><tr>
+      <th>${colOrigem}</th><th>Prato</th><th style="text-align:right;">% excedente</th><th style="text-align:right;">R$ excedente</th><th>Sugestão</th>
+    </tr></thead>
+    <tbody>${linhas.length ? linhas.map(a => `<tr>
+      <td>${escapeHtml(a.nome_origem)}</td><td>${escapeHtml(a.ficha_nome)}</td>
+      <td class="num-cell">${a.pct_excedente != null ? (a.pct_excedente*100).toLocaleString('pt-BR',{maximumFractionDigits:0})+"%" : "—"}</td>
+      <td class="num-cell">${fmtMoney(a.custo_excedente)}</td>
+      <td>${a.gramas_reduzir_por_refeicao_sugerido != null ? `Reduzir ~${a.gramas_reduzir_por_refeicao_sugerido}g por refeição na próxima semana`
+          : a.kg_reduzir_producao_sugerido != null ? `Produzir ~${fmtNum(a.kg_reduzir_producao_sugerido,1)}kg a menos na próxima vez`
+          : `<span class="footnote">sem nº de refeições cadastrado em Contratos pra sugerir</span>`}</td>
+    </tr>`).join("") : `<tr><td colspan="5" class="empty-state">Nenhum alerta ativo</td></tr>`}</tbody>
+    </table></div>`;
 
   sub.innerHTML = `
     <div class="panel">
       <div class="panel-head">
-        <h3><i class="ico" data-lucide="trash-2"></i>Painel de Desperdícios</h3>
+        <h3><i class="ico" data-lucide="factory"></i>Perda na produção (Matriz/Filial)</h3>
         <div class="menu-controls"><label>Mês: <input type="month" id="desp-mes" value="${desperdicioPainelMesSel.slice(0,7)}"></label></div>
       </div>
       <div class="panel-body">
         <div class="es-kpis" style="margin-bottom:16px;">
-          <div class="vn-card"><div class="vn-label">R$ descartado no mês</div><div class="vn-value">${fmtMoney(custoTotalMes)}</div><div class="vn-sub">${fmtNum(kgTotalMes,1)} kg no total — isso é o que realmente foi pro lixo</div></div>
-          <div class="vn-card${custoExcedenteMes>0?"":" ok"}"><div class="vn-label">R$ acima da sobra normal</div><div class="vn-value">${fmtMoney(custoExcedenteMes)}</div><div class="vn-sub">excedente sobre a baseline — métrica usada pro alerta</div></div>
-          <div class="vn-card${alertasAtivos.length?"":" ok"}"><div class="vn-label">Alertas ativos (semana)</div><div class="vn-value">${alertasAtivos.length}</div></div>
+          <div class="vn-card"><div class="vn-label">R$ perdido na produção no mês</div><div class="vn-value">${fmtMoney(custoTotalProducao)}</div><div class="vn-sub">${fmtNum(kgTotalProducao,1)} kg — produção a mais, fuga de ficha, erro</div></div>
+          <div class="vn-card${custoExcedenteProducao>0?"":" ok"}"><div class="vn-label">R$ acima do esperado</div><div class="vn-value">${fmtMoney(custoExcedenteProducao)}</div></div>
+          <div class="vn-card${alertasAtivosProducao.length?"":" ok"}"><div class="vn-label">Alertas ativos (semana)</div><div class="vn-value">${alertasAtivosProducao.length}</div></div>
         </div>
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
-          <div>
-            <h4 style="margin:0 0 8px;">Ranking por cliente</h4>
-            <div class="table-wrap es-table"><table><thead><tr><th>Cliente</th><th style="text-align:right;">R$ descartado</th></tr></thead>
-              <tbody>${rankingClientes.map(c => `<tr><td>${escapeHtml(c.nome)}</td><td class="num-cell">${fmtMoney(c.total)}</td></tr>`).join("") || `<tr><td colspan="2" class="empty-state">Sem lançamentos no mês</td></tr>`}</tbody>
-            </table></div>
-          </div>
-          <div>
-            <h4 style="margin:0 0 8px;">Ranking por prato</h4>
-            <div class="table-wrap es-table"><table><thead><tr><th>Prato</th><th style="text-align:right;">Kg</th><th style="text-align:right;">R$ descartado</th></tr></thead>
-              <tbody>${rankingPratos.map(p => `<tr><td>${escapeHtml(p.nome)}</td><td class="num-cell">${fmtNum(p.kg,2)}</td><td class="num-cell">${fmtMoney(p.total)}</td></tr>`).join("") || `<tr><td colspan="3" class="empty-state">Sem lançamentos no mês</td></tr>`}</tbody>
-            </table></div>
-          </div>
+          ${tabelaRanking("Ranking por unidade", "Unidade", rankingUnidadesProducao)}
+          ${tabelaRankingPrato("Ranking por prato", rankingPratosProducao)}
+        </div>
+        <h4 style="margin:20px 0 8px;">Alertas da semana</h4>
+        ${tabelaAlertas(alertasAtivosProducao, "Unidade")}
+      </div>
+    </div>
+    <div class="panel" style="margin-top:16px;">
+      <div class="panel-head"><h3><i class="ico" data-lucide="trash-2"></i>Perda no retorno do cliente</h3></div>
+      <div class="panel-body">
+        <div class="es-kpis" style="margin-bottom:16px;">
+          <div class="vn-card"><div class="vn-label">R$ descartado no mês</div><div class="vn-value">${fmtMoney(custoTotalCliente)}</div><div class="vn-sub">${fmtNum(kgTotalCliente,1)} kg no total — isso é o que realmente foi pro lixo</div></div>
+          <div class="vn-card${custoExcedenteCliente>0?"":" ok"}"><div class="vn-label">R$ acima da sobra normal</div><div class="vn-value">${fmtMoney(custoExcedenteCliente)}</div><div class="vn-sub">excedente sobre a baseline — métrica usada pro alerta</div></div>
+          <div class="vn-card${alertasAtivosCliente.length?"":" ok"}"><div class="vn-label">Alertas ativos (semana)</div><div class="vn-value">${alertasAtivosCliente.length}</div></div>
+        </div>
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px;">
+          ${tabelaRanking("Ranking por cliente", "Cliente", rankingClientes)}
+          ${tabelaRankingPrato("Ranking por prato", rankingPratosCliente)}
         </div>
         <h4 style="margin:20px 0 8px;">Alertas da semana (desperdício acima do limiar)</h4>
-        <div class="table-wrap es-table"><table><thead><tr>
-          <th>Cliente</th><th>Prato</th><th style="text-align:right;">% excedente</th><th style="text-align:right;">R$ excedente</th><th>Sugestão</th>
-        </tr></thead>
-        <tbody>${alertasAtivos.length ? alertasAtivos.map(a => `<tr>
-          <td>${escapeHtml(a.nome_cliente)}</td><td>${escapeHtml(a.ficha_nome)}</td>
-          <td class="num-cell">${a.pct_excedente != null ? (a.pct_excedente*100).toLocaleString('pt-BR',{maximumFractionDigits:0})+"%" : "—"}</td>
-          <td class="num-cell">${fmtMoney(a.custo_excedente)}</td>
-          <td>${a.gramas_reduzir_por_refeicao_sugerido != null ? `Reduzir ~${a.gramas_reduzir_por_refeicao_sugerido}g por refeição na próxima semana` : `<span class="footnote">sem nº de refeições cadastrado em Contratos pra sugerir</span>`}</td>
-        </tr>`).join("") : `<tr><td colspan="5" class="empty-state">Nenhum alerta ativo</td></tr>`}</tbody>
-        </table></div>
+        ${tabelaAlertas(alertasAtivosCliente, "Cliente")}
       </div>
     </div>
   `;
