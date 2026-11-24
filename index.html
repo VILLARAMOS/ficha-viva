@@ -14,6 +14,7 @@
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lucide@0.460.0/dist/umd/lucide.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 :root{
   /* identidade Villa Ramos: base areia (claro) / marrom (escuro), vindas do logo e do Instagram oficial */
@@ -18916,12 +18917,41 @@ function pcpCafeValorEfetivo(item, ymd, pedidoRow, hospedes){
   }
   return {valor: item.valor_padrao ?? null, origem: "padrao"};
 }
+// 24/11/2026, pedido do Marcelo (fechamento mensal pra fornecedor de padaria, usado pra programar
+// pagamento): até aqui, confirmar o dia só gravava os itens que DESVIAVAM do padrão — o valor de quem
+// seguiu o padrão nunca era gravado por dia, era recalculado ao vivo a partir de cafe_padaria_itens no
+// momento da consulta. Isso é um risco real pra um fechamento usado em pagamento: se o padrão de um
+// cliente for ajustado depois (já aconteceu antes), reabrir o fechamento de um dia passado mudaria o
+// número retroativamente, sem ninguém perceber. A partir de agora, confirmar o dia grava um RETRATO
+// completo e definitivo: produto, quantidade e preço unitário (resolvidos no momento da confirmação,
+// não recalculados depois), pra cada item ativo do cliente, mesmo os que bateram com o padrão. Esse
+// retrato nunca muda sozinho depois — só se o dia for reaberto e confirmado de novo manualmente.
+function pcpCafeRetratoConfirmacao(contratoId, ymd, overridesAntes, hospedesEfetivo){
+  const itensCliente = cafePadariaItens.get(contratoId) || [];
+  return itensCliente.map(item => {
+    const ef = pcpCafeValorEfetivo(item, ymd, {itens: overridesAntes}, hospedesEfetivo);
+    const precoUnitario = item.insumo_id
+      ? ((insumos.get(item.insumo_id) || {}).custo_unitario || 0)
+      : (item.valor_unitario || 0);
+    const quantidade = (ef.valor === null || ef.valor === undefined) ? 0 : ef.valor;
+    return {
+      item_id: item.id, valor: quantidade, // "valor" mantido pra compatibilidade com pcpCafeValorEfetivo (leitura de exceção por item_id)
+      produto: item.produto, quantidade, preco_unitario: precoUnitario,
+      valor_total: Math.round(quantidade * precoUnitario * 100) / 100, origem: ef.origem
+    };
+  });
+}
 async function pcpCafeSalvarPedidoDia(contratoId, ymd, patch){
   const atual = cafePadariaPedidoDiaCache.get(contratoId) || {};
+  const hospedesEfetivo = patch.hospedes_previstos !== undefined ? patch.hospedes_previstos : (atual.hospedes_previstos ?? null);
+  const itensPatch = patch.itens !== undefined ? patch.itens : (atual.itens || []);
+  const itensFinal = (patch.confirmado === true)
+    ? pcpCafeRetratoConfirmacao(contratoId, ymd, itensPatch, hospedesEfetivo)
+    : itensPatch;
   const row = {
     contrato_id: contratoId, data: ymd,
-    hospedes_previstos: patch.hospedes_previstos !== undefined ? patch.hospedes_previstos : (atual.hospedes_previstos ?? null),
-    itens: patch.itens !== undefined ? patch.itens : (atual.itens || []),
+    hospedes_previstos: hospedesEfetivo,
+    itens: itensFinal,
     confirmado: patch.confirmado !== undefined ? patch.confirmado : !!atual.confirmado,
     confirmado_em: patch.confirmado === true ? new Date().toISOString() : (patch.confirmado === false ? null : (atual.confirmado_em || null)),
     confirmado_por: patch.confirmado === true ? (usuarioId || null) : (patch.confirmado === false ? null : (atual.confirmado_por || null)),
@@ -19075,7 +19105,111 @@ function pcpCafeHtml(unidadeFiltro, ymd, diaLabel, clienteFiltro){
       <div class="footnote" style="margin-bottom:10px;">Gerar o texto pronto pra mandar no WhatsApp (todos os clientes dessa padaria, confirmados ou não) ou o pedido de compra que entra no Orçado × Comprado (só os já confirmados hoje):</div>
       <div style="display:flex; gap:8px; flex-wrap:wrap;">${porFornecedor || `<span class="footnote">Cadastre um produto pra algum cliente pra liberar a geração de texto/pedido.</span>`}</div>
       <div id="cafe-texto-saida" style="margin-top:12px;"></div>
+    </div></div>
+    ${pcpCafeFechamentoHtml(fornecedoresPad)}`;
+}
+// 24/11/2026, pedido do Marcelo: fechamento mensal por fornecedor de padaria, pra mandar pro fornecedor
+// validar e programar pagamento. Lê só dias CONFIRMADOS (cafe_padaria_pedido_dia.confirmado=true), porque
+// só esses têm o retrato fixo gravado (ver pcpCafeRetratoConfirmacao) — dia não confirmado não tem como
+// entrar num documento de pagamento, por não ter um valor definitivo gravado ainda.
+function pcpCafeFechamentoHtml(fornecedoresPad){
+  const hoje = hojeYMD();
+  const primeiroDiaMes = hoje.slice(0,8) + "01";
+  if(!fornecedoresPad.length) return "";
+  return `<div class="panel" style="margin-top:16px;"><div class="panel-head"><h3 style="font-size:14px;">Fechamento mensal — buscar por fornecedor e exportar</h3></div>
+    <div class="panel-body">
+      <div class="footnote" style="margin-bottom:10px;">Busca os dias já <b>confirmados</b> de todos os clientes do fornecedor escolhido, no período, pra conferir e exportar em Excel (uma aba por cliente: dia, produto, quantidade, preço e total) — documento pra mandar ao fornecedor validar.</div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+        <div class="field" style="max-width:220px; margin:0;"><label style="font-size:11px;">Fornecedor</label>
+          <select id="cafe-fech-fornecedor" class="select-like-semana">${fornecedoresPad.map(f => `<option value="${f.id}">${escapeHtml(f.nome)}</option>`).join("")}</select>
+        </div>
+        <div class="field" style="max-width:150px; margin:0;"><label style="font-size:11px;">De</label>
+          <input type="date" id="cafe-fech-de" value="${primeiroDiaMes}"></div>
+        <div class="field" style="max-width:150px; margin:0;"><label style="font-size:11px;">Até</label>
+          <input type="date" id="cafe-fech-ate" value="${hoje}"></div>
+        <button type="button" class="btn small primary" id="cafe-fech-pesquisar">🔍 Pesquisar</button>
+      </div>
+      <div id="cafe-fech-resultado" style="margin-top:14px;"></div>
     </div></div>`;
+}
+function pcpCafeFechamentoClientesDoFornecedor(fornecedorId){
+  return [...cafePadariaItens.entries()]
+    .filter(([, itens]) => itens.some(i => i.fornecedor_id === fornecedorId))
+    .map(([contratoId]) => ({id: contratoId, nome: (contratos.get(contratoId) || {}).nome_cliente || "—"}))
+    .filter(c => c.nome !== "—")
+    .sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
+}
+async function pcpCafeFechamentoBuscar(fornecedorId, de, ate){
+  const clientesFornecedor = pcpCafeFechamentoClientesDoFornecedor(fornecedorId);
+  if(!clientesFornecedor.length) return {clientesFornecedor, porCliente: new Map()};
+  const { data, error } = await sb.from('cafe_padaria_pedido_dia').select('contrato_id,data,itens')
+    .in('contrato_id', clientesFornecedor.map(c => c.id)).eq('confirmado', true)
+    .gte('data', de).lte('data', ate).order('data');
+  if(error){ showAlert("Erro ao buscar fechamento: " + error.message); return {clientesFornecedor, porCliente: new Map()}; }
+  const porCliente = new Map(clientesFornecedor.map(c => [c.id, []]));
+  (data || []).forEach(row => {
+    if(!porCliente.has(row.contrato_id)) return;
+    (row.itens || []).forEach(it => {
+      if(!it.quantidade) return; // 0 = não pediu nesse dia, não entra na lista nem no total
+      porCliente.get(row.contrato_id).push({
+        data: row.data, produto: it.produto || "—",
+        quantidade: it.quantidade, preco_unitario: it.preco_unitario || 0,
+        valor_total: it.valor_total != null ? it.valor_total : Math.round(it.quantidade * (it.preco_unitario || 0) * 100) / 100
+      });
+    });
+  });
+  return {clientesFornecedor, porCliente};
+}
+function pcpCafeFechamentoRenderResultado(fornecedorNome, de, ate, clientesFornecedor, porCliente){
+  const resumo = clientesFornecedor.map(c => {
+    const linhas = porCliente.get(c.id) || [];
+    const total = linhas.reduce((s,l) => s + l.valor_total, 0);
+    const dias = new Set(linhas.map(l => l.data)).size;
+    return {cliente: c, linhas, total, dias};
+  });
+  const semDados = resumo.filter(r => !r.linhas.length).map(r => r.cliente.nome);
+  const comDados = resumo.filter(r => r.linhas.length);
+  const grandTotal = comDados.reduce((s,r) => s + r.total, 0);
+  if(!comDados.length){
+    return `<div class="empty-state">Nenhum dia confirmado de ${escapeHtml(fornecedorNome)} entre ${escapeHtml(fmtDataYMD(de))} e ${escapeHtml(fmtDataYMD(ate))}.</div>`;
+  }
+  return `
+    <div class="table-wrap"><table style="font-size:12.5px;"><thead><tr><th>Cliente</th><th class="num-cell">Dias confirmados</th><th class="num-cell">Total</th></tr></thead><tbody>
+      ${comDados.map(r => `<tr><td>${escapeHtml(r.cliente.nome)}</td><td class="num-cell">${r.dias}</td><td class="num-cell">${fmtMoney(r.total)}</td></tr>`).join("")}
+    </tbody></table></div>
+    ${semDados.length ? `<div class="footnote" style="margin-top:6px;">Sem nenhum dia confirmado no período: ${semDados.map(escapeHtml).join(", ")}.</div>` : ""}
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; padding-top:10px; border-top:1px dashed var(--border);">
+      <span class="footnote" style="margin:0;">Total do período — ${escapeHtml(fornecedorNome)}</span>
+      <b>${fmtMoney(grandTotal)}</b>
+    </div>
+    <div style="margin-top:10px;"><button type="button" class="btn small primary" id="cafe-fech-exportar">⬇ Gerar Excel</button></div>`;
+}
+function pcpCafeFechamentoGerarExcel(fornecedorNome, de, ate, comDados){
+  if(typeof XLSX === "undefined"){ showAlert("Biblioteca de Excel não carregou — verifique a conexão e recarregue a página."); return; }
+  const wb = XLSX.utils.book_new();
+  const resumoRows = [["Fornecedor","Período","Cliente","Total (R$)"]];
+  comDados.forEach(r => {
+    const aoa = [
+      [`Cliente: ${r.cliente.nome}`], [`Fornecedor: ${fornecedorNome}`],
+      [`Período: ${fmtDataYMD(de)} a ${fmtDataYMD(ate)}`], [],
+      ["DIA DE FORNECIMENTO","PRODUTO","QUANTIDADE","PREÇO DO PRODUTO","TOTAL"]
+    ];
+    r.linhas.slice().sort((a,b) => a.data === b.data ? a.produto.localeCompare(b.produto,'pt-BR') : a.data.localeCompare(b.data))
+      .forEach(l => aoa.push([new Date(l.data+"T00:00:00"), l.produto, l.quantidade, l.preco_unitario, l.valor_total]));
+    aoa.push([]);
+    aoa.push([null, null, null, "TOTAL GERAL", r.total]);
+    resumoRows.push([fornecedorNome, `${fmtDataYMD(de)} a ${fmtDataYMD(ate)}`, r.cliente.nome, r.total.toFixed(2)]);
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{wch:16},{wch:26},{wch:12},{wch:16},{wch:12}];
+    let nome = r.cliente.nome.substring(0,26), n2=2, finalNome = nome;
+    while(wb.SheetNames.includes(finalNome)){ finalNome = `${nome.substring(0,24)}_${n2++}`; }
+    XLSX.utils.book_append_sheet(wb, ws, finalNome);
+  });
+  const resumoWs = XLSX.utils.aoa_to_sheet(resumoRows);
+  XLSX.utils.book_append_sheet(wb, resumoWs, "RESUMO");
+  wb.SheetNames.splice(wb.SheetNames.indexOf("RESUMO"),1); wb.SheetNames.unshift("RESUMO");
+  const stamp = hojeYMD().replace(/-/g,"");
+  XLSX.writeFile(wb, `Fechamento_${fornecedorNome.replace(/[^a-zA-Z0-9]+/g,"_")}_${stamp}.xlsx`);
 }
 function pcpCafeTextoPedido(fornecedorId, ymd, diaLabel){
   const f = fornecedores.get(fornecedorId);
@@ -19279,6 +19413,31 @@ function pcpCafeBind(content, unidadeFiltro, ymd, diaLabel, semana){
     const grupos = await pcpCafeGerarPedido(b.dataset.cafeGerarPedido, ymd, semana);
     if(grupos) showAlert(`Pedido gravado em Compras → Pedidos: ${grupos.map(g => nomeUnidadeCompra(g.unidade)+" ("+fmtMoney(g.valor_total)+")").join(", ")}.`);
   }));
+  const btnFechPesquisar = content.querySelector("#cafe-fech-pesquisar");
+  if(btnFechPesquisar){
+    let fechUltimo = null; // guarda o último resultado pesquisado, pra "Gerar Excel" não ter que buscar de novo
+    btnFechPesquisar.addEventListener("click", async () => {
+      const fornecedorId = document.getElementById("cafe-fech-fornecedor").value;
+      const de = document.getElementById("cafe-fech-de").value;
+      const ate = document.getElementById("cafe-fech-ate").value;
+      const resultadoEl = document.getElementById("cafe-fech-resultado");
+      if(!fornecedorId || !de || !ate){ showAlert("Escolha fornecedor e período."); return; }
+      if(de > ate){ showAlert("A data \"De\" não pode ser depois da data \"Até\"."); return; }
+      btnFechPesquisar.disabled = true; btnFechPesquisar.textContent = "Pesquisando...";
+      const { clientesFornecedor, porCliente } = await pcpCafeFechamentoBuscar(fornecedorId, de, ate);
+      btnFechPesquisar.disabled = false; btnFechPesquisar.textContent = "🔍 Pesquisar";
+      const fornecedorNome = (fornecedores.get(fornecedorId) || {}).nome || "Fornecedor";
+      resultadoEl.innerHTML = pcpCafeFechamentoRenderResultado(fornecedorNome, de, ate, clientesFornecedor, porCliente);
+      fechUltimo = {
+        fornecedorNome, de, ate,
+        comDados: clientesFornecedor.map(c => ({cliente: c, linhas: porCliente.get(c.id) || []})).filter(r => r.linhas.length)
+      };
+      const btnExportar = document.getElementById("cafe-fech-exportar");
+      if(btnExportar) btnExportar.addEventListener("click", () => {
+        pcpCafeFechamentoGerarExcel(fechUltimo.fornecedorNome, fechUltimo.de, fechUltimo.ate, fechUltimo.comDados.map(r => ({...r, total: r.linhas.reduce((s,l)=>s+l.valor_total,0)})));
+      });
+    });
+  }
 }
 // itemExistente presente = edição (inclui mudar a padaria do item e o padrão semanal); ausente = novo produto.
 function pcpCafeAbrirAddProduto(contratoId, fornecedorIdPadrao, itemExistente){
