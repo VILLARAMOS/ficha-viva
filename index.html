@@ -1722,6 +1722,7 @@ const ORIENTACOES_POR_VIEW = {
     <p><strong>Pontos a revisar antes de imprimir:</strong> marcar um ponto não bloqueia a impressão, é só pra organizar a conferência.</p>
     <p><strong>Requisição do estoque:</strong> mesma conta da lista de compra (peso bruto da ficha × produção). Suco e carnes do açougue não entram aqui (suco é feito na unidade do cliente; carnes saem pela ordem do açougue). O estoque não separa entre um dia e outro: a produção de sexta também cobre o fim de semana sem operação — cada dia tem seu próprio bloco e quantidade, não somada.</p>
     <p><strong>Substituições:</strong> um pra um — cada pessoa trocada tira 1 porção da proteína do cardápio naquele serviço (e também de Base/Guarnição quando for composição completa — Prato Especial/Fit/Lanche) e soma 1 unidade do item escolhido. O lançamento salvo aparece na Conferência de expedição, na produção e nas etiquetas, e o custo entra no CMV real do mês (painel "Custo de substituição — fechamento da semana" já soma dentro do CMV real do mês, por contrato). Os chips Almoço/Jantar/Ceia ao lado da semana filtram só a TELA (quais colunas da grade aparecem) — não afetam o que já foi lançado nos outros serviços.</p>
+    <p><strong>Proteínas do dia — RB Bragantino:</strong> painel próprio no topo da grade de Substituições, só pro RB Bragantino — é diferente de substituição (não troca o prato por outro item, é a quantidade real das DUAS proteínas do cardápio normal do dia). Fica em branco = segue o calculado pelo headcount do contrato; preenchido = o valor digitado vale pra essa produção, Requisição e CMV do dia (mesmo mecanismo de "Ajustes do dia", só que lançado aqui, no mesmo clique de "Salvar substituições"). Sai separado na impressão "Controle de proteínas e substituições", numa tabela própria.</p>
     <p><strong>Ajustes do dia:</strong> ajuste manual do valor efetivo de uma receita pra um cliente, num serviço específico — ex.: cliente pediu mais, sobra da véspera. O valor digitado substitui o calculado só nesta produção deste dia (não muda custo nem compra) e some se você remover o ajuste. Motivo é obrigatório, observação é livre. Suco e sobremesa não entram aqui, nem em Peso por prato.</p>
     <p><strong>Romaneio e rotas de entregas:</strong> atribuição cliente→rota é fixa (vale todo dia, não muda sozinha) — monte/ajuste direto na própria aba (motorista, horário, veículo, clientes da rota, ordem de entrega com ↑/↓ e endereço), sem precisar abrir o cadastro do contrato. O painel "Dias da semana" filtra só a listagem de entregas (embaixo da tela) — marque mais de 1 dia pra ver/imprimir vários de uma vez; não muda a atribuição cliente→rota. Os chips Almoço/Jantar/Ceia ao lado da semana filtram a quantidade que entra na entrega/impressão — desmarcando Jantar e Ceia, por exemplo, a listagem mostra só o volume do almoço. "Ver no mapa" abre o Google Maps com o endereço já buscado (sem mapa embutido na tela — ainda não há chave de API de mapa configurada). Cada rota tem 2 impressões: "Imprimir rota" é o roteiro pro motorista (ordem, horário e endereço de cada parada, sem os itens); "Imprimir romaneio" é por cliente, com os itens a entregar, em 2 vias (motorista/recebedor) pra conferência na entrega. "Preparo da semana" (corte/receita por dia de utilização, com custo) deixa escolher os dias e imprimir, cada um numa folha. "Mapa da semana" (açougue): peça grande congelada, use essa visão pra tirar do freezer com antecedência (48–72h antes do dia de preparo).</p>
     <p><strong>Conferência de expedição:</strong> cozinha confirma que produziu/embalou, expedição confirma que carregou. Salva sozinho a cada campo alterado.</p>
@@ -14777,7 +14778,21 @@ function pcpBuscarAjuste(dia, contratoId, fichaId, servico){
   const porDia = pcpAjustesCache.get(dia);
   return porDia ? (porDia.get(contratoId + "|" + fichaId + "|" + servico) || null) : null;
 }
-const PCP_AJUSTE_MOTIVOS = ["Cliente pediu mais", "Cliente pediu menos", "Sobra da véspera", "Falta recorrente", "Evento especial", "Correção de gramagem", "Outro"];
+const PCP_AJUSTE_MOTIVOS = ["Cliente pediu mais", "Cliente pediu menos", "Sobra da véspera", "Falta recorrente", "Evento especial", "Correção de gramagem", "Hóspedes do dia (RB)", "Outro"];
+// 25/11/2026, pedido do Marcelo: RB Bragantino é hotel — nº de hóspedes varia dia a dia (informado à
+// tarde, ver claude/ficha-viva-v106-cafe-padaria-pcp.md) — diferente dos demais clientes (headcount fixo
+// no contrato). As DUAS proteínas do dia continuam as mesmas do cardápio normal (cardapio_refeicao_num=1,
+// automático — decisão de 19/10/2026 sobre proteína dupla não muda), mas a QUANTIDADE a produzir de cada
+// uma pode precisar de ajuste manual no dia, porque o headcount real do hotel diverge do contratado.
+// Reaproveita de propósito o MESMO mecanismo de pcp_ajustes (Fase 5, "Ajustes do dia") em vez de criar uma
+// tabela nova — é exatamente o que ele já faz (override manual do valor efetivo de 1 receita por contrato×
+// dia×serviço) e já alimenta certo Produção/Requisição/CMV; só muda ONDE aparece (dentro de Substituições,
+// não na aba separada) e o motivo vem fixo (rotina diária, não exceção) em vez de escolhido toda vez — ver
+// pcpRbProteinasHtml/pcpImprimirProteinasRbHtml abaixo. Amarrado ao contrato_id (não ao nome do cliente)
+// de propósito, igual todo outro caso específico de cliente no sistema (peso de expedição, marmita
+// especial etc.) — sobrevive a renomear o contrato.
+const PCP_RB_BRAGANTINO_CONTRATO_ID = "02ad6f64-ab45-4174-9292-ad01a9f69e26";
+const PCP_RB_PROTEINA_MOTIVO = "Hóspedes do dia (RB)";
 async function pcpSalvarAjuste(semana, dia, unidade, contratoId, fichaId, servico, valorEfetivo, motivo, observacao){
   const row = { semana, dia, unidade, contrato_id: contratoId, ficha_id: fichaId, servico, valor_efetivo: valorEfetivo, motivo: motivo || "", observacao: observacao || "", alterado_em: new Date().toISOString(), alterado_por: usuarioId || null };
   const { error } = await sb.from('pcp_ajustes').upsert(row, { onConflict: 'semana,dia,unidade,contrato_id,ficha_id,servico' });
@@ -16194,6 +16209,39 @@ function pcpControleProteinasHtml(linhas, turnoNome){
 // reconhecer o window.open como originado do clique do usuário e passava a bloquear o pop-up de forma
 // inconsistente, o que aparecia pro usuário como "abre várias abas com bug". Com 1 janela só, aberta
 // antes de qualquer await, esse risco desaparece.
+// 25/11/2026, pedido do Marcelo: seção extra, só pro RB Bragantino, na MESMA impressão — "a tabela
+// precisa ser separada porque tem informações diferentes" (aqui é quantidade a produzir do prato NORMAL
+// do cardápio, não substituição; ver nota grande em PCP_RB_BRAGANTINO_CONTRATO_ID). Reaproveita
+// pcpRbProteinasLinhas (mesma função/dado da tela, sem recalcular nada por conta própria) — mas SEM o
+// filtro de pcpServicosSel (igual ao resto desta impressão: sai pra TODOS os turnos, nunca só o filtrado
+// na tela), por isso monta a lista na mão aqui em vez de chamar pcpRbProteinasLinhas direto.
+function pcpImprimirProteinasRbHtml(resCompletos){
+  const gruposRb = resCompletos
+    .map(r => { const g = pcpAjustesLinhas(r, new Set([PCP_RB_BRAGANTINO_CONTRATO_ID])).find(x => x.id === PCP_RB_BRAGANTINO_CONTRATO_ID); return g || null; })
+    .filter(Boolean);
+  if(!gruposRb.length) return "";
+  const pessoas = gruposRb[0].pessoas;
+  const linhas = gruposRb.flatMap(g => g.linhas.filter(l => (fichas.get(l.fichaId)?.grupo || "") === "PROTEÍNA"));
+  if(!linhas.length) return "";
+  const linhaHtml = l => `<tr>
+    <td style="padding:5px 6px; border:1px solid #bbb;">${escapeHtml(l.nomeReceita)}</td>
+    <td style="padding:5px 6px; text-align:center; border:1px solid #bbb;">${PCP_TURNOS.find(t => t.id === l.servico).nome}</td>
+    <td style="padding:5px 6px; text-align:center; border:1px solid #bbb;">${pcpFmtQtd(l.qtdCalculada, l.fichaId)}</td>
+    <td style="padding:5px 6px; text-align:center; font-weight:700; border:1px solid #bbb;">${l.ajuste ? pcpFmtQtd(Number(l.ajuste.valor_efetivo), l.fichaId) : "—"}</td>
+  </tr>`;
+  return `<table style="width:100%; border-collapse:collapse; margin:14px 0 6px; font-size:12.5px;">
+    <thead>
+      <tr><th colspan="4" style="background:#2e7d32; color:#fff; font-size:15px; padding:9px; border:1px solid #2e7d32;">PRODUÇÃO DE PROTEÍNAS DO DIA — RB BRAGANTINO <span style="font-weight:400;">(pessoas atendidas: ${fmtNum(pessoas,0)})</span></th></tr>
+      <tr>
+        <th style="background:#c6e0b4; padding:6px; border:1px solid #bbb;">PROTEÍNA DO DIA</th>
+        <th style="background:#c6e0b4; padding:6px; border:1px solid #bbb;">SERVIÇO</th>
+        <th style="background:#c6e0b4; padding:6px; border:1px solid #bbb;">CALCULADO</th>
+        <th style="background:#9dc3e6; padding:6px; border:1px solid #bbb;">QTD. A PRODUZIR</th>
+      </tr>
+    </thead>
+    <tbody>${linhas.map(linhaHtml).join("")}</tbody>
+  </table>`;
+}
 function pcpImprimirControleProteinas(resPorDia){
   const diasHtml = resPorDia.map(({listaRes}) => {
     const base = listaRes[0];
@@ -16210,7 +16258,10 @@ function pcpImprimirControleProteinas(resPorDia){
     // já existem no sistema (mesmo cálculo usado em Compras/Produção), então nunca diverge da semana selecionada.
     const diaELabel = `${DIA_LABEL[base.dia]}, ${fmtDataCompleta(dataDoDia(base.semana, base.dia))}`;
     const unidadeTxt = listaRes.length > 1 ? "Matriz + Filial" : nomeUnidadeCompra(base.unidade);
-    return { diaELabel, unidadeTxt, corpo: blocosTurno.join(`<div style="page-break-before:always;"></div>`) };
+    // 25/11/2026: seção do RB Bragantino entra DEPOIS da matriz geral, separada visualmente (tabela
+    // própria, cor diferente) — nunca dentro da mesma tabela de Controle de proteínas (informação
+    // diferente: quantidade a produzir do prato normal, não contagem de substituição).
+    return { diaELabel, unidadeTxt, corpo: blocosTurno.join(`<div style="page-break-before:always;"></div>`) + pcpImprimirProteinasRbHtml(resCompletos) };
   }).filter(Boolean);
   if(!diasHtml.length){ showAlert("Nenhum cliente com refeições previstas nos dias marcados, em nenhum turno."); return; }
   const multiDia = diasHtml.length > 1;
@@ -19874,6 +19925,41 @@ function pcpSubstGerenciarItensHtml(){
     <p class="footnote" style="margin:8px 0 0;">× = quantas unidades do item entram na produção/Requisição/CMV por pessoa trocada (edite e clique fora do campo pra salvar). Toda substituição lançada soma +1 unidade de amostra por lançamento, além do multiplicador.</p>
   </details>`;
 }
+// ---------- "Proteínas do dia — RB Bragantino" (25/11/2026, pedido do Marcelo) ----------
+// Ver nota grande em PCP_RB_BRAGANTINO_CONTRATO_ID (acima, perto de PCP_AJUSTE_MOTIVOS) pro porquê disso
+// existir e por que reaproveita pcp_ajustes em vez de mecanismo novo. Isto é DIFERENTE de substituição:
+// substituição troca a proteína por OUTRO prato (ovo, filé...); isto é a quantidade real a produzir do(s)
+// prato(s) NORMAIS do cardápio do dia, quando o headcount do hotel diverge do contratado.
+// `res` é 1 retorno de pcpCalcularDia (mesmo formato usado pela grade de Substituições/Ajustes do dia) —
+// reaproveita pcpAjustesLinhas (função de "Ajustes do dia", mais abaixo no arquivo; ordem não importa aqui
+// porque é function declaration, com hoisting) pra ter o MESMO "Calculado"/"ajuste" de lá, sem recalcular
+// nada por conta própria. Filtra só grupo PROTEÍNA (nunca Base/Guarnição/Salada/Sobremesa/Suco) e só os
+// serviços marcados nos chips do topo (pcpServicosSel) — mesmo filtro visual que a grade de substituições
+// já usa (pcpSubstGradeBlocoHtml, logo abaixo).
+function pcpRbProteinasLinhas(res){
+  const grupos = pcpAjustesLinhas(res, new Set([PCP_RB_BRAGANTINO_CONTRATO_ID]));
+  const g = grupos.find(x => x.id === PCP_RB_BRAGANTINO_CONTRATO_ID);
+  if(!g) return null;
+  const linhas = g.linhas.filter(l => (fichas.get(l.fichaId)?.grupo || "") === "PROTEÍNA" && pcpServicosSel.has(l.servico));
+  return linhas.length ? { ...g, linhas } : null;
+}
+function pcpRbProteinasHtml(res){
+  const g = pcpRbProteinasLinhas(res);
+  if(!g) return "";
+  const linhasHtml = g.linhas.map(l => `<tr data-rb-prot-contrato="${g.id}" data-rb-prot-ficha="${l.fichaId}" data-rb-prot-servico="${l.servico}" data-rb-prot-dia="${res.dia}">
+      <td class="name-cell">${escapeHtml(l.nomeReceita)}</td>
+      <td>${PCP_TURNOS.find(t => t.id === l.servico).nome}</td>
+      <td class="num-cell">${pcpFmtQtd(l.qtdCalculada, l.fichaId)}</td>
+      <td><input type="number" step="0.01" min="0" class="rb-prot-valor" value="${l.ajuste ? Number(l.ajuste.valor_efetivo) : ""}" data-orig="${l.ajuste ? Number(l.ajuste.valor_efetivo) : ""}" placeholder="${pcpFmtQtd(l.qtdCalculada, l.fichaId)}" style="width:90px;"></td>
+    </tr>`).join("");
+  return `<div class="panel" style="margin-bottom:14px; border-color:#2e7d32;">
+    <div class="panel-head"><h3 style="font-size:14px;">Proteínas do dia — RB Bragantino</h3><span class="hint">Pessoas atendidas: <strong>${fmtNum(g.pessoas,0)}</strong></span></div>
+    <div class="panel-body">
+      <p class="footnote" style="margin:0 0 8px;">Quantidade de cada proteína do cardápio do dia que a cozinha vai produzir de fato — diferente da grade de substituições abaixo (que é troca por outro prato). Deixe em branco para manter o calculado pelo headcount do contrato.</p>
+      <div class="table-wrap"><table><thead><tr><th>Proteína do dia</th><th>Serviço</th><th style="text-align:right;">Calculado</th><th>Quantidade a produzir</th></tr></thead><tbody>${linhasHtml}</tbody></table></div>
+    </div>
+  </div>`;
+}
 function pcpSubstGradeBlocoHtml(res, itens){
   // 17/11/2026 (pedido do Marcelo): colunas respeitam o chip Almoço/Jantar/Ceia do topo (pcpServicosSel,
   // mesmo estado global de Produção/Açougue/etc.) — "Total" da linha/coluna/geral já é só a soma de `servs`,
@@ -19993,7 +20079,7 @@ function pcpSubstituicoesHtml(resPorDia, unidadeFiltro){
   const blocos = resPorDia.map(({dia, listaRes}) => `
     <div data-pcp-subst-dia-bloco="${dia}">
       ${multiDia ? `<div class="panel-head" style="margin:0 0 10px; border:none;"><h3 style="font-size:15px;">${DIA_LABEL[dia]}</h3></div>` : ""}
-      ${listaRes.map(res => pcpSubstGradeBlocoHtml(res, itens)).join(`<div style="height:14px;"></div>`)}
+      ${listaRes.map(res => pcpRbProteinasHtml(res) + pcpSubstGradeBlocoHtml(res, itens)).join(`<div style="height:14px;"></div>`)}
     </div>`).join(`<div style="height:22px;"></div>`);
   const resumoSemana = pcpSubstCustoSemana(resPorDia.flatMap(d => d.listaRes));
   const resumoHtml = resumoSemana.pessoas ? `<div class="panel" style="margin-bottom:14px;"><div class="panel-body">
@@ -20103,6 +20189,13 @@ function pcpSubstituicoesBind(content, semana, unidadeFiltro, resPorDia){
     if(tabela) pcpSubstRecalcularTabela(tabela);
     pcpSubstMarcarSuja(inp);
   });
+  // "Proteínas do dia — RB Bragantino" (25/11/2026) — mesmo realce visual de campo alterado que o resto da
+  // grade (pcpSubstMarcarSuja reaproveitado, serve pra qualquer input com data-orig).
+  content.addEventListener("input", e => {
+    const inp = e.target.closest("input.rb-prot-valor");
+    if(!inp) return;
+    pcpSubstMarcarSuja(inp);
+  });
   content.addEventListener("change", e => {
     const inp = e.target.closest("input.subst-grid-cel");
     if(!inp) return;
@@ -20171,7 +20264,11 @@ function pcpSubstituicoesBind(content, semana, unidadeFiltro, resPorDia){
     const btnSalvar = e.target.closest("button[data-subst-salvar]");
     if(btnSalvar){
       const sujas = Array.from(content.querySelectorAll("input.subst-grid-cel")).filter(inp => inp.value.trim() !== (inp.dataset.orig || ""));
-      if(!sujas.length){ showAlert("Nenhuma alteração pra salvar."); return; }
+      // 25/11/2026, pedido do Marcelo: o mesmo botão/clique também salva a quantidade de proteína do RB
+      // Bragantino (ver pcpRbProteinasHtml) — ele lança os dois no mesmo lugar, sem precisar ir em
+      // "Ajustes do dia". Grava em pcp_ajustes (não em pcp_substituicoes — é mecanismo diferente).
+      const sujasRb = Array.from(content.querySelectorAll("input.rb-prot-valor")).filter(inp => inp.value.trim() !== (inp.dataset.orig || ""));
+      if(!sujas.length && !sujasRb.length){ showAlert("Nenhuma alteração pra salvar."); return; }
       btnSalvar.disabled = true; btnSalvar.textContent = "Salvando...";
       for(const inp of sujas){
         // `dia` vem do PRÓPRIO input (data-dia), não de um closure único — com vários dias marcados na tela
@@ -20187,6 +20284,22 @@ function pcpSubstituicoesBind(content, semana, unidadeFiltro, resPorDia){
           const ct = contratos.get(contratoId);
           if(!ct || !ct.unidade){ showAlert(`Não achei a unidade do contrato de ${inp.closest("tr")?.querySelector(".name-cell")?.textContent || contratoId} — esse lançamento não foi salvo, os outros sim.`); continue; }
           await pcpSalvarSubstituicao(semana, diaCel, ct.unidade, contratoId, fichaId, pessoas, servico);
+        }
+      }
+      for(const inp of sujasRb){
+        const tr = inp.closest("tr");
+        const { rbProtContrato: contratoId, rbProtFicha: fichaId, rbProtServico: servico, rbProtDia: diaCel } = tr.dataset;
+        const raw = inp.value.trim();
+        const ct = contratos.get(contratoId);
+        if(!ct || !ct.unidade){ showAlert("Não achei a unidade do contrato do RB Bragantino — a quantidade de proteína não foi salva."); continue; }
+        if(raw === ""){
+          // campo limpo = volta a usar o calculado (mesma regra de "Ajustes do dia": limpar remove o ajuste).
+          const existenteAj = pcpBuscarAjuste(diaCel, contratoId, fichaId, servico);
+          if(existenteAj) await pcpRemoverAjuste(existenteAj.id);
+        } else {
+          const valor = parseFloat(raw.replace(",", "."));
+          if(!(valor >= 0)){ showAlert("Quantidade de proteína do RB Bragantino precisa ser maior ou igual a zero — esse campo não foi salvo."); continue; }
+          await pcpSalvarAjuste(semana, diaCel, ct.unidade, contratoId, fichaId, servico, valor, PCP_RB_PROTEINA_MOTIVO, "");
         }
       }
       // recarrega o cache GLOBAL de substituições (pcpSubstituicoesPorContrato) além do cache da tela de
