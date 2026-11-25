@@ -1239,7 +1239,7 @@ function renderSuprimentoPedidoTab(){
   sub.innerHTML = `
     <div class="panel">
       <div class="panel-head">
-        <h3><i class="ico" data-lucide="clipboard-list"></i>Pedido / separação — ${escapeHtml(destino.nome)}</h3>
+        <h3><i class="ico" data-lucide="clipboard-list"></i>Pedido / separação — ${escapeHtml(destino.nome)} <span class="chip neutral" style="font-weight:400;">${escapeHtml(rotuloSemana(suprimentoSemanaSel))} · ${escapeHtml(intervaloSemana(suprimentoSemanaSel))}</span></h3>
         <div class="es-tools">
           ${statusChip}
           ${status==="rascunho" ? `<button class="btn primary" id="sup-ped-fechar"><i class="ico" data-lucide="check-check"></i>Fechar separação</button>` : ""}
