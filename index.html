@@ -1753,6 +1753,10 @@ document.getElementById("btn-orientacoes").addEventListener("click", abrirOrient
 function goToView(view){
   if(!VIEWS[view]) return;
   if(!possoVerView(view)){ view = primeiraViewPermitida(); if(!view) return; }
+  // Entrar na aba Cardápio (vindo de outra aba) sempre abre a semana atual, mesmo que a pessoa
+  // tenha deixado outra semana selecionada numa visita anterior na mesma sessão (pedido de
+  // Marcelo, 25/11/2026) — zera a semana aqui pra o fallback de renderCardapio escolher de novo.
+  if(view === "cardapio" && currentView !== "cardapio") cardapioSemanaSel = null;
   currentView = view;
   document.querySelectorAll(".nav-btn[data-view]").forEach(b => b.classList.toggle("active", b.dataset.view === view));
   document.getElementById("btn-orientacoes").hidden = !ORIENTACOES_POR_VIEW[view];
@@ -4428,6 +4432,14 @@ function mesAtualId(){
   const hoje = new Date();
   return hoje.getUTCFullYear() + "-" + String(hoje.getUTCMonth()+1).padStart(2,"0");
 }
+// Número da semana (régua de CALENDARIO_BASE_MS) correspondente à data de hoje — usado pra abrir
+// a aba Cardápio sempre na semana atual (pedido de Marcelo, 25/11/2026), em vez da primeira semana
+// cadastrada daquele número de cardápio.
+function semanaAtualNum(){
+  const hoje = new Date();
+  const hojeMs = Date.UTC(hoje.getFullYear(), hoje.getMonth(), hoje.getDate());
+  return Math.floor((hojeMs - CALENDARIO_BASE_MS) / (7*86400000)) + 1;
+}
 
 let cardapioNumSel = null;
 let cardapioSemanaSel = null;
@@ -5055,7 +5067,15 @@ function renderCardapio(){
   if(cardapioSemanaNovaPendente != null && !semanasDisponiveis.includes(cardapioSemanaNovaPendente)){
     semanasDisponiveis = [...semanasDisponiveis, cardapioSemanaNovaPendente].sort((a,b)=>a-b);
   }
-  if (cardapioSemanaSel === null || !semanasDisponiveis.includes(cardapioSemanaSel)) { cardapioSemanaSel = semanasDisponiveis[0]; cardapioSemanaNovaPendente = null; }
+  if (cardapioSemanaSel === null || !semanasDisponiveis.includes(cardapioSemanaSel)) {
+    // Abre na semana atual quando ela existir pra esse número de cardápio; senão, cai na semana
+    // cadastrada mais próxima de hoje (em vez de sempre a primeira/mais antiga).
+    const semAtual = semanaAtualNum();
+    cardapioSemanaSel = semanasDisponiveis.includes(semAtual)
+      ? semAtual
+      : semanasDisponiveis.reduce((maisProxima, s) => Math.abs(s - semAtual) < Math.abs(maisProxima - semAtual) ? s : maisProxima, semanasDisponiveis[0]);
+    cardapioSemanaNovaPendente = null;
+  }
 
   document.getElementById("topbar-actions").innerHTML = "";
 
