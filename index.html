@@ -1137,6 +1137,7 @@ async function renderSuprimento(){
     {id:"pedido", nome:"Pedido / separação", ico:"clipboard-list"},
     {id:"orcamento", nome:"Orçamento (R$)", ico:"wallet"},
     {id:"itens", nome:"Itens das listas", ico:"tags"},
+    {id:"envios", nome:"Relatório de envios", ico:"file-spreadsheet"},
   ];
   document.getElementById("content").innerHTML = `
     <div class="es-wrap">
@@ -1156,6 +1157,7 @@ async function renderSuprimento(){
   if(suprimentoSubView === "minimos") renderSuprimentoMinimosTab();
   else if(suprimentoSubView === "pedido") renderSuprimentoPedidoTab();
   else if(suprimentoSubView === "orcamento") renderSuprimentoOrcamentoTab();
+  else if(suprimentoSubView === "envios") renderSuprimentoEnviosTab();
   else renderSuprimentoItensTab();
   if(window.lucide) lucide.createIcons();
 }
@@ -1214,45 +1216,54 @@ function renderSuprimentoMinimosTab(){
   updateTable();
 }
 
+// 25/11/2026, confirmado pelo Marcelo: mesmo mecanismo de "pedido extra" do café/padaria — depois que o
+// pedido normal da semana (seq 0) já estiver separado/entregue, dá pra abrir uma caixa extra pro mesmo
+// destino na mesma semana, sem mexer no que já foi separado. Destino/semana/lista continuam sendo um
+// filtro único da tela (não por caixa); cada caixa (seq) tem sua própria tabela, status e ações.
 function renderSuprimentoPedidoTab(){
   const sub = document.getElementById("sup-sub-body");
   const destino = suprimentoDestinoAtual();
-  const pedido = suprimentoPedidoAtual(destino.tipo, destino.id, suprimentoSemanaSel);
-  const status = pedido ? pedido.status : "rascunho";
   const minimosMapa = suprimentoMinimoPorDestino(destino.tipo, destino.id);
-  const itensDoPedido = new Map(((pedido && pedido.itens) || []).map(it => [it.insumo_id, it]));
-  const travado = status !== "rascunho";
   // só entram na lista os insumos com mínimo cadastrado pra este destino, DA LISTA selecionada —
   // igual à planilha hoje (2 listas semanais separadas por cliente: limpeza/temperos e café/suco).
   const insumosComMinimo = [...minimosMapa.keys()]
     .map(id => insumos.get(id) ? {id, ...insumos.get(id)} : null)
     .filter(r => r && r.suprimento_lista === suprimentoListaSel)
     .sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
-  // valor do pedido mostrado é o TOTAL (as 2 listas somadas), não só a lista em tela.
-  const valorTotal = pedido ? (pedido.valor_total||0) : 0;
-  const statusChip = {
-    rascunho: `<span class="chip">Rascunho</span>`,
-    separado: `<span class="chip ok">Separado</span>`,
-    entregue: `<span class="chip ok">Entregue</span>`,
-    cancelado: `<span class="chip warn">Cancelado</span>`,
-  }[status] || "";
-  sub.innerHTML = `
-    <div class="panel">
+  const seqs = suprimentoSeqsDestinoSemana(destino.tipo, destino.id, suprimentoSemanaSel);
+  const cardPedido = (seq, ultimaDaLista) => {
+    const pedido = suprimentoPedidoAtual(destino.tipo, destino.id, suprimentoSemanaSel, seq);
+    const status = pedido ? pedido.status : "rascunho";
+    const itensDoPedido = new Map(((pedido && pedido.itens) || []).map(it => [it.insumo_id, it]));
+    const travado = status !== "rascunho";
+    // valor do pedido mostrado é o TOTAL (as 2 listas somadas), não só a lista em tela.
+    const valorTotal = pedido ? (pedido.valor_total||0) : 0;
+    const statusChip = {
+      rascunho: `<span class="chip">Rascunho</span>`,
+      separado: `<span class="chip ok">Separado</span>`,
+      entregue: `<span class="chip ok">Entregue</span>`,
+      cancelado: `<span class="chip warn">Cancelado</span>`,
+    }[status] || "";
+    const ehExtra = seq > 0;
+    const chaveExtra = suprimentoChaveExtra(destino.tipo, destino.id, suprimentoSemanaSel, seq);
+    const nadaSalvoAinda = !pedido && suprimentoExtrasAbertos.has(chaveExtra);
+    const botaoExtra = (ultimaDaLista && pedido && (status==="separado"||status==="entregue"))
+      ? `<button type="button" class="btn small ghost" data-sup-extra="${seq+1}" title="Abrir um pedido extra pra este destino nesta semana, sem mexer no que já foi separado/entregue">+ Pedido extra</button>` : "";
+    const botaoCancelarExtra = (ehExtra && nadaSalvoAinda)
+      ? `<button type="button" class="btn small ghost" data-sup-cancelar-extra="${seq}" title="Fechar esta caixa extra (nada foi salvo nela ainda)">Cancelar pedido extra</button>` : "";
+    return `<div class="panel" style="margin-bottom:14px;">
       <div class="panel-head">
-        <h3><i class="ico" data-lucide="clipboard-list"></i>Pedido / separação — ${escapeHtml(destino.nome)} <span class="chip neutral" style="font-weight:400;">${escapeHtml(rotuloSemana(suprimentoSemanaSel))} · ${escapeHtml(intervaloSemana(suprimentoSemanaSel))}</span></h3>
+        <h3><i class="ico" data-lucide="clipboard-list"></i>Pedido / separação — ${escapeHtml(destino.nome)} <span class="chip neutral" style="font-weight:400;">${escapeHtml(rotuloSemana(suprimentoSemanaSel))} · ${escapeHtml(intervaloSemana(suprimentoSemanaSel))}</span>${ehExtra ? ` <span class="chip warn" style="font-weight:400;">Pedido extra ${seq}</span>` : ""}</h3>
         <div class="es-tools">
           ${statusChip}
-          ${status==="rascunho" ? `<button class="btn primary" id="sup-ped-fechar"><i class="ico" data-lucide="check-check"></i>Fechar separação</button>` : ""}
-          ${status==="separado" ? `<button class="btn small" id="sup-ped-entregue"><i class="ico" data-lucide="truck"></i>Marcar entregue</button>` : ""}
+          ${status==="rascunho" ? `<button class="btn primary" data-sup-fechar="${seq}"><i class="ico" data-lucide="check-check"></i>Fechar separação</button>` : ""}
+          ${status==="separado" ? `<button class="btn small" data-sup-entregue="${seq}"><i class="ico" data-lucide="truck"></i>Marcar entregue</button>` : ""}
+          ${botaoExtra}${botaoCancelarExtra}
         </div>
       </div>
       <div class="panel-body">
-        <div class="menu-controls" style="margin-bottom:14px;">
-          ${suprimentoDestinoSelectHtml("sup-ped-destino")}
-          <select id="sup-ped-semana">${suprimentoSemanasOpcoes().map(s=>`<option value="${s}" ${s===suprimentoSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
-        </div>
-        ${suprimentoListaToggleHtml("sup-ped-lista")}
-        <div class="es-kpis inner" style="margin-top:14px;">
+        ${ehExtra ? `<div class="footnote" style="margin:0 0 10px;">Pedido extra desta semana — o pedido original (acima) continua separado/entregue, intacto.</div>` : ""}
+        <div class="es-kpis inner" style="margin-top:0;">
           ${estoqueKpiCard({label:"Valor do pedido (as 2 listas)", value: fmtMoney(valorTotal)})}
           ${estoqueKpiCard({label:`Itens nesta lista com mínimo`, value: String(insumosComMinimo.length)})}
         </div>
@@ -1260,7 +1271,7 @@ function renderSuprimentoPedidoTab(){
       </div>
       <div class="table-wrap es-table"><table>
         <thead><tr><th>Insumo</th><th style="text-align:right;">Mínimo</th><th style="text-align:right;">Estoque local</th><th style="text-align:right;">Ajuste (+/-)</th><th style="text-align:right;">Sugerido</th><th style="text-align:right;">Pedido final</th><th style="text-align:right;">Subtotal</th></tr></thead>
-        <tbody id="sup-ped-tbody">${insumosComMinimo.map(r => {
+        <tbody data-sup-tbody-seq="${seq}">${insumosComMinimo.map(r => {
           const min = minimosMapa.get(r.id);
           const it = itensDoPedido.get(r.id);
           const estoqueLocal = it ? it.estoque_local : null;
@@ -1279,7 +1290,17 @@ function renderSuprimentoPedidoTab(){
           </tr>`;
         }).join("") || `<tr><td colspan="7" class="empty-state">Nenhum insumo com mínimo cadastrado pra este destino nesta lista.</td></tr>`}</tbody>
       </table></div>
-    </div>
+    </div>`;
+  };
+  sub.innerHTML = `
+    <div class="panel" style="margin-bottom:14px;"><div class="panel-body">
+      <div class="menu-controls" style="margin:0;">
+        ${suprimentoDestinoSelectHtml("sup-ped-destino")}
+        <select id="sup-ped-semana">${suprimentoSemanasOpcoes().map(s=>`<option value="${s}" ${s===suprimentoSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})</option>`).join("")}</select>
+      </div>
+      <div style="margin-top:10px;">${suprimentoListaToggleHtml("sup-ped-lista")}</div>
+    </div></div>
+    ${seqs.map((seq, idx) => cardPedido(seq, idx === seqs.length - 1)).join("")}
   `;
   document.getElementById("sup-ped-destino").addEventListener("change", e => { suprimentoDestinoSel = e.target.value; renderSuprimentoPedidoTab(); });
   document.getElementById("sup-ped-semana").addEventListener("change", e => { suprimentoSemanaSel = parseInt(e.target.value,10); renderSuprimentoPedidoTab(); });
@@ -1287,43 +1308,61 @@ function renderSuprimentoPedidoTab(){
     const b = e.target.closest("button[data-lista]"); if(!b) return;
     suprimentoListaSel = b.dataset.lista; renderSuprimentoPedidoTab();
   });
-  if(status==="rascunho"){
-    document.getElementById("sup-ped-fechar").addEventListener("click", async () => {
-      if(!pedido){ showAlert("Informe ao menos um item antes de fechar a separação."); return; }
-      if(!confirm("Fechar a separação deste pedido? Isso vai dar baixa real no estoque (das 2 listas, não só da que está em tela).")) return;
-      const ok = await fecharSuprimentoPedido(pedido.id);
-      if(ok) renderSuprimentoPedidoTab();
-    });
-  }
-  if(status==="separado"){
-    document.getElementById("sup-ped-entregue").addEventListener("click", async () => {
-      const ok = await marcarSuprimentoPedidoEntregue(pedido.id);
-      if(ok) renderSuprimentoPedidoTab();
-    });
-  }
-  if(!travado){
-    // editar estoque local/ajuste recalcula o sugerido automaticamente, A MENOS que o pedido final já
-    // tenha sido editado manualmente antes (preserva a escolha do usuário em vez de sobrescrever).
+  sub.querySelectorAll("[data-sup-fechar]").forEach(b => b.addEventListener("click", async () => {
+    const seq = parseInt(b.dataset.supFechar, 10) || 0;
+    const pedido = suprimentoPedidoAtual(destino.tipo, destino.id, suprimentoSemanaSel, seq);
+    if(!pedido){ showAlert("Informe ao menos um item antes de fechar a separação."); return; }
+    if(!confirm("Fechar a separação deste pedido? Isso vai dar baixa real no estoque (das 2 listas, não só da que está em tela).")) return;
+    const ok = await fecharSuprimentoPedido(pedido.id);
+    if(ok) renderSuprimentoPedidoTab();
+  }));
+  sub.querySelectorAll("[data-sup-entregue]").forEach(b => b.addEventListener("click", async () => {
+    const seq = parseInt(b.dataset.supEntregue, 10) || 0;
+    const pedido = suprimentoPedidoAtual(destino.tipo, destino.id, suprimentoSemanaSel, seq);
+    if(!pedido) return;
+    const ok = await marcarSuprimentoPedidoEntregue(pedido.id);
+    if(ok) renderSuprimentoPedidoTab();
+  }));
+  // "+ Pedido extra"/"Cancelar pedido extra" só mexem no Set local (nada é gravado até o usuário editar
+  // algo da caixa nova) — mesmo comportamento do café/padaria.
+  sub.querySelectorAll("[data-sup-extra]").forEach(b => b.addEventListener("click", () => {
+    suprimentoExtrasAbertos.add(suprimentoChaveExtra(destino.tipo, destino.id, suprimentoSemanaSel, parseInt(b.dataset.supExtra, 10)));
+    renderSuprimentoPedidoTab();
+  }));
+  sub.querySelectorAll("[data-sup-cancelar-extra]").forEach(b => b.addEventListener("click", () => {
+    suprimentoExtrasAbertos.delete(suprimentoChaveExtra(destino.tipo, destino.id, suprimentoSemanaSel, parseInt(b.dataset.supCancelarExtra, 10)));
+    renderSuprimentoPedidoTab();
+  }));
+  // editar estoque local/ajuste recalcula o sugerido automaticamente, A MENOS que o pedido final já
+  // tenha sido editado manualmente antes (preserva a escolha do usuário em vez de sobrescrever).
+  // Cada caixa (seq) tem sua própria <tbody>, então os inputs são sempre lidos dentro dela — o mesmo
+  // insumo pode aparecer em 2 caixas (pedido normal + extra) sem um pisar no outro.
+  seqs.forEach(seq => {
+    const pedido = suprimentoPedidoAtual(destino.tipo, destino.id, suprimentoSemanaSel, seq);
+    if(pedido && pedido.status !== "rascunho") return; // travado, sem inputs editáveis nesta caixa
+    const itensDoPedido = new Map(((pedido && pedido.itens) || []).map(it => [it.insumo_id, it]));
+    const tbody = sub.querySelector(`tbody[data-sup-tbody-seq="${seq}"]`);
+    if(!tbody) return;
     const salvarLinha = async (id, campoTocado) => {
-      const estEl = document.querySelector(`.sup-ped-estoque[data-id="${id}"]`);
-      const ajEl = document.querySelector(`.sup-ped-ajuste[data-id="${id}"]`);
+      const estEl = tbody.querySelector(`.sup-ped-estoque[data-id="${id}"]`);
+      const ajEl = tbody.querySelector(`.sup-ped-ajuste[data-id="${id}"]`);
       let finalParaEnviar = null;
       if(campoTocado === "final"){
-        finalParaEnviar = document.querySelector(`.sup-ped-final[data-id="${id}"]`).value;
+        finalParaEnviar = tbody.querySelector(`.sup-ped-final[data-id="${id}"]`).value;
       } else {
         const existente = itensDoPedido.get(id);
         if(existente && Math.abs((existente.pedido_final||0) - (existente.pedido_sugerido||0)) > 0.0005) finalParaEnviar = existente.pedido_final;
       }
-      await salvarItemSuprimentoPedido(destino.tipo, destino.id, suprimentoSemanaSel, id, estEl.value, ajEl.value, finalParaEnviar);
+      await salvarItemSuprimentoPedido(destino.tipo, destino.id, suprimentoSemanaSel, id, estEl.value, ajEl.value, finalParaEnviar, seq);
       renderSuprimentoPedidoTab();
     };
-    document.getElementById("sup-ped-tbody").querySelectorAll(".sup-ped-estoque, .sup-ped-ajuste").forEach(inp => {
+    tbody.querySelectorAll(".sup-ped-estoque, .sup-ped-ajuste").forEach(inp => {
       inp.addEventListener("change", () => salvarLinha(inp.dataset.id, "auto"));
     });
-    document.getElementById("sup-ped-tbody").querySelectorAll(".sup-ped-final").forEach(inp => {
+    tbody.querySelectorAll(".sup-ped-final").forEach(inp => {
       inp.addEventListener("change", () => salvarLinha(inp.dataset.id, "final"));
     });
-  }
+  });
 }
 
 function renderSuprimentoItensTab(){
@@ -1436,6 +1475,175 @@ function renderSuprimentoOrcamentoTab(){
     inp.addEventListener("change", async () => { await salvarSuprimentoOrcamentoFixo(inp.dataset.un, suprimentoMesSel, inp.value); renderSuprimentoOrcamentoTab(); });
   });
   if(window.lucide) lucide.createIcons();
+}
+
+// 25/11/2026, pedido do Marcelo: relatório de pedidos SEPARADOS/ENTREGUES por cliente e período, detalhado
+// por insumo — mesmo template do fechamento mensal do café (busca → tabela resumo → Excel com 1 aba por
+// destino + aba RESUMO). "Enviado" aqui conta status separado (baixou estoque) OU entregue (confirmado
+// pelo Marcelo via AskUserQuestion); cancelado nunca entra. Filtra pela data de referência da semana
+// (suprimento_pedidos.data = a segunda-feira daquela semana), igual ao período usado em "De"/"Até".
+function renderSuprimentoEnviosTab(){
+  const sub = document.getElementById("sup-sub-body");
+  const hoje = hojeYMD();
+  const primeiroDiaMes = hoje.slice(0,8) + "01";
+  const destinosTodos = suprimentoDestinos();
+  sub.innerHTML = `<div class="panel"><div class="panel-head"><h3 style="font-size:14px;">Relatório de pedidos separados/enviados — por cliente e período</h3></div>
+    <div class="panel-body">
+      <div class="footnote" style="margin-bottom:10px;">Busca os pedidos já <b>separados</b> ou <b>entregues</b> no período, detalhado por insumo (quantidade, custo e total) — pra acompanhar o que foi de fato enviado a cada unidade/cliente. Pedido em rascunho ou cancelado não entra.</div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
+        <div class="field" style="max-width:220px; margin:0;"><label style="font-size:11px;">Destino</label>
+          <select id="sup-env-destino" class="select-like-semana">
+            <option value="">Todos os destinos</option>
+            ${destinosTodos.map(d => `<option value="${suprimentoDestinoChave(d.tipo,d.id)}">${escapeHtml(d.nome)}</option>`).join("")}
+          </select>
+        </div>
+        <div class="field" style="max-width:150px; margin:0;"><label style="font-size:11px;">De</label>
+          <input type="date" id="sup-env-de" value="${primeiroDiaMes}"></div>
+        <div class="field" style="max-width:150px; margin:0;"><label style="font-size:11px;">Até</label>
+          <input type="date" id="sup-env-ate" value="${hoje}"></div>
+        <button type="button" class="btn small primary" id="sup-env-pesquisar">🔍 Pesquisar</button>
+      </div>
+      <div id="sup-env-resultado" style="margin-top:14px;"></div>
+    </div></div>`;
+  let envUltimo = null; // guarda o último resultado pesquisado, pra "Gerar Excel" não ter que buscar de novo
+  const btnPesquisar = document.getElementById("sup-env-pesquisar");
+  btnPesquisar.addEventListener("click", async () => {
+    const destinoChave = document.getElementById("sup-env-destino").value;
+    const de = document.getElementById("sup-env-de").value;
+    const ate = document.getElementById("sup-env-ate").value;
+    const resultadoEl = document.getElementById("sup-env-resultado");
+    if(!de || !ate){ showAlert("Escolha o período (De/Até)."); return; }
+    if(de > ate){ showAlert("A data \"De\" não pode ser depois da data \"Até\"."); return; }
+    btnPesquisar.disabled = true; btnPesquisar.textContent = "Pesquisando...";
+    const { porDestino } = await suprimentoEnviosBuscar(destinoChave, de, ate);
+    btnPesquisar.disabled = false; btnPesquisar.textContent = "🔍 Pesquisar";
+    resultadoEl.innerHTML = suprimentoEnviosRenderResultado(de, ate, porDestino);
+    envUltimo = { de, ate, porDestino };
+    const btnExportar = document.getElementById("sup-env-exportar");
+    if(btnExportar) btnExportar.addEventListener("click", () => {
+      suprimentoEnviosGerarExcel(envUltimo.de, envUltimo.ate, envUltimo.porDestino);
+    });
+  });
+}
+// busca todos os pedidos SEPARADOS/ENTREGUES no período (por data de referência da semana), detalhado
+// por insumo. destinoChaveOuVazio: "" = todos os destinos; senão "tipo|id" (ver suprimentoDestinoChave).
+async function suprimentoEnviosBuscar(destinoChaveOuVazio, de, ate){
+  let query = sb.from('suprimento_pedidos').select('destino_tipo,destino_id,semana,data,seq,status,itens')
+    .in('status', ['separado','entregue']).gte('data', de).lte('data', ate).order('data');
+  if(destinoChaveOuVazio){
+    const [tipo, idStr] = destinoChaveOuVazio.split('|');
+    query = query.eq('destino_tipo', tipo);
+    query = idStr ? query.eq('destino_id', idStr) : query.is('destino_id', null);
+  }
+  const { data, error } = await query;
+  const porDestino = new Map();
+  if(error){ showAlert("Erro ao buscar relatório de envios: " + error.message); return { porDestino }; }
+  const nomePorChave = new Map(suprimentoDestinos().map(d => [suprimentoDestinoChave(d.tipo,d.id), d.nome]));
+  (data || []).forEach(row => {
+    const chave = suprimentoDestinoChave(row.destino_tipo, row.destino_id);
+    if(!porDestino.has(chave)) porDestino.set(chave, { nome: nomePorChave.get(chave) || `${row.destino_tipo} (desativado)`, linhas: [] });
+    (row.itens || []).forEach(it => {
+      if(!it.pedido_final) return; // 0 = não entrou no pedido final desta semana, não soma nem lista
+      const ins = insumos.get(it.insumo_id);
+      const valorTotal = it.subtotal != null ? it.subtotal : Math.round(it.pedido_final * (it.custo_unitario||0) * 100) / 100;
+      porDestino.get(chave).linhas.push({
+        data: row.data, semana: row.semana, status: row.status, seq: row.seq||0,
+        insumo: ins ? ins.nome : "—",
+        quantidade: it.pedido_final, custo_unitario: it.custo_unitario || 0, valor_total: valorTotal
+      });
+    });
+  });
+  return { porDestino };
+}
+function suprimentoEnviosRenderResultado(de, ate, porDestino){
+  const resumo = [...porDestino.entries()].map(([chave, d]) => {
+    const total = d.linhas.reduce((s,l) => s + l.valor_total, 0);
+    const semanas = new Set(d.linhas.map(l => l.semana)).size;
+    return { chave, nome: d.nome, linhas: d.linhas, total, semanas };
+  }).sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
+  if(!resumo.length){
+    return `<div class="empty-state">Nenhum pedido separado/entregue entre ${escapeHtml(fmtDataYMD(de))} e ${escapeHtml(fmtDataYMD(ate))}.</div>`;
+  }
+  const grandTotal = resumo.reduce((s,r) => s + r.total, 0);
+  return `
+    <div class="table-wrap"><table style="font-size:12.5px;"><thead><tr><th>Destino</th><th class="num-cell">Semanas</th><th class="num-cell">Total</th></tr></thead><tbody>
+      ${resumo.map(r => `<tr><td>${escapeHtml(r.nome)}</td><td class="num-cell">${r.semanas}</td><td class="num-cell">${fmtMoney(r.total)}</td></tr>`).join("")}
+    </tbody></table></div>
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:10px; padding-top:10px; border-top:1px dashed var(--border);">
+      <span class="footnote" style="margin:0;">Total do período</span>
+      <b>${fmtMoney(grandTotal)}</b>
+    </div>
+    <div style="margin-top:10px;"><button type="button" class="btn small primary" id="sup-env-exportar">⬇ Gerar Excel</button></div>`;
+}
+function suprimentoEnviosGerarExcel(de, ate, porDestino){
+  if(typeof XLSX === "undefined"){ showAlert("Biblioteca de Excel não carregou — verifique a conexão e recarregue a página."); return; }
+  const THIN = {style:"thin", color:{rgb:"FFB9ADA6"}};
+  const BORDER_ALL = {top:THIN, bottom:THIN, left:THIN, right:THIN};
+  const HEADER_STYLE = {
+    font:{bold:true, color:{rgb:"FFFFFFFF"}},
+    fill:{patternType:"solid", fgColor:{rgb:"FF7A2328"}},
+    border:BORDER_ALL,
+    alignment:{horizontal:"center", vertical:"center", wrapText:true}
+  };
+  const TITLE_STYLE = {font:{bold:true, sz:12}};
+  const MONEY_FMT = '"R$" #,##0.00';
+  const DATE_FMT = "dd/mm/yyyy";
+  const setStyle = (ws, r, c, style) => { const addr = XLSX.utils.encode_cell({r,c}); if(ws[addr]) ws[addr].s = style; };
+  const STATUS_LABEL = {separado:"Separado", entregue:"Entregue"};
+
+  const wb = XLSX.utils.book_new();
+  const resumoRows = [["Destino","Período","Total (R$)"]];
+  const resumo = [...porDestino.entries()].map(([chave, d]) => ({
+    nome: d.nome, linhas: d.linhas, total: d.linhas.reduce((s,l) => s + l.valor_total, 0)
+  })).filter(r => r.linhas.length).sort((a,b) => normalizeText(a.nome).localeCompare(normalizeText(b.nome)));
+
+  resumo.forEach(r => {
+    const aoa = [
+      [`Destino: ${r.nome}`], [`Período: ${fmtDataYMD(de)} a ${fmtDataYMD(ate)}`], [],
+      ["DATA DE REFERÊNCIA (SEMANA)","INSUMO","STATUS","QUANTIDADE","CUSTO UNITÁRIO","TOTAL"]
+    ];
+    const linhas = r.linhas.slice().sort((a,b) => a.data === b.data ? a.insumo.localeCompare(b.insumo,'pt-BR') : a.data.localeCompare(b.data));
+    linhas.forEach(l => aoa.push([new Date(l.data+"T00:00:00"), l.insumo, STATUS_LABEL[l.status] || l.status, l.quantidade, l.custo_unitario, l.valor_total]));
+    aoa.push([]);
+    aoa.push([null, null, null, null, "TOTAL GERAL", r.total]);
+    resumoRows.push([r.nome, `${fmtDataYMD(de)} a ${fmtDataYMD(ate)}`, r.total.toFixed(2)]);
+
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = [{wch:20},{wch:28},{wch:12},{wch:12},{wch:14},{wch:14}];
+    const HEADER_ROW = 3, DATA_START = 4, DATA_END = HEADER_ROW + linhas.length, TOTAL_ROW = aoa.length - 1;
+    for(let rI=0; rI<=1; rI++) setStyle(ws, rI, 0, TITLE_STYLE);
+    for(let cI=0; cI<6; cI++) setStyle(ws, HEADER_ROW, cI, HEADER_STYLE);
+    for(let rI=DATA_START; rI<=DATA_END; rI++){
+      for(let cI=0; cI<6; cI++){
+        const style = {border:BORDER_ALL};
+        if(cI===0) style.numFmt = DATE_FMT;
+        if(cI===3) style.alignment = {horizontal:"center"};
+        if(cI===4 || cI===5) style.numFmt = MONEY_FMT;
+        setStyle(ws, rI, cI, style);
+      }
+    }
+    setStyle(ws, TOTAL_ROW, 4, {font:{bold:true}, border:{top:{style:"medium",color:{rgb:"FF7A2328"}}}, alignment:{horizontal:"right"}});
+    setStyle(ws, TOTAL_ROW, 5, {font:{bold:true}, border:{top:{style:"medium",color:{rgb:"FF7A2328"}}}, numFmt:MONEY_FMT});
+
+    let nome = r.nome.substring(0,26), n2=2, finalNome = nome;
+    while(wb.SheetNames.includes(finalNome)){ finalNome = `${nome.substring(0,24)}_${n2++}`; }
+    XLSX.utils.book_append_sheet(wb, ws, finalNome);
+  });
+
+  const resumoWs = XLSX.utils.aoa_to_sheet(resumoRows);
+  resumoWs['!cols'] = [{wch:26},{wch:22},{wch:14}];
+  for(let cI=0; cI<3; cI++) setStyle(resumoWs, 0, cI, HEADER_STYLE);
+  for(let rI=1; rI<resumoRows.length; rI++){
+    for(let cI=0; cI<3; cI++){
+      const style = {border:BORDER_ALL};
+      if(cI===2) style.alignment = {horizontal:"right"};
+      setStyle(resumoWs, rI, cI, style);
+    }
+  }
+  XLSX.utils.book_append_sheet(wb, resumoWs, "RESUMO");
+  wb.SheetNames.splice(wb.SheetNames.indexOf("RESUMO"),1); wb.SheetNames.unshift("RESUMO");
+  const stamp = hojeYMD().replace(/-/g,"");
+  XLSX.writeFile(wb, `Suprimento_envios_${stamp}.xlsx`);
 }
 
 // Conteúdo do botão "Orientações" (topbar, ao lado do título) — um texto por tela.
@@ -2990,15 +3198,26 @@ async function salvarSuprimentoListaDoInsumo(insumoId, listaOuNull){
 }
 
 /* ---- pedido / separação (por SEMANA — fornecimento às unidades transportadas é semanal) ---- */
-function suprimentoPedidoAtual(destinoTipo, destinoId, semana){
-  return [...suprimentoPedidos.values()].find(r => r.destino_tipo===destinoTipo && (r.destino_id||null)===(destinoId||null) && r.semana===semana) || null;
+// 25/11/2026, confirmado pelo Marcelo: mesmo mecanismo de "pedido extra" do café/padaria. seq=0 é sempre
+// o pedido normal da semana; seq>0 é extra, só aparece depois que a caixa anterior já estiver
+// separada/entregue (ver renderSuprimentoPedidoTab). Chave local das caixas abertas sem save ainda:
+// "destino_tipo|destino_id__semana__seq".
+function suprimentoChaveExtra(destinoTipo, destinoId, semana, seq){ return `${suprimentoDestinoChave(destinoTipo,destinoId)}__${semana}__${seq||0}`; }
+function suprimentoSeqsDestinoSemana(destinoTipo, destinoId, semana){
+  const doCache = [...suprimentoPedidos.values()].filter(r => r.destino_tipo===destinoTipo && (r.destino_id||null)===(destinoId||null) && r.semana===semana).map(r => r.seq||0);
+  const prefixo = `${suprimentoDestinoChave(destinoTipo,destinoId)}__${semana}__`;
+  const abertos = [...suprimentoExtrasAbertos].filter(k => k.startsWith(prefixo)).map(k => parseInt(k.slice(prefixo.length), 10));
+  return [...new Set([0, ...doCache, ...abertos])].sort((a,b) => a - b);
+}
+function suprimentoPedidoAtual(destinoTipo, destinoId, semana, seq=0){
+  return [...suprimentoPedidos.values()].find(r => r.destino_tipo===destinoTipo && (r.destino_id||null)===(destinoId||null) && r.semana===semana && (r.seq||0)===seq) || null;
 }
 function suprimentoCalcularSugerido(estoqueLocal, ajuste, minimoQtd){
   return Math.max(0, (minimoQtd||0) - (estoqueLocal||0) + (ajuste||0));
 }
 // grava (upsert) um item do pedido da semana — cria o pedido (status rascunho) se ainda não existir.
 // pedidoFinalStrOuNull null/"" => usa o sugerido calculado (comportamento padrão, igual à planilha).
-async function salvarItemSuprimentoPedido(destinoTipo, destinoId, semana, insumoId, estoqueLocalStr, ajusteStr, pedidoFinalStrOuNull){
+async function salvarItemSuprimentoPedido(destinoTipo, destinoId, semana, insumoId, estoqueLocalStr, ajusteStr, pedidoFinalStrOuNull, seq=0){
   const minimoRow = suprimentoMinimoPorDestino(destinoTipo, destinoId).get(insumoId);
   const estoqueLocal = (estoqueLocalStr===""||estoqueLocalStr===null) ? 0 : Math.max(0, parseFloat(String(estoqueLocalStr).replace(",",".")) || 0);
   const ajuste = (ajusteStr===""||ajusteStr===null) ? 0 : (parseFloat(String(ajusteStr).replace(",",".")) || 0);
@@ -3006,7 +3225,7 @@ async function salvarItemSuprimentoPedido(destinoTipo, destinoId, semana, insumo
   const pedidoFinal = (pedidoFinalStrOuNull===undefined || pedidoFinalStrOuNull===null || pedidoFinalStrOuNull==="") ? sugerido : Math.max(0, parseFloat(String(pedidoFinalStrOuNull).replace(",",".")) || 0);
   const ins = insumos.get(insumoId);
   const custoUnitario = ins ? (ins.custo_kg_l_und||0) : 0;
-  const pedido = suprimentoPedidoAtual(destinoTipo, destinoId, semana);
+  const pedido = suprimentoPedidoAtual(destinoTipo, destinoId, semana, seq);
   const itens = pedido ? [...(pedido.itens||[])] : [];
   const idx = itens.findIndex(it => it.insumo_id === insumoId);
   const novoItem = { insumo_id: insumoId, estoque_local: estoqueLocal, ajuste, pedido_sugerido: sugerido, pedido_final: pedidoFinal, custo_unitario: custoUnitario, subtotal: +(pedidoFinal*custoUnitario).toFixed(2) };
@@ -3018,11 +3237,12 @@ async function salvarItemSuprimentoPedido(destinoTipo, destinoId, semana, insumo
       if(error) throw error;
     } else {
       const dataRef = dataDoDia(semana, "SEGUNDA").toISOString().slice(0,10);
-      const payload = { destino_tipo:destinoTipo, destino_id:destinoId||null, semana, data: dataRef, itens, valor_total: valorTotal, status:"rascunho", criado_por: usuarioId||null };
+      const payload = { destino_tipo:destinoTipo, destino_id:destinoId||null, semana, seq, data: dataRef, itens, valor_total: valorTotal, status:"rascunho", criado_por: usuarioId||null };
       const { error } = await sb.from('suprimento_pedidos').insert([payload]);
       if(error) throw error;
     }
     await loadSuprimentoPedidos();
+    suprimentoExtrasAbertos.delete(suprimentoChaveExtra(destinoTipo, destinoId, semana, seq)); // virou linha real
   }catch(e){ showAlert(mensagemErro(e, "Erro ao salvar item do pedido: ")); }
 }
 // Fecha a lista de separação: trava o pedido (status=separado) e gera a baixa real no estoque
@@ -3079,6 +3299,9 @@ async function salvarSuprimentoOrcamentoFixo(unidade, competenciaYMD, valorStr){
 }
 // atribui o gasto da semana ao mês pela QUARTA-feira dela — mesmo critério que o resto do sistema
 // usa pra decidir de qual mês é uma semana que atravessa a virada (ver mesDoDia/MESES_REFERENCIA).
+// 25/11/2026: não precisou mudar nada aqui por causa do pedido extra (seq) — já soma TODAS as linhas do
+// destino no mês (não filtra por seq), então um pedido extra confirmado no mesmo destino/semana só soma
+// mais um pedido no total, igual à mesma lógica já aplicada no fechamento do café.
 function suprimentoGastoNoMes(destinoTipo, destinoId, competenciaYMD){
   const mesId = competenciaYMD.slice(0,7);
   let total = 0, nPedidos = 0;
@@ -10511,6 +10734,9 @@ let suprimentoSemanaSel = null; // nº da semana (mesma contagem de Cardápio/Co
 let suprimentoFilter = "";
 let suprimentoListaSel = "limpeza_temperos"; // "limpeza_temperos" | "cafe_suco" — qual das 2 listas está em tela
 let suprimentoMesSel = null; // YYYY-MM-01, pro painel de orçamento
+// 25/11/2026, mesmo padrão do café/padaria: caixa extra aberta na tela (destino|semana|seq) mas ainda
+// sem nenhuma linha salva no banco — só em memória, some ao recarregar a página.
+let suprimentoExtrasAbertos = new Set(); // "destino_tipo|destino_id__semana__seq"
 
 // "outros" (refrigerante, lanche, etc.) continua fora da lista de compra — só refeição aqui.
 // É o que alimenta a grade de Previsão de consumo / Totais editáveis (ainda só refeição).
