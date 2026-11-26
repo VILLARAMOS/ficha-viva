@@ -3859,6 +3859,10 @@ function renderEstoqueContagem(){
   const contagem = contagemPorSemana(estoqueSemanaSel, estoqueUnidadeSel);
   const { total: valorTotal, nInsumosContados } = valorEstoqueContadoPorGrupo(estoqueSemanaSel, estoqueUnidadeSel);
   const saldoCalc = saldosPorUnidade(estoqueUnidadeSel);
+  // 26/11/2026, pedido do Marcelo: saldo negativo nunca é estoque físico real — é sinal de erro de
+  // lançamento (baixa maior que o disponível, insumo fundido errado, etc.) — então vira alerta aqui e
+  // na lista impressa, não só algo visível linha a linha.
+  const insumosNegativos = [...saldoCalc.entries()].filter(([,q]) => q < -0.0005).length;
   const outraUn = estoqueUnidadeSel === "matriz" ? "filial" : "matriz";
   const resumoOutra = valorEstoqueContadoPorGrupo(estoqueSemanaSel, outraUn);
   const diasMaisAntigo = [...contagem.values()].reduce((max,row) => { const d = diasDesdeContagem(row.data_contagem); return d!==null && d>max ? d : max; }, 0);
@@ -3890,8 +3894,10 @@ function renderEstoqueContagem(){
           ${estoqueKpiCard({label:`Valor contado · ${nomeUn}`, value: fmtMoney(valorTotal)})}
           ${estoqueKpiCard({label:`Valor contado · ${nomeUnidadeCompra(outraUn)}`, value: resumoOutra.nInsumosContados ? fmtMoney(resumoOutra.total) : "—", sub: resumoOutra.nInsumosContados ? `${resumoOutra.nInsumosContados} itens` : "sem contagem nesta semana"})}
           ${estoqueKpiCard({tone: nInsumosContados ? (desatualizado ? "warn" : "ok") : "", label:"Contagem mais antiga", value: nInsumosContados ? diasMaisAntigo+"d" : "—", sub: nInsumosContados && desatualizado ? `acima de ${ESTOQUE_DIAS_ALERTA} dias — reconte` : ""})}
+          ${estoqueKpiCard({tone: insumosNegativos ? "critical" : "ok", label:`Saldo negativo · ${nomeUn}`, value: String(insumosNegativos), sub: insumosNegativos ? "erro de lançamento — nunca é estoque físico real" : "nenhum"})}
         </div>
         ${nInsumosContados && desatualizado ? `<div class="insight-list" style="margin-bottom:14px;"><div class="insight-item warn"><span class="dot"></span><span>Pelo menos uma contagem desta semana tem mais de ${ESTOQUE_DIAS_ALERTA} dias — reconte antes de confiar no abatimento da Lista de compra.</span></div></div>` : ""}
+        ${insumosNegativos ? `<div class="insight-list" style="margin-bottom:14px;"><div class="insight-item critical"><span class="dot"></span><span>${insumosNegativos} insumo${insumosNegativos===1?"":"s"} com saldo negativo no kardex (${nomeUn}) — revise os lançamentos antes de confiar no saldo pra contagem/ajuste.</span></div></div>` : ""}
         <div class="search-bar" style="margin-bottom:0;">
           <input type="text" id="es-search" placeholder="Buscar insumo…" value="${escapeHtml(estoqueFilter)}">
           <select id="es-grupo"><option value="">Todos os grupos de compra</option>${grupos.map(g=>`<option value="${escapeHtml(g)}" ${estoqueGrupoFilter===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}</select>
@@ -3931,11 +3937,12 @@ function renderEstoqueContagem(){
       const dias = row ? diasDesdeContagem(row.data_contagem) : null;
       const alerta = dias!==null && dias > ESTOQUE_DIAS_ALERTA;
       const saldo = saldoCalc.get(r.id) || 0;
+      const saldoNegativo = saldo < -0.0005;
       return `<tr>
         <td class="name-cell">${escapeHtml(r.nome)}</td>
         <td style="font-size:12.5px;">${escapeHtml(r.grupo_compra||"—")}</td>
         <td>${escapeHtml(r.unidade_medida||"—")}</td>
-        <td class="num-cell">${fmtNum(saldo,3)}</td>
+        <td class="num-cell">${saldoNegativo ? `<span class="chip critical" title="Saldo negativo — erro de lançamento, nunca é estoque físico real"><span class="dot"></span>${fmtNum(saldo,3)}</span>` : fmtNum(saldo,3)}</td>
         <td class="num-cell"><input type="number" min="0" step="0.001" class="es-qtd-input" data-id="${r.id}" value="${row?row.quantidade_contada:""}" placeholder="—"></td>
         <td>${row ? escapeHtml(fmtDataYMD(row.data_contagem)) : "—"}${alerta?` <span class="chip warn"><span class="dot"></span>há ${dias}d</span>`:""}</td>
         <td style="text-align:center;"><input type="checkbox" class="es-ativo-toggle" style="width:auto; transform:scale(0.85);" data-id="${r.id}" ${r.ativo!==false?"checked":""} title="Desmarque para inativar este insumo (some da contagem e dos seletores)"></td>
@@ -4087,9 +4094,13 @@ function printHeadHtml(){
 }
 
 function imprimirListaContagem(semana, unidade, mostrarInativos){
+  // 26/11/2026, pedido do Marcelo: a lista impressa passou a trazer o saldo que o sistema tem hoje
+  // (kardex) ao lado do campo em branco de "Qtd. contada", pra comparação na hora da contagem física —
+  // e marca em vermelho/negrito o saldo negativo (sinal de erro de lançamento, nunca estoque físico real).
   let rows = [...insumos.entries()].map(([id,d]) => ({id, ...d}));
   if(!mostrarInativos) rows = rows.filter(r => r.ativo !== false);
   rows.sort((a,b) => normalizeText(a.grupo_compra||"").localeCompare(normalizeText(b.grupo_compra||"")) || normalizeText(a.nome||"").localeCompare(normalizeText(b.nome||"")));
+  const saldos = saldosPorUnidade(unidade);
   const w = window.open("", "_blank");
   if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Lista de contagem — ${escapeHtml(nomeUnidadeCompra(unidade))} — ${escapeHtml(rotuloSemana(semana))}</title>
@@ -4101,16 +4112,21 @@ function imprimirListaContagem(semana, unidade, mostrarInativos){
       th,td{border:1px solid #ccc; padding:6px 8px; text-align:left;}
       th{background:#f0f0f0;}
       td.num{text-align:right; width:110px;}
+      td.num.negativo{color:#b00020; font-weight:700;}
       .assinatura{margin-top:40px; display:flex; gap:40px;}
       .assinatura div{flex:1; border-top:1px solid #333; padding-top:4px; font-size:12px;}
       ${printHeadStyle()}
     </style></head><body>
     ${printHeadHtml()}
     <h1>Lista de contagem de estoque — ${escapeHtml(nomeUnidadeCompra(unidade))}</h1>
-    <div class="sub">${escapeHtml(rotuloSemana(semana))} · Data da contagem: ____/____/______</div>
+    <div class="sub">${escapeHtml(rotuloSemana(semana))} · Data da contagem: ____/____/______ · Saldo (sistema) é o que o kardex tem hoje — compare com a contagem física, não copie.</div>
     <table>
-      <thead><tr><th>Insumo</th><th>Grupo de compra</th><th>Unid.</th><th class="num">Qtd. contada</th></tr></thead>
-      <tbody>${rows.map(r => `<tr><td>${escapeHtml(r.nome)}</td><td>${escapeHtml(r.grupo_compra||"—")}</td><td>${escapeHtml(r.unidade_medida||"—")}</td><td class="num"></td></tr>`).join("")}</tbody>
+      <thead><tr><th>Insumo</th><th>Grupo de compra</th><th>Unid.</th><th class="num">Saldo (sistema)</th><th class="num">Qtd. contada</th></tr></thead>
+      <tbody>${rows.map(r => {
+        const saldo = saldos.get(r.id) || 0;
+        const negativo = saldo < -0.0005;
+        return `<tr><td>${escapeHtml(r.nome)}</td><td>${escapeHtml(r.grupo_compra||"—")}</td><td>${escapeHtml(r.unidade_medida||"—")}</td><td class="num${negativo?" negativo":""}">${fmtNum(saldo,3)}${negativo?" ⚠":""}</td><td class="num"></td></tr>`;
+      }).join("")}</tbody>
     </table>
     <div class="assinatura"><div>Contado por</div><div>Conferido por</div></div>
     <script>window.onload = () => window.print();<\/script>
