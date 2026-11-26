@@ -366,6 +366,19 @@ tbody tr:hover{background:var(--surface-alt);}
 .es-help summary{display:inline-flex; align-items:center; gap:6px;}
 .es-table{border-top:1px solid var(--border);}
 .es-table tbody tr:last-child td{border-bottom:none;}
+.es-cal-popup{position:absolute; top:calc(100% + 6px); right:0; z-index:40; width:252px; background:var(--surface); border:1px solid var(--border); border-radius:10px; box-shadow:0 8px 24px rgba(0,0,0,.14); padding:12px;}
+.es-cal-head{display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; font-weight:700; font-size:13px;}
+.es-cal-head button{background:none; border:none; cursor:pointer; color:var(--text-muted); padding:2px 6px; border-radius:6px;}
+.es-cal-head button:hover{background:var(--surface-alt); color:var(--text);}
+.es-cal-grid{display:grid; grid-template-columns:repeat(7,1fr); gap:2px; text-align:center;}
+.es-cal-dow{font-size:10px; color:var(--text-faint); text-transform:uppercase; padding:2px 0;}
+.es-cal-day{font-size:12px; padding:5px 0; border-radius:6px; cursor:pointer; color:var(--text);}
+.es-cal-day:hover{background:var(--surface-alt);}
+.es-cal-day.es-cal-outro-mes{color:var(--text-faint);}
+.es-cal-day.es-cal-contado{font-weight:700; color:var(--accent);}
+.es-cal-day.es-cal-semana-sel{background:var(--surface-alt);}
+.es-cal-day.es-cal-hoje{box-shadow:inset 0 0 0 1px var(--accent);}
+.es-cal-legenda{margin-top:8px; font-size:11px; color:var(--text-muted); display:flex; align-items:center; gap:6px;}
 .es-qtd-input{width:100px; height:30px; text-align:right; font:inherit; font-family:'IBM Plex Mono',monospace; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:0 8px;}
 .es-qtd-input:focus{outline:none; border-color:var(--accent);}
 .pend-entrada-head{font-weight:600; font-size:11px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.04em; padding-top:0;}
@@ -3750,7 +3763,11 @@ function renderTabInsumoEstoque(){
 function renderEstoqueContagem(){
   const semanasBase = semanasDisponiveisVendas();
   const semanaSugerida = Math.max(...semanasBase) + 1;
-  const opcoesSemana = [...new Set([...semanasBase, semanaSugerida, semanaSugerida+1])].sort((a,b)=>a-b);
+  // qualquer semana que já tenha contagem salva (desta unidade) entra nas opções também — senão,
+  // escolher uma data antiga pelo calendário (semana fora do intervalo normal do cardápio) seria
+  // descartado pelo reset logo abaixo e voltaria pra semana sugerida.
+  const semanasComContagem = [...new Set([...estoqueContagem.values()].filter(r => r.unidade === estoqueUnidadeSel).map(r => r.semana))];
+  const opcoesSemana = [...new Set([...semanasBase, semanaSugerida, semanaSugerida+1, ...semanasComContagem])].sort((a,b)=>a-b);
   if(estoqueSemanaSel === null || !opcoesSemana.includes(estoqueSemanaSel)) estoqueSemanaSel = semanaSugerida;
 
   const contagem = contagemPorSemana(estoqueSemanaSel, estoqueUnidadeSel);
@@ -3777,6 +3794,10 @@ function renderEstoqueContagem(){
         <div class="menu-controls" style="margin-bottom:14px;">
           <div class="seg-toggle" id="es-un-tabs">${UNIDADES_COMPRA.map(u => `<button type="button" data-esun="${u.id}" class="${estoqueUnidadeSel===u.id?"active":""}">${u.nome}</button>`).join("")}</div>
           <select id="es-semana">${opcoesSemana.map(s=>`<option value="${s}" ${s===estoqueSemanaSel?"selected":""}>${escapeHtml(rotuloSemana(s))} (${intervaloSemana(s)})${s===semanaSugerida?" (próxima)":""}</option>`).join("")}</select>
+          <div style="position:relative; display:inline-block;">
+            <button type="button" class="btn small" id="es-cal-btn" title="Abrir calendário"><i class="ico" data-lucide="calendar-days"></i></button>
+            <div id="es-cal-popup" class="es-cal-popup" style="display:none;"></div>
+          </div>
         </div>
         <div class="es-kpis inner">
           ${estoqueKpiCard({label:`Insumos contados · ${nomeUn}`, value: String(nInsumosContados)})}
@@ -3874,8 +3895,94 @@ function renderEstoqueContagem(){
   document.getElementById("es-search").addEventListener("input", e => { estoqueFilter = e.target.value; updateTable(); });
   document.getElementById("es-grupo").addEventListener("change", e => { estoqueGrupoFilter = e.target.value; updateTable(); });
   document.getElementById("es-inativos").addEventListener("change", e => { estoqueMostrarInativos = e.target.checked; updateTable(); });
+  document.getElementById("es-cal-btn").addEventListener("click", e => {
+    e.stopPropagation();
+    estoqueCalAberto = !estoqueCalAberto;
+    if(estoqueCalAberto) estoqueCalMesRef = dataDoDia(estoqueSemanaSel, "SEGUNDA");
+    renderEstoqueCalendarioPopup();
+  });
+  if(window.lucide) lucide.createIcons();
+  renderEstoqueCalendarioPopup();
+}
+
+// Popup de calendário da Contagem de estoque (26/11/2026, pedido do Marcelo): em vez de só rolar o
+// <select> de semanas, abre um mês com os dias em que já existe contagem salva (para a unidade
+// selecionada) em negrito — clicar num dia pula direto pra semana daquele dia.
+function renderEstoqueCalendarioPopup(){
+  const popup = document.getElementById("es-cal-popup");
+  if(!popup) return;
+  popup.style.display = estoqueCalAberto ? "" : "none";
+  if(!estoqueCalAberto) return;
+
+  const ref = estoqueCalMesRef || new Date();
+  const ano = ref.getUTCFullYear(), mes = ref.getUTCMonth();
+  const primeiroDiaMes = Date.UTC(ano, mes, 1);
+  // segunda-feira anterior (ou igual) ao dia 1, pra grade começar sempre na segunda
+  const diaSemanaDoDia1 = new Date(primeiroDiaMes).getUTCDay(); // 0=dom..6=sáb
+  const deslocaSegunda = (diaSemanaDoDia1 + 6) % 7; // 0 se já é segunda
+  const inicioGrade = primeiroDiaMes - deslocaSegunda * 86400000;
+
+  const datasContadas = new Set();
+  estoqueContagem.forEach(row => { if(row.unidade === estoqueUnidadeSel && row.data_contagem) datasContadas.add(row.data_contagem); });
+  const semanaAtualInicio = dataDoDia(estoqueSemanaSel, "SEGUNDA").getTime();
+  const semanaAtualFim = dataDoDia(estoqueSemanaSel, "DOMINGO").getTime();
+  const hojeYmd = hojeYMD();
+
+  const dias = [];
+  for(let i = 0; i < 42; i++){
+    const ms = inicioGrade + i * 86400000;
+    const d = new Date(ms);
+    const ymd = d.getUTCFullYear() + "-" + String(d.getUTCMonth()+1).padStart(2,"0") + "-" + String(d.getUTCDate()).padStart(2,"0");
+    dias.push({ ms, ymd, dia: d.getUTCDate(), outroMes: d.getUTCMonth() !== mes });
+  }
+
+  popup.innerHTML = `
+    <div class="es-cal-head">
+      <button type="button" id="es-cal-prev"><i class="ico" data-lucide="chevron-left"></i></button>
+      <span>${MESES_NOME[mes]} de ${ano}</span>
+      <button type="button" id="es-cal-next"><i class="ico" data-lucide="chevron-right"></i></button>
+    </div>
+    <div class="es-cal-grid">
+      ${["seg","ter","qua","qui","sex","sáb","dom"].map(d => `<div class="es-cal-dow">${d}</div>`).join("")}
+      ${dias.map(d => {
+        const classes = ["es-cal-day"];
+        if(d.outroMes) classes.push("es-cal-outro-mes");
+        if(datasContadas.has(d.ymd)) classes.push("es-cal-contado");
+        if(d.ms >= semanaAtualInicio && d.ms <= semanaAtualFim) classes.push("es-cal-semana-sel");
+        if(d.ymd === hojeYmd) classes.push("es-cal-hoje");
+        return `<div class="${classes.join(" ")}" data-ymd="${d.ymd}" title="${datasContadas.has(d.ymd)?"Já tem contagem salva neste dia":""}">${d.dia}</div>`;
+      }).join("")}
+    </div>
+    <div class="es-cal-legenda"><span class="es-cal-contado" style="font-weight:700;">9</span> dia com contagem salva</div>
+  `;
+  document.getElementById("es-cal-prev").addEventListener("click", e => {
+    e.stopPropagation();
+    estoqueCalMesRef = new Date(Date.UTC(ano, mes - 1, 1));
+    renderEstoqueCalendarioPopup();
+  });
+  document.getElementById("es-cal-next").addEventListener("click", e => {
+    e.stopPropagation();
+    estoqueCalMesRef = new Date(Date.UTC(ano, mes + 1, 1));
+    renderEstoqueCalendarioPopup();
+  });
+  popup.querySelectorAll(".es-cal-day").forEach(el => {
+    el.addEventListener("click", e => {
+      e.stopPropagation();
+      const sd = semanaDiaDaData(el.dataset.ymd);
+      if(!sd) return;
+      estoqueSemanaSel = sd.semana;
+      estoqueCalAberto = false;
+      renderEstoqueContagem();
+    });
+  });
   if(window.lucide) lucide.createIcons();
 }
+document.addEventListener("click", e => {
+  if(!estoqueCalAberto) return;
+  if(e.target.closest("#es-cal-popup") || e.target.closest("#es-cal-btn")) return;
+  estoqueCalAberto = false;
+  renderEstoqueCalendarioPopup();
+});
 
 // cabeçalho com o logo Villa Ramos, reaproveitado em todas as impressões. URL absoluta (resolvida a
 // partir da própria página) porque a janela de impressão abre em branco (about:blank) e não teria
@@ -10797,6 +10904,10 @@ let estoqueGrupoFilter = "";
 // 26/11/2026, pedido do Marcelo: lista de contagem estava muito longa pro estoquista — insumo inativo
 // (sem uso em nenhuma ficha/catálogo/café) passa a ficar oculto por padrão, igual ao cadastro de Insumos.
 let estoqueMostrarInativos = false;
+// 26/11/2026, pedido do Marcelo: selecionar a semana da Contagem por um calendário (mês), com os
+// dias que já têm contagem salva em negrito — mais fácil de achar do que rolar o <select> de semanas.
+let estoqueCalAberto = false;
+let estoqueCalMesRef = null; // Date (dia 1 do mês exibido no popup) — null = usa o mês da semana selecionada
 
 /* ===== Suprimentos (19/11/2026, ajustado 19/11/2026) — controle de consumo/abastecimento de
    limpeza/embalagens/descartáveis/temperos e café/suco nas unidades transportadas (contratos),
