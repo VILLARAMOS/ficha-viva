@@ -3512,7 +3512,7 @@ function renderTabInsumoCadastro(){
     <div class="search-bar">
       <input type="text" id="insumo-search" placeholder="Buscar insumo…" value="${escapeHtml(insumoFilter)}">
       <select id="insumo-grupo"><option value="">Todos os grupos de compra</option>${grupos.map(g=>`<option value="${escapeHtml(g)}" ${insumoGrupoFilter===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}</select>
-      <label class="footnote" style="align-self:center; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="insumo-inativos" style="width:auto;" ${insumoMostrarInativos?"checked":""}> mostrar inativos (fundidos)</label>
+      <label class="footnote" style="align-self:center; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="insumo-inativos" style="width:auto;" ${insumoMostrarInativos?"checked":""}> mostrar inativos</label>
       <span class="footnote" id="insumo-count" style="align-self:center;"></span>
     </div>
     <div class="panel">
@@ -3555,7 +3555,7 @@ function renderTabInsumoCadastro(){
     const tbody = document.getElementById("insumo-tbody");
     tbody.innerHTML = rows.map(r => `
               <tr${r.ativo===false?' style="opacity:.55;"':''}>
-                <td class="name-cell">${escapeHtml(r.nome)}${r.disponivel_como_receita?' <span class="chip neutral" title="Disponível como receita no Cardápio/Café da manhã">receita</span>':''}${r.ativo===false?' <span class="chip neutral" title="Fundido com outro insumo base">fundido</span>':''}</td>
+                <td class="name-cell">${escapeHtml(r.nome)}${r.disponivel_como_receita?' <span class="chip neutral" title="Disponível como receita no Cardápio/Café da manhã">receita</span>':''}${r.ativo===false?' <span class="chip neutral" title="Inativo — fundido com outro insumo ou desativado manualmente">inativo</span>':''}</td>
                 <td class="tag-sheet">${escapeHtml(r.grupo_compra||"—")}</td>
                 <td class="num-cell">${escapeHtml(r.unidade_medida||"—")} ${r.unidade_convertida?("· "+fmtNum(r.unidade_convertida,3)):""}</td>
                 <td class="num-cell">${fmtMoney(r.custo_unitario)}</td>
@@ -3788,6 +3788,7 @@ function renderEstoqueContagem(){
         <div class="search-bar" style="margin-bottom:0;">
           <input type="text" id="es-search" placeholder="Buscar insumo…" value="${escapeHtml(estoqueFilter)}">
           <select id="es-grupo"><option value="">Todos os grupos de compra</option>${grupos.map(g=>`<option value="${escapeHtml(g)}" ${estoqueGrupoFilter===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}</select>
+          <label class="footnote" style="align-self:center; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="es-inativos" style="width:auto;" ${estoqueMostrarInativos?"checked":""}> mostrar inativos</label>
           <span class="pend-count es-count" id="es-count"></span>
         </div>
       </div>
@@ -3809,10 +3810,11 @@ function renderEstoqueContagem(){
     else if(n === 0) showAlert("Nenhuma diferença entre a contagem e o saldo calculado — nada para ajustar.");
     renderEstoqueContagem();
   });
-  document.getElementById("es-imprimir").addEventListener("click", () => imprimirListaContagem(estoqueSemanaSel, estoqueUnidadeSel));
+  document.getElementById("es-imprimir").addEventListener("click", () => imprimirListaContagem(estoqueSemanaSel, estoqueUnidadeSel, estoqueMostrarInativos));
 
   function updateTable(){
     let rows = [...insumos.entries()].map(([id,d]) => ({id, ...d}));
+    if(!estoqueMostrarInativos) rows = rows.filter(r => r.ativo !== false);
     if(estoqueFilter.trim()) rows = rows.filter(r => normalizeText(r.nome||"").includes(normalizeText(estoqueFilter.trim())));
     if(estoqueGrupoFilter) rows = rows.filter(r => r.grupo_compra === estoqueGrupoFilter);
     rows.sort((a,b) => normalizeText(a.nome||"").localeCompare(normalizeText(b.nome||"")));
@@ -3857,6 +3859,7 @@ function renderEstoqueContagem(){
   updateTable();
   document.getElementById("es-search").addEventListener("input", e => { estoqueFilter = e.target.value; updateTable(); });
   document.getElementById("es-grupo").addEventListener("change", e => { estoqueGrupoFilter = e.target.value; updateTable(); });
+  document.getElementById("es-inativos").addEventListener("change", e => { estoqueMostrarInativos = e.target.checked; updateTable(); });
   if(window.lucide) lucide.createIcons();
 }
 
@@ -3873,8 +3876,10 @@ function printHeadHtml(){
   return `<div class="print-head"><img src="${PRINT_LOGO_URL}" alt="Villa Ramos"><div class="org">Grupo Villa Ramos</div></div>`;
 }
 
-function imprimirListaContagem(semana, unidade){
-  const rows = [...insumos.entries()].map(([id,d]) => ({id, ...d})).sort((a,b) => normalizeText(a.grupo_compra||"").localeCompare(normalizeText(b.grupo_compra||"")) || normalizeText(a.nome||"").localeCompare(normalizeText(b.nome||"")));
+function imprimirListaContagem(semana, unidade, mostrarInativos){
+  let rows = [...insumos.entries()].map(([id,d]) => ({id, ...d}));
+  if(!mostrarInativos) rows = rows.filter(r => r.ativo !== false);
+  rows.sort((a,b) => normalizeText(a.grupo_compra||"").localeCompare(normalizeText(b.grupo_compra||"")) || normalizeText(a.nome||"").localeCompare(normalizeText(b.nome||"")));
   const w = window.open("", "_blank");
   if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir."); return; }
   w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Lista de contagem — ${escapeHtml(nomeUnidadeCompra(unidade))} — ${escapeHtml(rotuloSemana(semana))}</title>
@@ -4086,6 +4091,7 @@ function openInsumoModal(id, opts){
           </div>
           <div class="footnote">Custo por kg/L/un (usado no cálculo das fichas): <strong id="f-preview">—</strong> &nbsp;=&nbsp; custo de compra ÷ unid. convertida</div>
           <div class="field"><label><input type="checkbox" id="f-como-receita" style="width:auto; display:inline-block; margin-right:6px;" ${existing && existing.disponivel_como_receita===true?"checked":""}> Disponível como receita (este insumo passa a aparecer na busca de itens do Cardápio/Café da manhã, como se fosse um prato pronto — ex.: kit talher, marmita, sobremesa pronta)</label></div>
+          <div class="field"><label><input type="checkbox" id="f-ativo" style="width:auto; display:inline-block; margin-right:6px;" ${!existing || existing.ativo!==false?"checked":""}> Ativo (some da Contagem de estoque e dos seletores de Ficha Técnica/Cardápio quando desmarcado)</label></div>
           ${existing ? historicoPrecoHtml(existing) : ""}
           ${existing ? `<div class="footnote" id="f-autor" style="margin-top:6px;">${ultimaAlteracaoTxt(existing)}</div>` : ""}
           <div class="footnote" id="err-msg" style="color:var(--critical); margin-top:10px;"></div>
@@ -4125,12 +4131,32 @@ function openInsumoModal(id, opts){
     if(isNaN(custo_unitario) || custo_unitario < 0){ errEl.textContent = "Informe um custo de compra válido."; return; }
     if(isNaN(unidade_convertida) || unidade_convertida <= 0){ errEl.textContent = "Informe uma unidade convertida maior que zero."; return; }
     const dupe = [...insumos.entries()].find(([iid,d]) => iid !== id && normalizeText(d.nome) === normalizeText(nome));
-    if(dupe){ errEl.textContent = `Já existe um insumo com esse nome: "${dupe[1].nome}".`; return; }
+    if(dupe){
+      // 26/11/2026, pedido do Marcelo: antes disso, um insumo "não encontrado" e um insumo inativo eram
+      // indistinguíveis pra quem cadastra — essa checagem já existia, só não dizia que o motivo era estar
+      // inativo, nem oferecia reativar em vez de bloquear sem saída.
+      if(dupe[1].ativo === false){
+        errEl.innerHTML = `Já existe um insumo <strong>inativo</strong> com esse nome: "${escapeHtml(dupe[1].nome)}". <button type="button" class="btn small" id="f-reativar-dupe" style="margin-left:6px;">Reativar este em vez de criar novo</button>`;
+        document.getElementById("f-reativar-dupe").onclick = async () => {
+          errEl.textContent = "Reativando…";
+          try{
+            const { error } = await sb.from('insumos').update({ ativo: true, ...carimbo() }).eq('id', dupe[0]);
+            if(error) throw error;
+            await loadInsumos();
+            if(opts.onSaved){ opts.onSaved(dupe[0]); } else { root.innerHTML = ""; renderInsumos(); }
+          }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao reativar: "); }
+        };
+      } else {
+        errEl.textContent = `Já existe um insumo com esse nome: "${dupe[1].nome}".`;
+      }
+      return;
+    }
     const data = {
       nome, unidade_medida, unidade_convertida, custo_unitario,
       custo_kg_l_und: custo_unitario / unidade_convertida,
       grupo_compra: grupo_compra || null,
-      disponivel_como_receita: document.getElementById("f-como-receita").checked
+      disponivel_como_receita: document.getElementById("f-como-receita").checked,
+      ativo: document.getElementById("f-ativo").checked
     };
     const antes = id ? insumos.get(id) : null;
     if(antes && antes.custo_unitario !== custo_unitario){
@@ -4194,7 +4220,25 @@ function openInsumoCompraModal(id, opts){
     const base = insumoBasePorNome(baseNomeDigitado);
     if(!base){ errEl.textContent = "Escolha um insumo base já cadastrado, da lista — o vínculo é obrigatório e não pode ser um nome novo."; return; }
     const dupe = [...insumosCompra.entries()].find(([iid,d]) => iid !== id && normalizeText(d.nome) === normalizeText(nome));
-    if(dupe){ errEl.textContent = `Já existe um produto de compra com esse nome: "${dupe[1].nome}".`; return; }
+    if(dupe){
+      // 26/11/2026, pedido do Marcelo: mesmo tratamento do insumo base — avisa que o motivo de "não
+      // encontrado" é estar inativo, e oferece reativar em vez de só bloquear a criação de um novo.
+      if(dupe[1].ativo === false){
+        errEl.innerHTML = `Já existe um produto de compra <strong>inativo</strong> com esse nome: "${escapeHtml(dupe[1].nome)}". <button type="button" class="btn small" id="fc-reativar-dupe" style="margin-left:6px;">Reativar este em vez de criar novo</button>`;
+        document.getElementById("fc-reativar-dupe").onclick = async () => {
+          errEl.textContent = "Reativando…";
+          try{
+            const { error } = await sb.from('insumos_compra').update({ ativo: true, ...carimbo() }).eq('id', dupe[0]);
+            if(error) throw error;
+            await loadInsumosCompra();
+            if(opts.onSaved){ opts.onSaved(dupe[0]); } else { root.innerHTML = ""; }
+          }catch(e){ errEl.textContent = mensagemErro(e, "Erro ao reativar: "); }
+        };
+      } else {
+        errEl.textContent = `Já existe um produto de compra com esse nome: "${dupe[1].nome}".`;
+      }
+      return;
+    }
     const data = { nome, insumo_base_id: base.id, ativo };
     Object.assign(data, carimbo());
     errEl.textContent = "Salvando…";
@@ -10736,6 +10780,9 @@ let estoqueUnidadeSel = "matriz";
 let estoqueSemanaSel = null;
 let estoqueFilter = "";
 let estoqueGrupoFilter = "";
+// 26/11/2026, pedido do Marcelo: lista de contagem estava muito longa pro estoquista — insumo inativo
+// (sem uso em nenhuma ficha/catálogo/café) passa a ficar oculto por padrão, igual ao cadastro de Insumos.
+let estoqueMostrarInativos = false;
 
 /* ===== Suprimentos (19/11/2026, ajustado 19/11/2026) — controle de consumo/abastecimento de
    limpeza/embalagens/descartáveis/temperos e café/suco nas unidades transportadas (contratos),
