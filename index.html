@@ -3512,7 +3512,7 @@ function renderTabInsumoCadastro(){
     <div class="search-bar">
       <input type="text" id="insumo-search" placeholder="Buscar insumo…" value="${escapeHtml(insumoFilter)}">
       <select id="insumo-grupo"><option value="">Todos os grupos de compra</option>${grupos.map(g=>`<option value="${escapeHtml(g)}" ${insumoGrupoFilter===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}</select>
-      <label class="footnote" style="align-self:center; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="insumo-inativos" style="width:auto;" ${insumoMostrarInativos?"checked":""}> mostrar inativos</label>
+      <label class="footnote" style="align-self:center; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="insumo-inativos" style="width:auto; transform:scale(0.8);" ${insumoMostrarInativos?"checked":""}> mostrar inativos</label>
       <span class="footnote" id="insumo-count" style="align-self:center;"></span>
     </div>
     <div class="panel">
@@ -3615,7 +3615,7 @@ function renderTabInsumoCompra(){
     <div class="search-bar">
       <input type="text" id="insumocompra-search" placeholder="Buscar produto de compra…" value="${escapeHtml(insumoCompraFilter)}">
       <select id="insumocompra-grupo"><option value="">Todos os grupos de compra</option>${grupos.map(g=>`<option value="${escapeHtml(g)}" ${insumoCompraGrupoFilter===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}</select>
-      <label class="footnote" style="align-self:center; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="insumocompra-inativos" style="width:auto;" ${insumoCompraMostrarInativos?"checked":""}> mostrar inativos</label>
+      <label class="footnote" style="align-self:center; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="insumocompra-inativos" style="width:auto; transform:scale(0.8);" ${insumoCompraMostrarInativos?"checked":""}> mostrar inativos</label>
       <span class="footnote" id="insumocompra-count" style="align-self:center;"></span>
     </div>
     <div class="panel">
@@ -3788,12 +3788,12 @@ function renderEstoqueContagem(){
         <div class="search-bar" style="margin-bottom:0;">
           <input type="text" id="es-search" placeholder="Buscar insumo…" value="${escapeHtml(estoqueFilter)}">
           <select id="es-grupo"><option value="">Todos os grupos de compra</option>${grupos.map(g=>`<option value="${escapeHtml(g)}" ${estoqueGrupoFilter===g?"selected":""}>${escapeHtml(g)}</option>`).join("")}</select>
-          <label class="footnote" style="align-self:center; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="es-inativos" style="width:auto;" ${estoqueMostrarInativos?"checked":""}> mostrar inativos</label>
+          <label class="footnote" style="align-self:center; display:flex; align-items:center; gap:4px;"><input type="checkbox" id="es-inativos" style="width:auto; transform:scale(0.8);" ${estoqueMostrarInativos?"checked":""}> mostrar inativos</label>
           <span class="pend-count es-count" id="es-count"></span>
         </div>
       </div>
       <div class="table-wrap es-table"><table>
-        <thead><tr><th>Insumo</th><th>Grupo de compra</th><th>Unidade</th><th style="text-align:right;">Saldo (kardex)</th><th style="text-align:right;">Qtd. contada</th><th>Contado em</th></tr></thead>
+        <thead><tr><th>Insumo</th><th>Grupo de compra</th><th>Unidade</th><th style="text-align:right;">Saldo (kardex)</th><th style="text-align:right;">Qtd. contada</th><th>Contado em</th><th style="text-align:center;">Ativo</th></tr></thead>
         <tbody id="es-tbody"></tbody>
       </table></div>
     </div>
@@ -3831,8 +3831,9 @@ function renderEstoqueContagem(){
         <td class="num-cell">${fmtNum(saldo,3)}</td>
         <td class="num-cell"><input type="number" min="0" step="0.001" class="es-qtd-input" data-id="${r.id}" value="${row?row.quantidade_contada:""}" placeholder="—"></td>
         <td>${row ? escapeHtml(fmtDataYMD(row.data_contagem)) : "—"}${alerta?` <span class="chip warn"><span class="dot"></span>há ${dias}d</span>`:""}</td>
+        <td style="text-align:center;"><input type="checkbox" class="es-ativo-toggle" style="width:auto; transform:scale(0.85);" data-id="${r.id}" ${r.ativo!==false?"checked":""} title="Desmarque para inativar este insumo (some da contagem e dos seletores)"></td>
       </tr>`;
-    }).join("") || `<tr><td colspan="6" class="empty-state">Nenhum insumo encontrado com este filtro.</td></tr>`;
+    }).join("") || `<tr><td colspan="7" class="empty-state">Nenhum insumo encontrado com este filtro.</td></tr>`;
     document.getElementById("es-tbody").querySelectorAll(".es-qtd-input").forEach(inp => {
       const onCommit = async () => {
         await salvarContagemEstoque(estoqueSemanaSel, estoqueUnidadeSel, inp.dataset.id, inp.value);
@@ -3853,6 +3854,19 @@ function renderEstoqueContagem(){
         const alvoId = nextId || inp.dataset.id; // sem próxima linha: mantém o foco na mesma
         const proximo = document.querySelector(`.es-qtd-input[data-id="${alvoId}"]`);
         if(proximo){ proximo.focus(); proximo.select(); }
+      });
+    });
+    document.getElementById("es-tbody").querySelectorAll(".es-ativo-toggle").forEach(chk => {
+      chk.addEventListener("change", async e => {
+        const id = e.target.dataset.id;
+        const ativo = e.target.checked;
+        const nome = insumos.get(id)?.nome || "";
+        e.target.disabled = true;
+        const { error } = await sb.from('insumos').update({ ativo, ...carimbo() }).eq('id', id);
+        if(error){ showAlert(mensagemErro(error, "Erro ao atualizar o insumo")); e.target.checked = !ativo; e.target.disabled = false; return; }
+        await loadInsumos();
+        if(!ativo) showAlert(`"${nome}" foi marcado como inativo.`);
+        renderEstoqueContagem();
       });
     });
   }
