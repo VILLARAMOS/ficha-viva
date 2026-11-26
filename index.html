@@ -374,11 +374,16 @@ tbody tr:hover{background:var(--surface-alt);}
 .es-cal-dow{font-size:10px; color:var(--text-faint); text-transform:uppercase; padding:2px 0;}
 .es-cal-day{font-size:12px; padding:5px 0; border-radius:6px; cursor:pointer; color:var(--text);}
 .es-cal-day:hover{background:var(--surface-alt);}
-.es-cal-day.es-cal-outro-mes{color:var(--text-faint);}
-.es-cal-day.es-cal-contado{font-weight:700; color:var(--accent);}
-.es-cal-day.es-cal-semana-sel{background:var(--surface-alt);}
-.es-cal-day.es-cal-hoje{box-shadow:inset 0 0 0 1px var(--accent);}
+.es-cal-outro-mes{color:var(--text-faint);}
+.es-cal-semana-sel{background:var(--surface-alt);}
+.es-cal-hoje{outline:1px solid var(--accent); outline-offset:-1px;}
+/* contado precisa se destacar sempre, esteja ou não na semana selecionada (pedido de Marcelo,
+   26/11/2026) — por isso é um "selo" preenchido (fundo sólido), não só negrito/cor de texto, que
+   senão passava despercebido ao lado do fundo cinza da semana selecionada. */
+.es-cal-contado{font-weight:800; color:#fff; background:var(--accent);}
+.es-cal-day.es-cal-contado:hover{background:var(--accent-strong);}
 .es-cal-legenda{margin-top:8px; font-size:11px; color:var(--text-muted); display:flex; align-items:center; gap:6px;}
+.es-cal-legenda .es-cal-contado{display:inline-flex; align-items:center; justify-content:center; width:18px; height:18px; border-radius:6px;}
 .es-qtd-input{width:100px; height:30px; text-align:right; font:inherit; font-family:'IBM Plex Mono',monospace; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:0 8px;}
 .es-qtd-input:focus{outline:none; border-color:var(--accent);}
 .pend-entrada-head{font-weight:600; font-size:11px; color:var(--text-faint); text-transform:uppercase; letter-spacing:.04em; padding-top:0;}
@@ -3965,7 +3970,7 @@ function renderEstoqueCalendarioPopup(){
         return `<div class="${classes.join(" ")}" data-ymd="${d.ymd}" title="${datasContadas.has(d.ymd)?"Já tem contagem salva neste dia":""}">${d.dia}</div>`;
       }).join("")}
     </div>
-    <div class="es-cal-legenda"><span class="es-cal-contado" style="font-weight:700;">9</span> dia com contagem salva</div>
+    <div class="es-cal-legenda"><span class="es-cal-contado">9</span> dia com contagem salva</div>
   `;
   document.getElementById("es-cal-prev").addEventListener("click", e => {
     e.stopPropagation();
