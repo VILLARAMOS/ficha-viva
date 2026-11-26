@@ -12395,7 +12395,6 @@ function renderTabPedidos(){
           <td>${statusChip(st)}</td>
           <td style="text-align:right; white-space:nowrap;">
             <button type="button" class="btn small ghost pd-imprimir" data-id="${id}" title="Imprimir">🖨️</button>
-            <button type="button" class="btn small ghost pd-conferir" data-id="${id}" title="Conferir">✓</button>
             <button type="button" class="btn small ghost pd-dup" data-id="${id}" title="Duplicar">⧉</button>
             <button type="button" class="btn small ghost pd-editar" data-id="${id}" title="Editar">✎</button>
             <button type="button" class="btn small ghost pd-excluir" data-id="${id}" title="Excluir" style="color:var(--critical);">🗑</button>
@@ -12405,7 +12404,6 @@ function renderTabPedidos(){
       document.getElementById("pd-tfoot").innerHTML = lista.length
         ? `<tr class="row-total"><td colspan="5" class="name-cell"><b>Total</b></td><td class="num-cell"><b>${fmtMoney(total)}</b></td><td colspan="2"></td></tr>` : "";
       document.querySelectorAll(".pd-imprimir").forEach(b => b.addEventListener("click", () => imprimirPedido(b.dataset.id)));
-      document.querySelectorAll(".pd-conferir").forEach(b => b.addEventListener("click", () => openPedidoDetalhe(b.dataset.id, {onSaved: renderCompras})));
       document.querySelectorAll(".pd-dup").forEach(b => b.addEventListener("click", () => openPedidoModal(null, {duplicarDe: b.dataset.id})));
       document.querySelectorAll(".pd-editar").forEach(b => b.addEventListener("click", () => openPedidoModal(b.dataset.id)));
       document.querySelectorAll(".pd-excluir").forEach(b => b.addEventListener("click", async () => {
