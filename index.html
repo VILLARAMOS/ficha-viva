@@ -15771,10 +15771,48 @@ function pcpAvulsasDoDia(semana, dia, unidade, area){
 }
 async function pcpSalvarAvulsa(semana, dia, unidade, area, insumoId, quantidade, observacao){
   if(!(quantidade > 0)){ showAlert("Informe uma quantidade maior que zero."); return false; }
-  const row = { semana, dia, unidade, area, insumo_id: insumoId, quantidade, observacao: observacao || null, criado_por: usuarioId || null };
+  // 26/11/2026, pedido do Marcelo: motivo passou a ser obrigatório pra requisição extra (antes era livre) —
+  // checado aqui, central, pra valer nos dois pontos de entrada (estoque e açougue) sem duplicar.
+  const motivo = (observacao || "").trim();
+  if(!motivo){ showAlert("Informe o motivo da requisição extra."); return false; }
+  const row = { semana, dia, unidade, area, insumo_id: insumoId, quantidade, observacao: motivo, criado_por: usuarioId || null };
   const { error } = await sb.from('pcp_retiradas_avulsas').insert(row);
-  if(error){ showAlert("Erro ao lançar retirada avulsa: " + error.message); return false; }
+  if(error){ showAlert("Erro ao lançar requisição extra: " + error.message); return false; }
   return true;
+}
+// comprovante de impressão opcional da requisição extra (26/11/2026, pedido do Marcelo) — mesmo padrão de
+// janela de impressão usado em imprimirPedidoObjeto, só que num recibo simples de 1 item.
+function pcpImprimirRequisicaoExtra(opts){
+  const { insumoNome, unidadeMedida, quantidade, motivo, unidadeLabel, dia, dataUso, area, solicitante } = opts;
+  const w = window.open("", "_blank");
+  if(!w){ showAlert("O navegador bloqueou a janela de impressão. Permita pop-ups para imprimir o comprovante."); return; }
+  w.document.write(`<!doctype html><html><head><meta charset="utf-8"><title>Requisição extra — ${escapeHtml(insumoNome)}</title>
+    <style>
+      body{font-family:Arial,Helvetica,sans-serif; padding:24px; color:#111;}
+      h1{font-size:18px; margin:0 0 4px;}
+      .sub{font-size:12px; color:#555; margin-bottom:14px;}
+      .info-grid{display:grid; grid-template-columns:1fr 1fr; gap:6px 24px; font-size:13px; margin:10px 0;}
+      .info-grid div strong{display:inline-block; min-width:120px;}
+      .assinatura{display:flex; gap:40px; margin-top:40px;}
+      .assinatura div{flex:1; border-top:1px solid #333; padding-top:4px; font-size:11.5px; color:#555;}
+      ${printHeadStyle()}
+    </style></head><body>
+    ${printHeadHtml()}
+    <h1>Requisição extra de insumo</h1>
+    <div class="sub">${escapeHtml(area === "acougue" ? "Açougue" : "Requisição do estoque")} — fora do planejamento de cardápio</div>
+    <div class="info-grid">
+      <div><strong>Insumo:</strong> ${escapeHtml(insumoNome)}</div>
+      <div><strong>Quantidade:</strong> ${fmtNum(quantidade,3)} ${escapeHtml(unidadeMedida||"")}</div>
+      <div><strong>Unidade:</strong> ${escapeHtml(unidadeLabel||"")}</div>
+      <div><strong>Dia de uso:</strong> ${escapeHtml(dataUso||dia||"")}</div>
+      <div style="grid-column:1/-1;"><strong>Motivo:</strong> ${escapeHtml(motivo||"")}</div>
+      <div><strong>Solicitado por:</strong> ${escapeHtml(solicitante||"—")}</div>
+      <div><strong>Data/hora:</strong> ${new Date().toLocaleString("pt-BR")}</div>
+    </div>
+    <div class="assinatura"><div>Retirado por (estoquista)</div></div>
+    <script>window.onload = () => window.print();<\/script>
+    </body></html>`);
+  w.document.close();
 }
 async function pcpRemoverAvulsa(id){
   const { error } = await sb.from('pcp_retiradas_avulsas').delete().eq('id', id).is('baixado_em', null);
@@ -17437,13 +17475,19 @@ function pcpAvulsoFormHtml(dia, unidadeFiltro, area){
   // plural de cada área: estoque fala em "fora de cardápio" também, é o mesmo conceito — item que não vem de
   // nenhuma receita planejada). Alterna o formulário via pcp-avulso-toggle (ver bind em pcpReqSemanaSecaoBind/
   // pcpAcgAcoesBind).
+  // 26/11/2026, pedido do Marcelo: renomeado de "Incluir item fora de cardápio" pra "Gerar requisição
+  // extra" (mesmo mecanismo de sempre — pcpSalvarAvulsa/pcp_retiradas_avulsas — só deixou de ficar escondido
+  // sob um nome que não deixava claro que isso é a requisição extra de insumo, com motivo obrigatório e
+  // opção de imprimir um comprovante). Validação do motivo obrigatório fica em pcpSalvarAvulsa (vale pros
+  // dois pontos de entrada, estoque e açougue, sem duplicar a checagem aqui).
   return `<div class="panel-body" style="padding-top:0;">
-    <button type="button" class="btn small ghost" data-pcp-avulso-toggle="${dia}">+ Incluir item fora de cardápio</button>
+    <button type="button" class="btn small ghost" data-pcp-avulso-toggle="${dia}">+ Gerar requisição extra</button>
     <div data-pcp-avulso-form="${dia}" style="display:none; flex-wrap:wrap; gap:8px; align-items:center; margin-top:8px;">
       <select class="avl-insumo" style="min-width:220px;">${insumosOrdenados.map(([id,ins]) => `<option value="${id}">${escapeHtml(ins.nome)}</option>`).join("")}</select>
       <input class="avl-qtd" type="number" step="0.001" min="0" placeholder="Qtd" style="width:90px;">
-      <input class="avl-obs" type="text" placeholder="Motivo (opcional)" style="min-width:180px; flex:1 1 180px;">
-      <button class="btn small primary" data-pcp-avulso-add="${dia}">Lançar</button>
+      <input class="avl-obs" type="text" placeholder="Motivo (obrigatório)" required style="min-width:180px; flex:1 1 180px;">
+      <label style="display:flex; align-items:center; gap:4px; font-size:12.5px; white-space:nowrap;"><input type="checkbox" class="avl-imprimir" checked> Imprimir comprovante</label>
+      <button class="btn small primary" data-pcp-avulso-add="${dia}">Gerar requisição</button>
     </div>
   </div>`;
 }
@@ -17716,14 +17760,20 @@ function pcpReqSemanaSecaoBind(content, semana, unidadeFiltro, unidadeLabel, are
     const dia = form.dataset.pcpAvulsoForm;
     const btn = form.querySelector("button[data-pcp-avulso-add]");
     if(btn) btn.addEventListener("click", async () => {
-      const sel = form.querySelector(".avl-insumo"), qtdI = form.querySelector(".avl-qtd"), obsI = form.querySelector(".avl-obs");
-      const ok = await pcpSalvarAvulsa(semana, dia, unidadeFiltro, area, sel.value, parseFloat(qtdI.value), obsI.value);
-      if(ok) renderPCP();
+      const sel = form.querySelector(".avl-insumo"), qtdI = form.querySelector(".avl-qtd"), obsI = form.querySelector(".avl-obs"), imprI = form.querySelector(".avl-imprimir");
+      const qtd = parseFloat(qtdI.value), ins = insumos.get(sel.value);
+      const ok = await pcpSalvarAvulsa(semana, dia, unidadeFiltro, area, sel.value, qtd, obsI.value);
+      if(ok){
+        if(imprI && imprI.checked && ins){
+          pcpImprimirRequisicaoExtra({ insumoNome: ins.nome, unidadeMedida: ins.unidade_medida, quantidade: qtd, motivo: obsI.value.trim(), unidadeLabel: nomeUnidadeCompra(unidadeFiltro), dia, dataUso: fmtData(dataDoDia(semana,dia)), area, solicitante: usuarioId||null });
+        }
+        renderPCP();
+      }
     });
   });
   content.querySelectorAll("button[data-pcp-avulso-remover]").forEach(btn => {
     btn.addEventListener("click", async () => {
-      if(!(await confirmDialog("Remover esta retirada avulsa?"))) return;
+      if(!(await confirmDialog("Remover esta requisição extra?"))) return;
       const ok = await pcpRemoverAvulsa(btn.dataset.pcpAvulsoRemover);
       if(ok) renderPCP();
     });
@@ -17972,14 +18022,20 @@ function pcpAcgAcoesBind(content, preparoSemana, diasSelState, semana, unidadeFi
     const dia = form.dataset.pcpAvulsoForm;
     const btn = form.querySelector("button[data-pcp-avulso-add]");
     if(btn) btn.addEventListener("click", async () => {
-      const sel = form.querySelector(".avl-insumo"), qtdI = form.querySelector(".avl-qtd"), obsI = form.querySelector(".avl-obs");
-      const ok = await pcpSalvarAvulsa(semana, dia, unidadeFiltro, "acougue", sel.value, parseFloat(qtdI.value), obsI.value);
-      if(ok) renderPCP();
+      const sel = form.querySelector(".avl-insumo"), qtdI = form.querySelector(".avl-qtd"), obsI = form.querySelector(".avl-obs"), imprI = form.querySelector(".avl-imprimir");
+      const qtd = parseFloat(qtdI.value), ins = insumos.get(sel.value);
+      const ok = await pcpSalvarAvulsa(semana, dia, unidadeFiltro, "acougue", sel.value, qtd, obsI.value);
+      if(ok){
+        if(imprI && imprI.checked && ins){
+          pcpImprimirRequisicaoExtra({ insumoNome: ins.nome, unidadeMedida: ins.unidade_medida, quantidade: qtd, motivo: obsI.value.trim(), unidadeLabel: nomeUnidadeCompra(unidadeFiltro), dia, dataUso: fmtData(dataDoDia(semana,dia)), area: "acougue", solicitante: usuarioId||null });
+        }
+        renderPCP();
+      }
     });
   });
   content.querySelectorAll("button[data-pcp-avulso-remover]").forEach(btn => {
     btn.addEventListener("click", async () => {
-      if(!(await confirmDialog("Remover esta retirada avulsa?"))) return;
+      if(!(await confirmDialog("Remover esta requisição extra?"))) return;
       const ok = await pcpRemoverAvulsa(btn.dataset.pcpAvulsoRemover);
       if(ok) renderPCP();
     });
