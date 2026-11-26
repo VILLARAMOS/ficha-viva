@@ -3107,9 +3107,23 @@ async function confirmarEntradaDireta(pedidoId, unidade, itensFinal, obsRecebime
 // pedidos ainda sem conferência completa (status "aguardando" ou "parcial" — ver pedidoStatus) — alimenta a
 // nova seção "Pedidos aguardando conferência" dentro de Entradas pendentes (Insumos → Estoque), que agora é
 // o único lugar onde a conferência acontece (o ✓ saiu da lista de Compras → Pedidos).
-function pedidosAguardandoConferencia(unidade){
+// CORTE_CONFERENCIA (26/11/2026, pedido do Marcelo): levantamento mostrou ~717 pedidos sem conferência
+// acumulados desde agosto/2026 — a maioria é histórico importado do Excel antigo (ex.: pedido "PLATINA"
+// 01/09, com observação "teste de preenchimento histórico"), sem controle físico real por trás, sem chance
+// de conferência de verdade hoje. Decisão: a partir de agora, só pedidos feitos A PARTIR DESTA DATA entram
+// na fila ativa que o estoquista trabalha dia a dia; os anteriores ficam de lado, visíveis à parte (não
+// escondidos, só fora do fluxo do dia a dia), pra não gerar entrada fictícia em massa nem distorcer ainda
+// mais o saldo de estoque (hoje já negativo). Ajustável aqui se o corte precisar mudar.
+const CORTE_CONFERENCIA = "2026-11-26";
+function pedidosAguardandoConferencia(unidade, incluirHistorico){
   return [...pedidos.entries()]
-    .filter(([,p]) => { const st = pedidoStatus(p).key; return (st==="aguardando"||st==="parcial") && (!unidade || pedidoUnidade(p)===unidade); })
+    .filter(([,p]) => {
+      const st = pedidoStatus(p).key;
+      if(!(st==="aguardando"||st==="parcial")) return false;
+      if(unidade && pedidoUnidade(p)!==unidade) return false;
+      const ehHistorico = (p.data_pedido||"") < CORTE_CONFERENCIA;
+      return incluirHistorico ? ehHistorico : !ehHistorico;
+    })
     .sort((a,b) => (a[1].data_pedido||"").localeCompare(b[1].data_pedido||""));
 }
 // relatório de divergências de recebimento (26/11/2026, pedido do Marcelo, "relatório pra compradora
@@ -4111,6 +4125,7 @@ function renderEstoqueEntradasPendentes(){
   // aguardando conferência" é calculado ao vivo de pedidoStatus() — nenhuma migração de dado foi
   // necessária: os pedidos antigos "Aguardando entrega"/"Conferência parcial" já aparecem aqui sozinhos.
   const aguardando = pedidosAguardandoConferencia();
+  const historico = pedidosAguardandoConferencia(null, true);
   sub.innerHTML = `
     <div class="panel" style="margin-bottom:14px;">
       <div class="panel-head">
@@ -4121,6 +4136,20 @@ function renderEstoqueEntradasPendentes(){
         ${aguardando.length ? "" : `<div class="empty-state">Nenhum pedido aguardando conferência.</div>`}
       </div>
     </div>
+    ${historico.length ? `<details class="panel" style="margin-bottom:14px; padding:14px 18px;">
+      <summary style="cursor:pointer; font-weight:600; font-size:13.5px;">Histórico sem conferência, de antes de ${fmtDataYMD(CORTE_CONFERENCIA)} (${historico.length} pedido${historico.length===1?"":"s"}) — fora da fila do dia a dia</summary>
+      <p class="footnote" style="margin:10px 0;">Pedidos antigos (boa parte importada do Excel histórico, sem controle físico real por trás) — não entram na fila ativa pra não gerar entrada fictícia em massa. Dá pra conferir individualmente aqui se algum precisar.</p>
+      <div class="pend-entrada-row pend-entrada-head" style="grid-template-columns: 1.4fr 0.8fr 0.8fr 0.8fr 0.6fr;">
+        <div>Fornecedor</div><div>Unidade</div><div>Data do pedido</div><div>Situação</div><div style="text-align:right;">Ações</div>
+      </div>
+      ${historico.map(([id,p]) => `<div class="pend-entrada-row" style="grid-template-columns: 1.4fr 0.8fr 0.8fr 0.8fr 0.6fr;">
+        <div class="name-cell">${escapeHtml(p.fornecedor||"—")}</div>
+        <div><span class="chip neutral">${escapeHtml(nomeUnidadeCompra(pedidoUnidade(p)))}</span></div>
+        <div>${fmtDataYMD(p.data_pedido)||"—"}</div>
+        <div>${statusChip(pedidoStatus(p))}</div>
+        <div class="es-tools" style="justify-content:flex-end;"><button class="btn small ghost" data-conferir-estoque="${id}"><i class="ico" data-lucide="clipboard-check"></i>Conferir</button></div>
+      </div>`).join("")}
+    </details>` : ""}
     <div class="panel">
       <div class="panel-head">
         <h3><i class="ico" data-lucide="package-check"></i>Entradas pendentes de aprovação</h3>
@@ -4143,8 +4172,9 @@ function renderEstoqueEntradasPendentes(){
         <div class="es-tools" style="justify-content:flex-end;"><button class="btn small primary" data-conferir-estoque="${id}"><i class="ico" data-lucide="clipboard-check"></i>Conferir</button></div>
       </div>`).join("")}
     `;
-    aguardPanel.querySelectorAll("[data-conferir-estoque]").forEach(btn => btn.addEventListener("click", () => openPedidoDetalhe(btn.dataset.conferirEstoque, {onSaved: renderEstoqueEntradasPendentes})));
   }
+  // liga tanto o painel ativo quanto o <details> de histórico (ambos usam data-conferir-estoque).
+  sub.querySelectorAll("[data-conferir-estoque]").forEach(btn => btn.addEventListener("click", () => openPedidoDetalhe(btn.dataset.conferirEstoque, {onSaved: renderEstoqueEntradasPendentes})));
   const pendentes = entradasPendentes();
   document.getElementById("pend-count-legado").textContent = `${pendentes.length} ${pendentes.length===1?"item":"itens"}`;
   document.getElementById("pend-count-legado").className = pendentes.length ? "pend-count alerta" : "pend-count";
