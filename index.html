@@ -1766,10 +1766,19 @@ document.getElementById("btn-orientacoes").addEventListener("click", abrirOrient
 function goToView(view){
   if(!VIEWS[view]) return;
   if(!possoVerView(view)){ view = primeiraViewPermitida(); if(!view) return; }
-  // Entrar na aba Cardápio (vindo de outra aba) sempre abre a semana atual, mesmo que a pessoa
-  // tenha deixado outra semana selecionada numa visita anterior na mesma sessão (pedido de
-  // Marcelo, 25/11/2026) — zera a semana aqui pra o fallback de renderCardapio escolher de novo.
-  if(view === "cardapio" && currentView !== "cardapio") cardapioSemanaSel = null;
+  // Entrar numa aba com seletor de semana (vindo de outra aba) sempre abre na semana atual, mesmo
+  // que a pessoa tenha deixado outra semana selecionada numa visita anterior na mesma sessão
+  // (pedido de Marcelo, 25/11/2026 pro Cardápio, estendido a todo o sistema em 26/11/2026) — zera a
+  // semana aqui pra o fallback de cada tela escolher de novo (semanaAtualOuMaisProxima).
+  // Exceção deliberada: "compras" (Planejamento de Compras) não entra aqui — lá o padrão é abrir na
+  // semana SEGUINTE à de hoje (é a semana que ainda dá tempo de comprar), não na semana atual.
+  if(currentView !== view){
+    if(view === "cardapio") cardapioSemanaSel = null;
+    else if(view === "insumos") estoqueSemanaSel = null; // cobre a sub-aba Estoque > Contagem
+    else if(view === "vendas"){ vendaMesSel = null; vendaSemanaSel = null; vendaPainelMesSel = null; }
+    else if(view === "pcp") pcpSemanaSel = null;
+    else if(view === "suprimento") suprimentoSemanaSel = null;
+  }
   currentView = view;
   document.querySelectorAll(".nav-btn[data-view]").forEach(b => b.classList.toggle("active", b.dataset.view === view));
   document.getElementById("btn-orientacoes").hidden = !ORIENTACOES_POR_VIEW[view];
@@ -3768,7 +3777,7 @@ function renderEstoqueContagem(){
   // descartado pelo reset logo abaixo e voltaria pra semana sugerida.
   const semanasComContagem = [...new Set([...estoqueContagem.values()].filter(r => r.unidade === estoqueUnidadeSel).map(r => r.semana))];
   const opcoesSemana = [...new Set([...semanasBase, semanaSugerida, semanaSugerida+1, ...semanasComContagem])].sort((a,b)=>a-b);
-  if(estoqueSemanaSel === null || !opcoesSemana.includes(estoqueSemanaSel)) estoqueSemanaSel = semanaSugerida;
+  if(estoqueSemanaSel === null || !opcoesSemana.includes(estoqueSemanaSel)) estoqueSemanaSel = semanaAtualOuMaisProxima(opcoesSemana);
 
   const contagem = contagemPorSemana(estoqueSemanaSel, estoqueUnidadeSel);
   const { total: valorTotal, nInsumosContados } = valorEstoqueContadoPorGrupo(estoqueSemanaSel, estoqueUnidadeSel);
@@ -4607,6 +4616,16 @@ function semanaAtualNum(){
   const hoje = new Date();
   const hojeMs = Date.UTC(hoje.getFullYear(), hoje.getMonth(), hoje.getDate());
   return Math.floor((hojeMs - CALENDARIO_BASE_MS) / (7*86400000)) + 1;
+}
+// 26/11/2026, pedido do Marcelo: toda tela com seletor de semana deve abrir na semana atual (não na
+// primeira/última disponível) — se a semana atual não estiver nas opções (ex.: sem cardápio criado
+// ainda pra ela), cai na opção mais próxima dela em vez da mais antiga/mais nova da lista. Mesma regra
+// já usada em Cardápio, estendida aqui pra reaproveitar nas outras telas (Estoque, PCP, Vendas...).
+function semanaAtualOuMaisProxima(opcoes){
+  if(!opcoes || !opcoes.length) return null;
+  const atual = semanaAtualNum();
+  if(opcoes.includes(atual)) return atual;
+  return opcoes.reduce((maisProxima, s) => Math.abs(s - atual) < Math.abs(maisProxima - atual) ? s : maisProxima, opcoes[0]);
 }
 
 let cardapioNumSel = null;
@@ -9467,7 +9486,7 @@ function renderGradeLancamento(){
   const semanasDoSistema = semanasDisponiveisVendas();
   const mesObj = meses.find(m => m.id === vendaMesSel);
   const semanasDoMes = (mesObj ? mesObj.semanas : []).filter(s => semanasDoSistema.includes(s));
-  if(vendaSemanaSel === null || !semanasDoMes.includes(vendaSemanaSel)) vendaSemanaSel = semanasDoMes[0] ?? null;
+  if(vendaSemanaSel === null || !semanasDoMes.includes(vendaSemanaSel)) vendaSemanaSel = semanaAtualOuMaisProxima(semanasDoMes);
 
   const cabecalho = `
     <div class="panel-head"><h3>Lançamento — ${escapeHtml(cliente?.nome_cliente || "")}</h3>
@@ -20963,7 +20982,7 @@ async function renderPCP(){
   document.getElementById("page-title").textContent = "PCP";
   document.getElementById("page-desc").textContent = "";
   const opcoesSemana = pcpOpcoesSemana();
-  if(pcpSemanaSel === null || !opcoesSemana.includes(pcpSemanaSel)) pcpSemanaSel = opcoesSemana[opcoesSemana.length - 1];
+  if(pcpSemanaSel === null || !opcoesSemana.includes(pcpSemanaSel)) pcpSemanaSel = semanaAtualOuMaisProxima(opcoesSemana);
   const margemPct = pcpMargemPct();
   // 20/10/2026: "Peso por prato" deixou de ser aba própria, fundiu em "Ajustes do dia" — se o estado em
   // memória ainda apontar pra ela (sessão antiga), cai em ajustes em vez de ficar numa aba que não existe.
