@@ -16059,7 +16059,7 @@ function pcpCustoLinhas(linhas){ return (linhas||[]).reduce((s,l) => s + pcpCust
 // gera de novo (reimpressão não duplica); mesma checagem separada pra avulso, que além disso marca
 // baixado_em/baixado_movimento_id em pcp_retiradas_avulsas (trava a edição/remoção depois de baixado).
 // Retorna {gerou:boolean, jaTinha:boolean, custo:number} pro aviso na tela.
-async function pcpBaixarDiaServido(semana, dia, unidadeReal, area, linhasReceita, usuarioNome){
+async function pcpBaixarDiaServido(semana, dia, unidadeReal, area, linhasReceita, usuarioNome, obsExtra){
   const dataYMD = dataDoDia(semana, dia).toISOString().slice(0,10);
   const tipoReceita = area === "acougue" ? "baixa_pcp_acougue" : "baixa_pcp_requisicao";
   const { data: existentes, error: errChk } = await sb.from('estoque_movimentos').select('id').eq('unidade', unidadeReal).eq('data', dataYMD).eq('tipo', tipoReceita).limit(1);
@@ -16068,7 +16068,9 @@ async function pcpBaixarDiaServido(semana, dia, unidadeReal, area, linhasReceita
   let custo = 0;
   if(!jaTinha && linhasReceita.length){
     const itens = linhasReceita.filter(l => l.qtd > 0).map(l => ({ insumo_id: l.insumoId, quantidade: l.qtd }));
-    const obs = `${area === "acougue" ? "Açougue" : "Requisição do estoque"} — ${DIA_LABEL[dia]||dia} ${fmtData(dataDoDia(semana,dia))}`;
+    // 26/11/2026, pedido do Marcelo: obsExtra carrega a observação da conferência por item (ver
+    // pcpAbrirConfirmacaoBaixa) quando a quantidade retirada diverge da planejada — obrigatória nesse caso.
+    const obs = `${area === "acougue" ? "Açougue" : "Requisição do estoque"} — ${DIA_LABEL[dia]||dia} ${fmtData(dataDoDia(semana,dia))}${obsExtra ? " — "+obsExtra : ""}`;
     const n = await registrarBaixaLote(unidadeReal, tipoReceita, itens, obs, dataYMD);
     if(n < 0) return { gerou:false, jaTinha:false, custo:0 };
   }
@@ -16092,20 +16094,107 @@ async function pcpBaixarDiaServido(semana, dia, unidadeReal, area, linhasReceita
 // orquestra a baixa de 1+ dias servidos, numa ou nas duas unidades reais — se a tela está em "todos"
 // (Matriz+Filial juntas), calcula e baixa as DUAS separadamente (o kardex exige unidade real por linha;
 // a lista "todos" combinada da tela não serve pra isso), e só então soma pro resumo mostrado ao final.
-async function pcpBaixarReqUnidades(semana, dias, unidadeFiltro, area, servicosFiltro){
+// 26/11/2026, pedido do Marcelo: `ajustes` (opcional) é a conferência por item feita na tela antes de
+// baixar (ver pcpAbrirConfirmacaoBaixa) — Map "unidade|dia" -> {itens: Map(insumoId -> qtd confirmada),
+// obs: string}. Sem `ajustes` (chamador antigo/legado), comportamento idêntico a antes: baixa a quantidade
+// planejada como sempre baixou.
+async function pcpBaixarReqUnidades(semana, dias, unidadeFiltro, area, servicosFiltro, ajustes){
   const unidades = (unidadeFiltro && unidadeFiltro !== "todos") ? [unidadeFiltro] : ["matriz","filial"];
   await loadEstoqueMovimentos(); // garante pcpAvulsasCache/estoqueMovimentos frescos antes de checar idempotência
   let totalGerado = 0, totalJaTinha = 0, custoTotal = 0;
   for(const uni of unidades){
     await pcpCarregarAvulsas(semana, uni, area);
     for(const dia of dias){
-      const base = area === "acougue" ? pcpAcgListaDia(semana, dia, uni, servicosFiltro) : pcpReqListaDia(semana, dia, uni, servicosFiltro).linhas;
-      const r = await pcpBaixarDiaServido(semana, dia, uni, area, base, usuarioId);
+      let base = area === "acougue" ? pcpAcgListaDia(semana, dia, uni, servicosFiltro) : pcpReqListaDia(semana, dia, uni, servicosFiltro).linhas;
+      const aj = ajustes && ajustes.get(`${uni}|${dia}`);
+      if(aj) base = base.map(l => aj.itens.has(l.insumoId) ? {...l, qtd: aj.itens.get(l.insumoId)} : l);
+      const r = await pcpBaixarDiaServido(semana, dia, uni, area, base, usuarioId, aj ? aj.obs : null);
       if(r.gerou) totalGerado++; else if(r.jaTinha) totalJaTinha++;
       custoTotal += r.custo;
     }
   }
   return { totalGerado, totalJaTinha, custoTotal, totalDias: dias.length * unidades.length };
+}
+// 26/11/2026, pedido do Marcelo: "Dar baixa no estoque" deixou de debitar direto a quantidade PLANEJADA —
+// agora abre esta conferência primeiro (mesma ideia da conferência de recebimento em Compras: quantidade
+// por item editável, igual ao planejado por padrão, observação obrigatória só quando o estoquista ajustar
+// algum item). Confirmar aqui chama pcpBaixarReqUnidades com os ajustes feitos; dia já baixado antes (jaTinha)
+// aparece travado, sem nada a conferir, pra não reabrir baixa antiga sem passar pelo "Desfazer" explícito.
+async function pcpAbrirConfirmacaoBaixa(semana, dias, unidadeFiltro, area, servicosFiltro, aoConfirmar){
+  await loadEstoqueMovimentos();
+  const unidades = (unidadeFiltro && unidadeFiltro !== "todos") ? [unidadeFiltro] : ["matriz","filial"];
+  const tipoReceita = area === "acougue" ? "baixa_pcp_acougue" : "baixa_pcp_requisicao";
+  const jaBaixado = (uni, dia) => {
+    const dataYMD = dataDoDia(semana, dia).toISOString().slice(0,10);
+    return [...estoqueMovimentos.values()].some(m => m.unidade===uni && m.data===dataYMD && m.tipo===tipoReceita);
+  };
+  const blocos = [];
+  unidades.forEach(uni => dias.forEach(dia => {
+    const linhas = (area === "acougue" ? pcpAcgListaDia(semana, dia, uni, servicosFiltro) : pcpReqListaDia(semana, dia, uni, servicosFiltro).linhas).filter(l => l.qtd > 0);
+    blocos.push({ uni, dia, linhas, travado: jaBaixado(uni, dia) });
+  }));
+  const root = document.getElementById("modal-root");
+  const blocoId = (i) => `cbx-bloco-${i}`;
+  root.innerHTML = `
+    <div class="modal-overlay" id="ov">
+      <div class="modal" style="max-width:920px;">
+        <div class="modal-head"><h2>Conferir e baixar no estoque</h2><button class="close-x" id="close-m">&times;</button></div>
+        <div class="modal-body">
+          <p class="footnote" style="margin:0 0 14px;">Ajuste a quantidade realmente retirada quando for diferente da planejada — o saldo do estoque é debitado pela quantidade confirmada aqui, não pela planejada.</p>
+          ${blocos.map((b,i) => {
+            if(b.travado) return `<div class="panel" style="margin-bottom:12px; opacity:.65;"><div class="panel-head"><h3 style="font-size:13px;">${escapeHtml(nomeUnidadeCompra(b.uni))} — ${escapeHtml(DIA_LABEL[b.dia]||b.dia)}</h3><span class="chip ok">já baixado</span></div></div>`;
+            if(!b.linhas.length) return `<div class="panel" style="margin-bottom:12px;"><div class="panel-head"><h3 style="font-size:13px;">${escapeHtml(nomeUnidadeCompra(b.uni))} — ${escapeHtml(DIA_LABEL[b.dia]||b.dia)}</h3><span class="chip neutral">nada a baixar</span></div></div>`;
+            return `<div class="panel" style="margin-bottom:12px;">
+              <div class="panel-head"><h3 style="font-size:13px;">${escapeHtml(nomeUnidadeCompra(b.uni))} — ${escapeHtml(DIA_LABEL[b.dia]||b.dia)}</h3></div>
+              <div class="panel-body">
+                <div class="table-wrap"><table>
+                  <thead><tr><th>Insumo</th><th>Un.</th><th style="text-align:right;">Planejado</th><th style="text-align:right;">Retirado</th></tr></thead>
+                  <tbody id="${blocoId(i)}-tbody">${b.linhas.map((l,j) => `<tr>
+                    <td class="name-cell">${escapeHtml(l.nome)}</td>
+                    <td>${escapeHtml(l.unidade||"")}</td>
+                    <td class="num-cell">${fmtNum(l.qtd,3)}</td>
+                    <td class="num-cell"><input type="number" step="0.001" min="0" class="cbx-qtd" data-j="${j}" value="${numStr(l.qtd)}" style="width:96px; text-align:right;"></td>
+                  </tr>`).join("")}</tbody>
+                </table></div>
+                <div class="field" style="margin-top:10px;"><label>Observação (obrigatória se ajustar algum item)</label><textarea class="cbx-obs" rows="2"></textarea></div>
+              </div>
+            </div>`;
+          }).join("")}
+          <div class="footnote" id="cbx-err" style="color:var(--critical); margin-top:4px;"></div>
+        </div>
+        <div class="modal-foot">
+          <button class="btn" id="cancel-m">Cancelar</button>
+          <button class="btn primary" id="cbx-confirmar">Confirmar baixa</button>
+        </div>
+      </div>
+    </div>`;
+  document.getElementById("close-m").onclick = () => root.innerHTML = "";
+  document.getElementById("cancel-m").onclick = () => root.innerHTML = "";
+  document.getElementById("ov").addEventListener("click", e => { if(e.target.id==="ov") root.innerHTML=""; });
+
+  document.getElementById("cbx-confirmar").onclick = async () => {
+    const ajustes = new Map();
+    const panels = root.querySelectorAll(".modal-body > .panel");
+    let erro = "";
+    blocos.forEach((b,i) => {
+      if(b.travado || !b.linhas.length) return;
+      const panel = panels[i];
+      const itens = new Map();
+      let divergiu = false;
+      panel.querySelectorAll(`#${blocoId(i)}-tbody .cbx-qtd`).forEach(inp => {
+        const j = +inp.dataset.j, linha = b.linhas[j];
+        const qtd = Math.max(0, parseFloat(inp.value.replace(",","."))||0);
+        itens.set(linha.insumoId, qtd);
+        if(Math.abs(qtd - linha.qtd) > 0.001) divergiu = true;
+      });
+      const obs = panel.querySelector(".cbx-obs").value.trim();
+      if(divergiu && !obs){ erro = `Há ajuste(s) em "${nomeUnidadeCompra(b.uni)} — ${DIA_LABEL[b.dia]||b.dia}" sem observação — informe o motivo da diferença antes de confirmar.`; return; }
+      ajustes.set(`${b.uni}|${b.dia}`, { itens, obs: obs || null });
+    });
+    if(erro){ document.getElementById("cbx-err").textContent = erro; return; }
+    root.innerHTML = "";
+    if(aoConfirmar) await aoConfirmar(ajustes);
+  };
 }
 // desfaz a baixa de 1 dia servido (1 unidade real) — apaga do kardex os movimentos gerados por
 // pcpBaixarDiaServido pra essa (unidade, data servida, área): a baixa de receita (baixa_pcp_requisicao/
@@ -17898,12 +17987,15 @@ function pcpReqSemanaSecaoBind(content, semana, unidadeFiltro, unidadeLabel, are
   if(btnBaixar) btnBaixar.addEventListener("click", async () => {
     const dias = DIAS_ORDEM.filter(d => diasSelState.has(d));
     if(!dias.length){ showAlert("Marque ao menos um dia."); return; }
-    const rotulo = dias.map(d => PCP_DIA_LABEL_FEIRA[d]||d).join(", ");
-    if(!(await confirmDialog(`Dar baixa real no estoque dos dias marcados (${rotulo})? Isso lança o consumo no kardex — reimprimir/clicar de novo não duplica, mas se marcar por engano use "Desfazer baixa". A baixa é sempre do dia inteiro (todos os clientes), independente do filtro de clientes da tela.`))) return;
-    const resumo = await pcpBaixarReqUnidades(semana, dias, unidadeFiltro, area, servicosFiltro);
-    const msg = resumo.totalGerado ? `Baixa gerada no estoque: ${resumo.totalGerado} dia(s)/unidade(s), ${fmtMoney(resumo.custoTotal)}.${resumo.totalJaTinha ? ` (${resumo.totalJaTinha} já tinham baixa anterior — não duplicado.)` : ""}` : (resumo.totalJaTinha ? "Todos os dias marcados já tinham baixa anterior — nada a fazer." : "Nada a baixar (nenhum item nos dias marcados).");
-    showAlert(msg);
-    renderPCP();
+    // 26/11/2026, pedido do Marcelo: antes baixava direto a quantidade planejada (com 1 confirmDialog de
+    // aviso); agora abre a conferência por item (pcpAbrirConfirmacaoBaixa) — a confirmação do modal já
+    // cumpre o papel do antigo confirmDialog, então não duplica aviso aqui.
+    await pcpAbrirConfirmacaoBaixa(semana, dias, unidadeFiltro, area, servicosFiltro, async (ajustes) => {
+      const resumo = await pcpBaixarReqUnidades(semana, dias, unidadeFiltro, area, servicosFiltro, ajustes);
+      const msg = resumo.totalGerado ? `Baixa gerada no estoque: ${resumo.totalGerado} dia(s)/unidade(s), ${fmtMoney(resumo.custoTotal)}.${resumo.totalJaTinha ? ` (${resumo.totalJaTinha} já tinham baixa anterior — não duplicado.)` : ""}` : (resumo.totalJaTinha ? "Todos os dias marcados já tinham baixa anterior — nada a fazer." : "Nada a baixar (nenhum item nos dias marcados).");
+      showAlert(msg);
+      renderPCP();
+    });
   });
   const btnDesfazer = content.querySelector("button[data-pcp-reqdia-desfazer]");
   if(btnDesfazer) btnDesfazer.addEventListener("click", async () => {
@@ -18166,12 +18258,13 @@ function pcpAcgAcoesBind(content, preparoSemana, diasSelState, semana, unidadeFi
   if(btnBaixar) btnBaixar.addEventListener("click", async () => {
     const dias = diasMarcados();
     if(!dias.length){ showAlert("Marque ao menos um dia."); return; }
-    const rotulo = dias.map(d => PCP_DIA_LABEL_FEIRA[d]||d).join(", ");
-    if(!(await confirmDialog(`Dar baixa real no estoque dos dias marcados (${rotulo})? Isso lança o consumo no kardex — reimprimir/clicar de novo não duplica, mas se marcar por engano use "Desfazer baixa".`))) return;
-    const resumo = await pcpBaixarReqUnidades(semana, dias, unidadeFiltro, "acougue", servicosFiltro);
-    const msg = resumo.totalGerado ? `Baixa gerada no estoque: ${resumo.totalGerado} dia(s)/unidade(s), ${fmtMoney(resumo.custoTotal)}.${resumo.totalJaTinha ? ` (${resumo.totalJaTinha} já tinham baixa anterior — não duplicado.)` : ""}` : (resumo.totalJaTinha ? "Todos os dias marcados já tinham baixa anterior — nada a fazer." : "Nada a baixar (nenhum item nos dias marcados).");
-    showAlert(msg);
-    renderPCP();
+    // 26/11/2026: mesma conferência por item do lado Estoque (pcpAbrirConfirmacaoBaixa) — ver comentário lá.
+    await pcpAbrirConfirmacaoBaixa(semana, dias, unidadeFiltro, "acougue", servicosFiltro, async (ajustes) => {
+      const resumo = await pcpBaixarReqUnidades(semana, dias, unidadeFiltro, "acougue", servicosFiltro, ajustes);
+      const msg = resumo.totalGerado ? `Baixa gerada no estoque: ${resumo.totalGerado} dia(s)/unidade(s), ${fmtMoney(resumo.custoTotal)}.${resumo.totalJaTinha ? ` (${resumo.totalJaTinha} já tinham baixa anterior — não duplicado.)` : ""}` : (resumo.totalJaTinha ? "Todos os dias marcados já tinham baixa anterior — nada a fazer." : "Nada a baixar (nenhum item nos dias marcados).");
+      showAlert(msg);
+      renderPCP();
+    });
   });
   const btnDesfazer = content.querySelector("#pcp-acgacao-desfazer");
   if(btnDesfazer) btnDesfazer.addEventListener("click", async () => {
