@@ -3070,6 +3070,64 @@ async function sincronizarEntradaPendenteDoPedido(pedidoId, unidade, itens){
     await loadEstoqueMovimentos();
   }catch(e){ showAlert(mensagemErro(e, "Pedido salvo, mas houve erro ao preparar a entrada pendente em estoque: ")); }
 }
+// 26/11/2026, pedido do Marcelo: conferência de recebimento deixou de ser 2 passos (Compras confere →
+// Estoque aprova) e virou 1 só, feito pelo estoquista — confirmar já credita o saldo (status "aprovado"
+// direto, sem passar por "pendente"). Mesma conversão de unidade/fator de embalagem de
+// sincronizarEntradaPendenteDoPedido; igual lá, nunca reabre um item já decidido antes (evita duplicar
+// crédito se a conferência for reaberta/reenviada). `divergente` (algum item com quantidade recebida ≠
+// pedida) é calculado pelo chamador (openPedidoDetalhe) e repassado aqui só pra manter a observação
+// identificável no kardex, pro relatório de Divergências de recebimento (lido direto de pedidos.itens,
+// sem tabela nova — ver pcpDivergenciasRecebimento).
+async function confirmarEntradaDireta(pedidoId, unidade, itensFinal, obsRecebimento){
+  const existentesDoPedido = [...estoqueMovimentos.entries()].filter(([,m]) => m.pedido_id === pedidoId && m.tipo === "entrada_pedido");
+  const decididos = new Set(existentesDoPedido.map(([,m]) => m.insumo_id));
+  const aInserir = [];
+  (itensFinal||[]).forEach(it => {
+    if(it.quantidade_recebida === null || it.quantidade_recebida === undefined) return;
+    if(!it.insumo_id || decididos.has(it.insumo_id)) return;
+    const fator = fatorEmbalagemItem(it);
+    const qtdBase = (it.quantidade_recebida||0) * fator;
+    const custoBase = precoBaseItem(it);
+    const divergente = Math.abs((it.quantidade_recebida||0) - (it.quantidade||0)) > 0.001;
+    aInserir.push({
+      unidade, insumo_id: it.insumo_id, tipo:"entrada_pedido", quantidade: qtdBase, custo_unitario: custoBase,
+      status:"aprovado", data: hojeYMD(), pedido_id: pedidoId, criado_por: usuarioId||null,
+      aprovado_em: new Date().toISOString(), aprovado_por: usuarioId||null,
+      observacao: divergente ? `Divergência (pedido ${fmtNum(it.quantidade,3)} ${it.unidade||""} / recebido ${fmtNum(it.quantidade_recebida,3)} ${it.unidade||""})${obsRecebimento?" — "+obsRecebimento:""}` : null,
+    });
+  });
+  if(!aInserir.length) return true;
+  try{
+    const { error } = await sb.from('estoque_movimentos').insert(aInserir);
+    if(error) throw error;
+    await loadEstoqueMovimentos();
+    return true;
+  }catch(e){ showAlert(mensagemErro(e, "Pedido salvo, mas houve erro ao dar entrada no estoque: ")); return false; }
+}
+// pedidos ainda sem conferência completa (status "aguardando" ou "parcial" — ver pedidoStatus) — alimenta a
+// nova seção "Pedidos aguardando conferência" dentro de Entradas pendentes (Insumos → Estoque), que agora é
+// o único lugar onde a conferência acontece (o ✓ saiu da lista de Compras → Pedidos).
+function pedidosAguardandoConferencia(unidade){
+  return [...pedidos.entries()]
+    .filter(([,p]) => { const st = pedidoStatus(p).key; return (st==="aguardando"||st==="parcial") && (!unidade || pedidoUnidade(p)===unidade); })
+    .sort((a,b) => (a[1].data_pedido||"").localeCompare(b[1].data_pedido||""));
+}
+// relatório de divergências de recebimento (26/11/2026, pedido do Marcelo, "relatório pra compradora
+// acompanhar") — lido direto de pedidos.itens (quantidade × quantidade_recebida), sem tabela nova: todo
+// pedido já conferido (recebido ou com divergência) entra aqui se tiver ao menos 1 item com diferença.
+function pcpDivergenciasRecebimento(unidade){
+  const linhas = [];
+  pedidos.forEach((p, id) => {
+    if(pedidoUnidade && unidade && pedidoUnidade(p) !== unidade) return;
+    (p.itens||[]).forEach(it => {
+      if(it.quantidade_recebida===null || it.quantidade_recebida===undefined) return;
+      const dif = (it.quantidade_recebida||0) - (it.quantidade||0);
+      if(Math.abs(dif) <= 0.001) return;
+      linhas.push({ pedidoId: id, fornecedor: p.fornecedor, data_pedido: p.data_pedido, unidade: pedidoUnidade(p), insumo: it.nome, unidadeMedida: it.unidade, pedida: it.quantidade, recebida: it.quantidade_recebida, diferenca: dif, obs: (p.recebimento&&p.recebimento.obs)||null });
+    });
+  });
+  return linhas.sort((a,b) => (b.data_pedido||"").localeCompare(a.data_pedido||""));
+}
 async function aprovarEntradaEstoque(movId, quantidade, custoUnitario){
   try{
     const { error } = await sb.from('estoque_movimentos').update({ quantidade, custo_unitario: custoUnitario, status:"aprovado", aprovado_em: new Date().toISOString(), aprovado_por: usuarioId||null }).eq('id', movId);
@@ -4048,21 +4106,51 @@ function imprimirListaContagem(semana, unidade, mostrarInativos){
 
 function renderEstoqueEntradasPendentes(){
   const sub = document.getElementById("es-sub-body");
-  const pendentes = entradasPendentes();
+  // 26/11/2026, pedido do Marcelo: conferência de recebimento + entrada no estoque viraram 1 passo só,
+  // feito aqui (antes: Compras conferia → ficava "pendente" → Estoque aprovava, separado). "Pedidos
+  // aguardando conferência" é calculado ao vivo de pedidoStatus() — nenhuma migração de dado foi
+  // necessária: os pedidos antigos "Aguardando entrega"/"Conferência parcial" já aparecem aqui sozinhos.
+  const aguardando = pedidosAguardandoConferencia();
   sub.innerHTML = `
+    <div class="panel" style="margin-bottom:14px;">
+      <div class="panel-head">
+        <h3><i class="ico" data-lucide="clipboard-check"></i>Pedidos aguardando conferência</h3>
+        <span class="${aguardando.length ? "pend-count alerta" : "pend-count"}">${aguardando.length} ${aguardando.length===1?"pedido":"pedidos"}</span>
+      </div>
+      <div class="panel-body" id="aguard-panel">
+        ${aguardando.length ? "" : `<div class="empty-state">Nenhum pedido aguardando conferência.</div>`}
+      </div>
+    </div>
     <div class="panel">
       <div class="panel-head">
         <h3><i class="ico" data-lucide="package-check"></i>Entradas pendentes de aprovação</h3>
-        <span class="${pendentes.length ? "pend-count alerta" : "pend-count"}">${pendentes.length} ${pendentes.length===1?"item":"itens"}</span>
+        <span class="pend-count" id="pend-count-legado"></span>
       </div>
-      <div class="panel-body" id="pend-panel">
-        ${pendentes.length ? "" : `<div class="empty-state">Nenhuma entrada pendente de aprovação.</div>`}
-      </div>
+      <div class="panel-body" id="pend-panel"></div>
     </div>
   `;
+  const aguardPanel = document.getElementById("aguard-panel");
+  if(aguardando.length){
+    aguardPanel.innerHTML = `
+      <div class="pend-entrada-row pend-entrada-head" style="grid-template-columns: 1.4fr 0.8fr 0.8fr 0.8fr 0.6fr;">
+        <div>Fornecedor</div><div>Unidade</div><div>Data do pedido</div><div>Situação</div><div style="text-align:right;">Ações</div>
+      </div>
+      ${aguardando.map(([id,p]) => `<div class="pend-entrada-row" style="grid-template-columns: 1.4fr 0.8fr 0.8fr 0.8fr 0.6fr;">
+        <div class="name-cell">${escapeHtml(p.fornecedor||"—")}</div>
+        <div><span class="chip neutral">${escapeHtml(nomeUnidadeCompra(pedidoUnidade(p)))}</span></div>
+        <div>${fmtDataYMD(p.data_pedido)||"—"}</div>
+        <div>${statusChip(pedidoStatus(p))}</div>
+        <div class="es-tools" style="justify-content:flex-end;"><button class="btn small primary" data-conferir-estoque="${id}"><i class="ico" data-lucide="clipboard-check"></i>Conferir</button></div>
+      </div>`).join("")}
+    `;
+    aguardPanel.querySelectorAll("[data-conferir-estoque]").forEach(btn => btn.addEventListener("click", () => openPedidoDetalhe(btn.dataset.conferirEstoque, {onSaved: renderEstoqueEntradasPendentes})));
+  }
+  const pendentes = entradasPendentes();
+  document.getElementById("pend-count-legado").textContent = `${pendentes.length} ${pendentes.length===1?"item":"itens"}`;
+  document.getElementById("pend-count-legado").className = pendentes.length ? "pend-count alerta" : "pend-count";
   const panel = document.getElementById("pend-panel");
   if(window.lucide) lucide.createIcons();
-  if(!pendentes.length) return;
+  if(!pendentes.length){ panel.innerHTML = `<div class="empty-state">Nenhuma entrada pendente de aprovação.</div>`; return; }
   panel.innerHTML = `
     <div class="pend-entrada-row pend-entrada-head">
       <div>Insumo</div><div>Unidade</div><div>Quantidade</div><div>Custo unit.</div><div>Origem</div><div style="text-align:right;">Ações</div>
@@ -12066,6 +12154,7 @@ function renderCompras(){
     <div class="seg-toggle" id="cp-tabs" style="margin-bottom:14px; width:fit-content;">
       <button type="button" data-tab="lista" class="${comprasTab==="lista"?"active":""}">Lista de compra</button>
       <button type="button" data-tab="pedidos" class="${comprasTab==="pedidos"?"active":""}">Pedidos</button>
+      <button type="button" data-tab="divergencias" class="${comprasTab==="divergencias"?"active":""}">Divergências de recebimento</button>
     </div>
   `;
   function wireTabs(){
@@ -12078,8 +12167,44 @@ function renderCompras(){
     renderTabPedidos();
     return;
   }
+  if(comprasTab === "divergencias"){
+    content.innerHTML = `${tabsHtml}<div id="cp-body"></div>`;
+    wireTabs();
+    renderTabDivergencias();
+    return;
+  }
 
   renderComprasLista(content, tabsHtml, wireTabs);
+}
+// 26/11/2026, pedido do Marcelo: relatório pra compradora acompanhar os itens recebidos com quantidade
+// diferente da pedida — ver pcpDivergenciasRecebimento (lido direto de pedidos.itens, sem tabela nova).
+function renderTabDivergencias(){
+  const body = document.getElementById("cp-body");
+  const linhas = pcpDivergenciasRecebimento();
+  body.innerHTML = `
+    <div class="panel">
+      <div class="panel-head">
+        <h3><i class="ico" data-lucide="alert-triangle"></i>Divergências de recebimento</h3>
+        <span class="${linhas.length ? "pend-count alerta" : "pend-count"}">${linhas.length} ${linhas.length===1?"item":"itens"}</span>
+      </div>
+      <div class="panel-body">
+        ${linhas.length ? `<div class="table-wrap"><table>
+          <thead><tr><th>Data do pedido</th><th>Fornecedor</th><th>Unidade</th><th>Insumo</th><th style="text-align:right;">Pedido</th><th style="text-align:right;">Recebido</th><th style="text-align:right;">Diferença</th><th>Observação</th></tr></thead>
+          <tbody>${linhas.map(l => `<tr>
+            <td>${fmtDataYMD(l.data_pedido)||"—"}</td>
+            <td class="name-cell">${escapeHtml(l.fornecedor||"—")}</td>
+            <td><span class="chip neutral">${escapeHtml(nomeUnidadeCompra(l.unidade))}</span></td>
+            <td>${escapeHtml(l.insumo||"—")}</td>
+            <td class="num-cell">${fmtNum(l.pedida,3)} ${escapeHtml(l.unidadeMedida||"")}</td>
+            <td class="num-cell">${fmtNum(l.recebida,3)} ${escapeHtml(l.unidadeMedida||"")}</td>
+            <td class="num-cell"><span class="chip warn">${l.diferenca>0?"+":"−"}${fmtNum(Math.abs(l.diferenca),3)}</span></td>
+            <td>${escapeHtml(l.obs||"—")}</td>
+          </tr>`).join("")}</tbody>
+        </table></div>` : `<div class="empty-state">Nenhuma divergência de recebimento registrada.</div>`}
+      </div>
+    </div>
+  `;
+  if(window.lucide) lucide.createIcons();
 }
 
 // 10/11/2026, pedido do Marcelo (painel novo no topo da aba Pedidos): orçado de 1 semana só, recortado
@@ -12250,7 +12375,7 @@ function renderTabPedidos(){
       document.getElementById("pd-tfoot").innerHTML = lista.length
         ? `<tr class="row-total"><td colspan="5" class="name-cell"><b>Total</b></td><td class="num-cell"><b>${fmtMoney(total)}</b></td><td colspan="2"></td></tr>` : "";
       document.querySelectorAll(".pd-imprimir").forEach(b => b.addEventListener("click", () => imprimirPedido(b.dataset.id)));
-      document.querySelectorAll(".pd-conferir").forEach(b => b.addEventListener("click", () => openPedidoDetalhe(b.dataset.id)));
+      document.querySelectorAll(".pd-conferir").forEach(b => b.addEventListener("click", () => openPedidoDetalhe(b.dataset.id, {onSaved: renderCompras})));
       document.querySelectorAll(".pd-dup").forEach(b => b.addEventListener("click", () => openPedidoModal(null, {duplicarDe: b.dataset.id})));
       document.querySelectorAll(".pd-editar").forEach(b => b.addEventListener("click", () => openPedidoModal(b.dataset.id)));
       document.querySelectorAll(".pd-excluir").forEach(b => b.addEventListener("click", async () => {
@@ -13086,7 +13211,8 @@ async function openPedidoModal(id, opts){
 }
 
 /* ---- modal: conferência de recebimento ---- */
-function openPedidoDetalhe(id){
+function openPedidoDetalhe(id, opts){
+  opts = opts || {};
   const p = pedidos.get(id);
   if(!p) return;
   const root = document.getElementById("modal-root");
@@ -13173,19 +13299,29 @@ function openPedidoDetalhe(id){
 
   document.getElementById("cf-salvar").onclick = async () => {
     const itensFinal = itens.map((it,i) => ({...it, quantidade_recebida: conf[i].rec}));
+    const obsRecebimento = document.getElementById("cf-obs").value.trim();
+    // 26/11/2026, pedido do Marcelo: observação passou a ser obrigatória quando algum item divergir da
+    // quantidade pedida — é o que alimenta o relatório de Divergências de recebimento da compradora.
+    const temDivergencia = itensFinal.some(it => it.quantidade_recebida!=null && Math.abs((it.quantidade_recebida||0)-(it.quantidade||0)) > 0.001);
+    if(temDivergencia && !obsRecebimento){
+      document.getElementById("cf-err").textContent = "Há item(ns) com quantidade diferente da pedida — informe uma observação explicando a diferença antes de confirmar.";
+      return;
+    }
     const payload = {
       itens: itensFinal,
-      recebimento: { nota_fiscal: document.getElementById("cf-nf").value.trim()||null, recebido_por: document.getElementById("cf-por").value.trim()||null, data: document.getElementById("cf-data").value||null, obs: document.getElementById("cf-obs").value.trim()||null },
+      recebimento: { nota_fiscal: document.getElementById("cf-nf").value.trim()||null, recebido_por: document.getElementById("cf-por").value.trim()||null, data: document.getElementById("cf-data").value||null, obs: obsRecebimento||null },
       ...carimbo(),
     };
     try{
       const { error } = await sb.from('pedidos').update(payload).eq('id', id);
       if(error) throw error;
       await loadPedidos();
-      // conferência de recebimento gera (ou atualiza) a entrada pendente em estoque — aprovação é um passo separado na aba Insumos
-      await sincronizarEntradaPendenteDoPedido(id, pedidoUnidade(p), itensFinal);
+      // 26/11/2026: conferência + entrada no estoque viraram 1 passo só — confirmar aqui já credita o
+      // saldo (status "aprovado" direto), feito pelo estoquista dentro da área do estoque.
+      const ok = await confirmarEntradaDireta(id, pedidoUnidade(p), itensFinal, obsRecebimento||null);
       root.innerHTML = "";
-      renderCompras();
+      if(opts.onSaved) opts.onSaved(); else if(typeof renderEstoqueEntradasPendentes==="function") renderEstoqueEntradasPendentes();
+      if(!ok) showAlert("Conferência salva, mas houve um problema ao dar entrada no estoque — confira o saldo do insumo.");
     }catch(e){ document.getElementById("cf-err").textContent = mensagemErro(e, "Erro ao salvar: "); }
   };
 }
