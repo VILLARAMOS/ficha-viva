@@ -3887,7 +3887,10 @@ function renderEstoqueContagem(){
         if(error){ showAlert(mensagemErro(error, "Erro ao atualizar o insumo")); e.target.checked = !ativo; e.target.disabled = false; return; }
         await loadInsumos();
         if(!ativo) showAlert(`"${nome}" foi marcado como inativo.`);
-        renderEstoqueContagem();
+        // 26/11/2026, pedido do Marcelo: só redesenha a tabela (updateTable), não a tela inteira —
+        // re-renderizar o painel todo (renderEstoqueContagem) reconstruía o <select> de semana e o
+        // calendário também, e isso jogava a rolagem de volta pro topo da lista.
+        updateTable();
       });
     });
   }
